@@ -216,6 +216,7 @@ const PasswordSection = () => {
       >
         <Field label="Current password">
           <input
+            autoComplete="current-password"
             className={inputClass}
             minLength={8}
             onChange={(event) => {
@@ -231,6 +232,7 @@ const PasswordSection = () => {
           label="New password"
         >
           <input
+            autoComplete="new-password"
             className={inputClass}
             minLength={8}
             onChange={(event) => {
@@ -243,6 +245,7 @@ const PasswordSection = () => {
         </Field>
         <Field label="Confirm new password">
           <input
+            autoComplete="new-password"
             className={inputClass}
             minLength={8}
             onChange={(event) => {
