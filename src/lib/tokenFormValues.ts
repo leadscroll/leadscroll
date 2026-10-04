@@ -1,4 +1,5 @@
 import { localDateTimeToIso } from './datetime';
+import { type CreateTokenInput } from '@/domain/schemas';
 
 export type TokenFormValues = {
   expiration: string;
@@ -16,7 +17,9 @@ export const emptyTokenFormValues = (
   type: 'api',
 });
 
-export const toCreateTokenInput = (values: TokenFormValues) => ({
+export const toCreateTokenInput = (
+  values: TokenFormValues,
+): CreateTokenInput => ({
   expiresAt: values.neverExpires ? null : localDateTimeToIso(values.expiration),
   name: values.name.trim(),
   type: values.type,

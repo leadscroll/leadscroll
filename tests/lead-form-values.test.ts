@@ -26,7 +26,9 @@ describe('lead form values', () => {
       source: 'Website',
     });
     await expect(
-      Schema.decodeUnknownPromise(CreateLeadRequest)(input),
+      Schema.decodeUnknownPromise(CreateLeadRequest, {
+        onExcessProperty: 'error',
+      })(input),
     ).resolves.toEqual(input);
   });
 
@@ -49,7 +51,9 @@ describe('lead form values', () => {
     // The JSON body actually sent elides undefined fields.
     expect(JSON.parse(JSON.stringify(input))).toEqual({ source: 'Website' });
     await expect(
-      Schema.decodeUnknownPromise(CreateLeadRequest)(input),
+      Schema.decodeUnknownPromise(CreateLeadRequest, {
+        onExcessProperty: 'error',
+      })(input),
     ).resolves.toBeDefined();
   });
 
@@ -83,7 +87,9 @@ describe('lead form values', () => {
       lastName: 'River',
     });
     await expect(
-      Schema.decodeUnknownPromise(UpdateLeadRequest)(input),
+      Schema.decodeUnknownPromise(UpdateLeadRequest, {
+        onExcessProperty: 'error',
+      })(input),
     ).resolves.toEqual(input);
   });
 

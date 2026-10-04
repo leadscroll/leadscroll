@@ -23,7 +23,9 @@ describe('invite form values', () => {
       name: 'Weekend onboarding',
     });
     await expect(
-      Schema.decodeUnknownPromise(CreateInviteRequest)(input),
+      Schema.decodeUnknownPromise(CreateInviteRequest, {
+        onExcessProperty: 'error',
+      })(input),
     ).resolves.toEqual(input);
   });
 

@@ -1,20 +1,31 @@
 // Form values and request mappers for lead create/update.
 //
-// The dialog/detail forms hold everything as strings (that is what inputs
-// produce); the API contract is typed and distinguishes "empty" from "null"
-// differently for create and update. These mappers are the single place that
-// conversion happens, and tests decode their output through the Effect
-// request schemas so the client cannot drift from the contract.
+// Every `*FormValues` module is a DOM-to-contract adapter: the forms hold
+// strings (what inputs produce) while the request schemas are typed. Each
+// adapter return value is annotated with the type derived from its request
+// schema, so a contract rename, removal, type change, or new required field
+// fails `tsc` here instead of silently dropping fields on the wire. Tests
+// decode every mapper output through the schema with onExcessProperty:
+// 'error' for the constraint-level checks types cannot express.
+//
+// The contract distinguishes "empty" per direction: create treats blank as
+// absent (the key is omitted), update sends an explicit null to clear.
 
-import { type LeadView } from '@/domain/schemas';
+import {
+  type CreateLeadInput,
+  type LeadView,
+  type UpdateLeadInput,
+} from '@/domain/schemas';
 
 export type LeadFormValues = {
-  email: string;
-  estimatedValue: string;
-  firstName: string;
-  lastName: string;
-  source: string;
+  [K in LeadFormField]: string;
 };
+
+// The manual lead form collects every request field except customFields. A
+// new contract field therefore becomes a required form field (and a compile
+// error in `emptyLeadFormValues`) until it is collected or explicitly
+// excluded here, and a removed/renamed field breaks the mappers below.
+type LeadFormField = Exclude<keyof CreateLeadInput, 'customFields'>;
 
 export const emptyLeadFormValues: LeadFormValues = {
   email: '',
@@ -34,7 +45,7 @@ const nullable = (value: string): null | string => {
   return trimmed === '' ? null : trimmed;
 };
 
-export const toCreateLeadInput = (values: LeadFormValues) => ({
+export const toCreateLeadInput = (values: LeadFormValues): CreateLeadInput => ({
   email: trimmedOrUndefined(values.email),
   estimatedValue:
     values.estimatedValue.trim() === ''
@@ -45,7 +56,7 @@ export const toCreateLeadInput = (values: LeadFormValues) => ({
   source: trimmedOrUndefined(values.source),
 });
 
-export const toUpdateLeadInput = (values: LeadFormValues) => ({
+export const toUpdateLeadInput = (values: LeadFormValues): UpdateLeadInput => ({
   email: nullable(values.email),
   estimatedValue:
     values.estimatedValue.trim() === '' ? null : Number(values.estimatedValue),
@@ -54,10 +65,7 @@ export const toUpdateLeadInput = (values: LeadFormValues) => ({
   source: values.source.trim() || undefined,
 });
 
-type LeadFormSource = Pick<
-  LeadView,
-  'email' | 'estimatedValue' | 'firstName' | 'lastName' | 'source'
->;
+type LeadFormSource = Pick<LeadView, LeadFormField>;
 
 export const leadFormValuesFromView = (
   lead: LeadFormSource,

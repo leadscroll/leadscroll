@@ -24,7 +24,9 @@ describe('token form values', () => {
       type: 'api',
     });
     await expect(
-      Schema.decodeUnknownPromise(CreateTokenRequest)(input),
+      Schema.decodeUnknownPromise(CreateTokenRequest, {
+        onExcessProperty: 'error',
+      })(input),
     ).resolves.toEqual(input);
   });
 
@@ -37,7 +39,9 @@ describe('token form values', () => {
 
     expect(input.expiresAt).toBe(new Date(expiration).toISOString());
     await expect(
-      Schema.decodeUnknownPromise(CreateTokenRequest)(input),
+      Schema.decodeUnknownPromise(CreateTokenRequest, {
+        onExcessProperty: 'error',
+      })(input),
     ).resolves.toEqual(input);
   });
 
@@ -63,7 +67,9 @@ describe('token form values', () => {
 
     expect(input.type).toBe('browser');
     await expect(
-      Schema.decodeUnknownPromise(CreateTokenRequest)(input),
+      Schema.decodeUnknownPromise(CreateTokenRequest, {
+        onExcessProperty: 'error',
+      })(input),
     ).resolves.toEqual(input);
   });
 });
