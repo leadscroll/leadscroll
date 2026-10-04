@@ -6,7 +6,7 @@ import { inputClass } from '@/components/ui/form';
 import {
   emptyLeadFormValues,
   type LeadFormValues,
-  toCreateLeadInput,
+  toCreateLeadRequest,
 } from '@/leads/leadFormValues';
 import { request } from '@/lib/http';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
@@ -26,7 +26,7 @@ export const CreateLeadDialog = ({
   const create = useMutation({
     mutationFn: (values: LeadFormValues) =>
       request('/v1/leads', {
-        body: JSON.stringify(toCreateLeadInput(values)),
+        body: JSON.stringify(toCreateLeadRequest(values)),
         method: 'POST',
       }),
     onSuccess: () => {

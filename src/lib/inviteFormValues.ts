@@ -1,5 +1,5 @@
 import { localDateTimeToIso } from './datetime';
-import { type CreateInviteInput } from '@/domain/schemas';
+import { type CreateInviteRequest } from '@/domain/schemas';
 
 export type InviteFormValues = {
   expiration: string;
@@ -13,9 +13,9 @@ export const emptyInviteFormValues = (
   name: '',
 });
 
-export const toCreateInviteInput = (
+export const toCreateInviteRequest = (
   values: InviteFormValues,
-): CreateInviteInput => ({
+): CreateInviteRequest => ({
   expiresAt: localDateTimeToIso(values.expiration),
   name: values.name.trim(),
 });

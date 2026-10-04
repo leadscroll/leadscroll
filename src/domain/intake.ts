@@ -1,4 +1,4 @@
-import { type IntakeInput, normalizeEmail } from './schemas';
+import { type IntakeRequest, normalizeEmail } from './schemas';
 
 /**
  * The response persisted for every accepted intake and replayed unchanged on
@@ -48,9 +48,9 @@ const canonicalize = (value: unknown): unknown =>
  * remain different.
  */
 export const intakeRequestFingerprint = async (
-  input: IntakeInput,
+  input: IntakeRequest,
 ): Promise<string> => {
-  const normalized: IntakeInput = {
+  const normalized: IntakeRequest = {
     ...input,
     email: normalizeEmail(input.email),
   };

@@ -12,9 +12,9 @@
 // absent (the key is omitted), update sends an explicit null to clear.
 
 import {
-  type CreateLeadInput,
+  type CreateLeadRequest,
   type LeadView,
-  type UpdateLeadInput,
+  type UpdateLeadRequest,
 } from '@/domain/schemas';
 
 export type LeadFormValues = {
@@ -25,7 +25,7 @@ export type LeadFormValues = {
 // new contract field therefore becomes a required form field (and a compile
 // error in `emptyLeadFormValues`) until it is collected or explicitly
 // excluded here, and a removed/renamed field breaks the mappers below.
-type LeadFormField = Exclude<keyof CreateLeadInput, 'customFields'>;
+type LeadFormField = Exclude<keyof CreateLeadRequest, 'customFields'>;
 
 export const emptyLeadFormValues: LeadFormValues = {
   email: '',
@@ -45,7 +45,9 @@ const nullable = (value: string): null | string => {
   return trimmed === '' ? null : trimmed;
 };
 
-export const toCreateLeadInput = (values: LeadFormValues): CreateLeadInput => ({
+export const toCreateLeadRequest = (
+  values: LeadFormValues,
+): CreateLeadRequest => ({
   email: trimmedOrUndefined(values.email),
   estimatedValue:
     values.estimatedValue.trim() === ''
@@ -56,7 +58,9 @@ export const toCreateLeadInput = (values: LeadFormValues): CreateLeadInput => ({
   source: trimmedOrUndefined(values.source),
 });
 
-export const toUpdateLeadInput = (values: LeadFormValues): UpdateLeadInput => ({
+export const toUpdateLeadRequest = (
+  values: LeadFormValues,
+): UpdateLeadRequest => ({
   email: nullable(values.email),
   estimatedValue:
     values.estimatedValue.trim() === '' ? null : Number(values.estimatedValue),

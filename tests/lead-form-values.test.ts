@@ -1,16 +1,19 @@
-import { CreateLeadRequest, UpdateLeadRequest } from '@/domain/schemas';
+import {
+  CreateLeadRequestSchema,
+  UpdateLeadRequestSchema,
+} from '@/domain/schemas';
 import {
   emptyLeadFormValues,
   leadFormValuesFromView,
-  toCreateLeadInput,
-  toUpdateLeadInput,
+  toCreateLeadRequest,
+  toUpdateLeadRequest,
 } from '@/leads/leadFormValues';
 import { Schema } from 'effect';
 import { describe, expect, test } from 'vitest';
 
 describe('lead form values', () => {
   test('maps a filled form to the create contract', async () => {
-    const input = toCreateLeadInput({
+    const input = toCreateLeadRequest({
       email: '  alex@example.com ',
       estimatedValue: '12500',
       firstName: ' Alex ',
@@ -26,14 +29,14 @@ describe('lead form values', () => {
       source: 'Website',
     });
     await expect(
-      Schema.decodeUnknownPromise(CreateLeadRequest, {
+      Schema.decodeUnknownPromise(CreateLeadRequestSchema, {
         onExcessProperty: 'error',
       })(input),
     ).resolves.toEqual(input);
   });
 
   test('maps empty inputs to omitted optional fields', async () => {
-    const input = toCreateLeadInput({
+    const input = toCreateLeadRequest({
       ...emptyLeadFormValues,
       email: '   ',
       estimatedValue: '',
@@ -51,7 +54,7 @@ describe('lead form values', () => {
     // The JSON body actually sent elides undefined fields.
     expect(JSON.parse(JSON.stringify(input))).toEqual({ source: 'Website' });
     await expect(
-      Schema.decodeUnknownPromise(CreateLeadRequest, {
+      Schema.decodeUnknownPromise(CreateLeadRequestSchema, {
         onExcessProperty: 'error',
       })(input),
     ).resolves.toBeDefined();
@@ -59,12 +62,12 @@ describe('lead form values', () => {
 
   test('accepts a zero estimated value', () => {
     expect(
-      toCreateLeadInput({ ...emptyLeadFormValues, estimatedValue: '0' }),
+      toCreateLeadRequest({ ...emptyLeadFormValues, estimatedValue: '0' }),
     ).toMatchObject({ estimatedValue: 0 });
   });
 
   test('maps cleared fields to nulls in the update contract', async () => {
-    const input = toUpdateLeadInput({
+    const input = toUpdateLeadRequest({
       email: '',
       estimatedValue: '',
       firstName: '   ',
@@ -87,7 +90,7 @@ describe('lead form values', () => {
       lastName: 'River',
     });
     await expect(
-      Schema.decodeUnknownPromise(UpdateLeadRequest, {
+      Schema.decodeUnknownPromise(UpdateLeadRequestSchema, {
         onExcessProperty: 'error',
       })(input),
     ).resolves.toEqual(input);

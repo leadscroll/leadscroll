@@ -10,7 +10,7 @@ import { type LeadActivity, type LeadView } from '@/domain/schemas';
 import {
   type LeadFormValues,
   leadFormValuesFromView,
-  toUpdateLeadInput,
+  toUpdateLeadRequest,
 } from '@/leads/leadFormValues';
 import { request } from '@/lib/http';
 import { cn } from '@/lib/styles';
@@ -57,7 +57,7 @@ export const LeadDetailPage = ({ id }: { readonly id: string }) => {
   const save = useMutation({
     mutationFn: (values: LeadFormValues) =>
       request(`/v1/leads/${id}`, {
-        body: JSON.stringify(toUpdateLeadInput(values)),
+        body: JSON.stringify(toUpdateLeadRequest(values)),
         method: 'PATCH',
       }),
     onSuccess: () => {

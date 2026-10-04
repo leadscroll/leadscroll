@@ -1,8 +1,8 @@
-import { CreateTokenRequest } from '@/domain/schemas';
+import { CreateTokenRequestSchema } from '@/domain/schemas';
 import { toLocalInputValue } from '@/lib/datetime';
 import {
   emptyTokenFormValues,
-  toCreateTokenInput,
+  toCreateTokenRequest,
 } from '@/lib/tokenFormValues';
 import { Schema } from 'effect';
 import { describe, expect, test } from 'vitest';
@@ -12,7 +12,7 @@ const future = (): string =>
 
 describe('token form values', () => {
   test('sends null expiresAt when Never expires is chosen', async () => {
-    const input = toCreateTokenInput({
+    const input = toCreateTokenRequest({
       ...emptyTokenFormValues(future()),
       name: '  Website form  ',
       neverExpires: true,
@@ -24,7 +24,7 @@ describe('token form values', () => {
       type: 'api',
     });
     await expect(
-      Schema.decodeUnknownPromise(CreateTokenRequest, {
+      Schema.decodeUnknownPromise(CreateTokenRequestSchema, {
         onExcessProperty: 'error',
       })(input),
     ).resolves.toEqual(input);
@@ -32,21 +32,21 @@ describe('token form values', () => {
 
   test('converts a local expiration to a UTC ISO string', async () => {
     const expiration = future();
-    const input = toCreateTokenInput({
+    const input = toCreateTokenRequest({
       ...emptyTokenFormValues(expiration),
       name: 'Website form',
     });
 
     expect(input.expiresAt).toBe(new Date(expiration).toISOString());
     await expect(
-      Schema.decodeUnknownPromise(CreateTokenRequest, {
+      Schema.decodeUnknownPromise(CreateTokenRequestSchema, {
         onExcessProperty: 'error',
       })(input),
     ).resolves.toEqual(input);
   });
 
   test('omits an empty expiration so the 90-day default applies', () => {
-    const input = toCreateTokenInput({
+    const input = toCreateTokenRequest({
       ...emptyTokenFormValues(''),
       name: 'Website form',
     });
@@ -59,7 +59,7 @@ describe('token form values', () => {
   });
 
   test('keeps the selected browser type', async () => {
-    const input = toCreateTokenInput({
+    const input = toCreateTokenRequest({
       ...emptyTokenFormValues(future()),
       name: 'Browser form',
       type: 'browser',
@@ -67,7 +67,7 @@ describe('token form values', () => {
 
     expect(input.type).toBe('browser');
     await expect(
-      Schema.decodeUnknownPromise(CreateTokenRequest, {
+      Schema.decodeUnknownPromise(CreateTokenRequestSchema, {
         onExcessProperty: 'error',
       })(input),
     ).resolves.toEqual(input);

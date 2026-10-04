@@ -9,7 +9,7 @@ import { request } from './lib/http';
 import {
   emptyInviteFormValues,
   type InviteFormValues,
-  toCreateInviteInput,
+  toCreateInviteRequest,
 } from './lib/inviteFormValues';
 import { quietFetch } from './lib/quiet-fetch';
 import {
@@ -21,7 +21,7 @@ import {
 import { cn } from './lib/styles';
 import {
   emptyTokenFormValues,
-  toCreateTokenInput,
+  toCreateTokenRequest,
   type TokenFormValues,
 } from './lib/tokenFormValues';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -290,7 +290,7 @@ const CreateTokenDialog = ({
   const create = useMutation({
     mutationFn: (values: TokenFormValues) =>
       request<Token & { token: string }>('/v1/tokens', {
-        body: JSON.stringify(toCreateTokenInput(values)),
+        body: JSON.stringify(toCreateTokenRequest(values)),
         method: 'POST',
       }),
     onSuccess: (created) => {
@@ -639,7 +639,7 @@ const CreateInviteDialog = ({
   const create = useMutation({
     mutationFn: (values: InviteFormValues) =>
       request<Invite & { token: string }>('/v1/invites', {
-        body: JSON.stringify(toCreateInviteInput(values)),
+        body: JSON.stringify(toCreateInviteRequest(values)),
         method: 'POST',
       }),
     onSuccess: (created) => {

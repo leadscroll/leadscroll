@@ -1,8 +1,8 @@
-import { CreateInviteRequest } from '@/domain/schemas';
+import { CreateInviteRequestSchema } from '@/domain/schemas';
 import { toLocalInputValue } from '@/lib/datetime';
 import {
   emptyInviteFormValues,
-  toCreateInviteInput,
+  toCreateInviteRequest,
 } from '@/lib/inviteFormValues';
 import { Schema } from 'effect';
 import { describe, expect, test } from 'vitest';
@@ -13,7 +13,7 @@ const future = (): string =>
 describe('invite form values', () => {
   test('converts a local expiration to a UTC ISO string', async () => {
     const expiration = future();
-    const input = toCreateInviteInput({
+    const input = toCreateInviteRequest({
       ...emptyInviteFormValues(expiration),
       name: '  Weekend onboarding ',
     });
@@ -23,14 +23,14 @@ describe('invite form values', () => {
       name: 'Weekend onboarding',
     });
     await expect(
-      Schema.decodeUnknownPromise(CreateInviteRequest, {
+      Schema.decodeUnknownPromise(CreateInviteRequestSchema, {
         onExcessProperty: 'error',
       })(input),
     ).resolves.toEqual(input);
   });
 
   test('omits an empty expiration so the 7-day default applies', () => {
-    const input = toCreateInviteInput({
+    const input = toCreateInviteRequest({
       ...emptyInviteFormValues(''),
       name: 'Weekend onboarding',
     });
