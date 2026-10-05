@@ -58,9 +58,9 @@ export const IntakeRequestSchema = Schema.Struct({
 });
 export type IntakeRequest = Schema.Schema.Type<typeof IntakeRequestSchema>;
 
-// Response contracts. Their values are in-process objects, so timestamps are
-// Date instances (`Schema.DateFromSelf`), not the ISO strings the client
-// receives.
+// Response contracts describe the wire shape (ISO-8601 strings, JSON-encoded
+// dates) shared with the SPA; request contracts validate Elysia input through
+// Standard Schema.
 export const HealthSchema = Schema.Struct({ ok: Schema.Boolean });
 
 // Leads. Response contracts are the wire shape (ISO-8601 strings, JSON-encoded
@@ -170,7 +170,7 @@ export type CreateLeadActivityRequest = Schema.Schema.Type<
 
 // A future UTC ISO-8601 date (optional time, offset, or Z) for expiry
 // overrides on API tokens and staff invitations.
-const FutureIsoDate = Schema.String.pipe(
+const FutureIsoDateSchema = Schema.String.pipe(
   Schema.pattern(
     /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:\d{2})?)?$/u,
   ),
@@ -182,7 +182,7 @@ const FutureIsoDate = Schema.String.pipe(
 );
 
 export const CreateTokenRequestSchema = Schema.Struct({
-  expiresAt: Schema.optional(Schema.NullOr(FutureIsoDate)),
+  expiresAt: Schema.optional(Schema.NullOr(FutureIsoDateSchema)),
   name: NonEmptyStringSchema,
   type: Schema.optional(Schema.Literal('api', 'browser')),
 }).annotations({
@@ -194,7 +194,7 @@ export type CreateTokenRequest = Schema.Schema.Type<
 >;
 
 export const CreateInviteRequestSchema = Schema.Struct({
-  expiresAt: Schema.optional(FutureIsoDate),
+  expiresAt: Schema.optional(FutureIsoDateSchema),
   name: NonEmptyStringSchema,
 }).annotations({
   description: 'Creates a single-use staff invitation (7 days by default).',

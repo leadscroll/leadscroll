@@ -9,6 +9,9 @@ import {
 import { describe, expect, test } from 'vitest';
 
 const CHICAGO = 'America/Chicago';
+// A fixed "now" keeps the validation assertions deterministic; without it the
+// overlap fixture would turn into a failing past date after 2026-11-01.
+const NOW = Temporal.Instant.from('2026-01-01T00:00:00Z');
 
 describe('wall-clock conversion', () => {
   test('resolves the zone offset for the selected date', () => {
@@ -43,7 +46,7 @@ describe('wall-clock conversion', () => {
 
 describe('daylight-saving policy', () => {
   test('rejects a wall clock inside the spring-forward gap', () => {
-    expect(wallClockIssue('2026-03-08T02:30', CHICAGO)).toBe(
+    expect(wallClockIssue('2026-03-08T02:30', CHICAGO, NOW)).toBe(
       'That local time does not exist on this date (daylight saving).',
     );
     // Validation blocks submission; the raw conversion keeps the platform's
@@ -57,7 +60,7 @@ describe('daylight-saving policy', () => {
     expect(wallClockToIso('2026-11-01T01:30', CHICAGO)).toBe(
       '2026-11-01T06:30:00.000Z',
     );
-    expect(wallClockIssue('2026-11-01T01:30', CHICAGO)).toBe(true);
+    expect(wallClockIssue('2026-11-01T01:30', CHICAGO, NOW)).toBe(true);
   });
 
   test('labels the offset of the selected date, not today', () => {
@@ -72,10 +75,10 @@ describe('daylight-saving policy', () => {
 
 describe('future validation', () => {
   test('rejects the past and accepts the future', () => {
-    expect(wallClockIssue('2000-01-01T00:00', CHICAGO)).toBe(
+    expect(wallClockIssue('2000-01-01T00:00', CHICAGO, NOW)).toBe(
       'Expiration must be in the future.',
     );
-    expect(wallClockIssue('2999-01-01T00:00', CHICAGO)).toBe(true);
+    expect(wallClockIssue('2999-01-01T00:00', CHICAGO, NOW)).toBe(true);
   });
 
   test('an empty input is valid (server default)', () => {

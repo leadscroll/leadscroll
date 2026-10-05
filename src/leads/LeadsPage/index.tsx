@@ -26,6 +26,7 @@ export const LeadsPage = () => {
   const [search, setSearch] = useState('');
   const searchForm = useForm<{ query: string }>({
     defaultValues: { query: '' },
+    mode: 'onTouched',
   });
   const [selected, setSelected] = useState<string[]>([]);
   const [showCreate, setShowCreate] = useState(false);

@@ -8,6 +8,7 @@ import { fieldTitle } from '@/domain/customFields';
 import { leadDisplayName } from '@/domain/leadDisplay';
 import { type LeadActivity, type LeadView } from '@/domain/schemas';
 import {
+  emptyLeadFormValues,
   type LeadFormValues,
   leadFormValuesFromView,
   toUpdateLeadRequest,
@@ -16,7 +17,7 @@ import { request } from '@/lib/http';
 import { cn } from '@/lib/styles';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ChevronLeft } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { toast } from 'sonner';
 import { Link, useLocation } from 'wouter';
@@ -38,16 +39,26 @@ export const LeadDetailPage = ({ id }: { readonly id: string }) => {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const noteForm = useForm<{ body: string }>({
     defaultValues: { body: '' },
+    mode: 'onTouched',
   });
   const noteBody = noteForm.watch('body');
 
   const record = lead.data;
-  // `values` keeps the form in sync with every server refetch (the query
-  // clears the dirty state); edits are preserved while the record is stable.
   const form = useForm<LeadFormValues>({
+    defaultValues: record
+      ? leadFormValuesFromView(record)
+      : emptyLeadFormValues,
     mode: 'onTouched',
-    values: record ? leadFormValuesFromView(record) : undefined,
   });
+
+  // A background refetch must not clobber unsaved edits: reseed the form only
+  // while it is clean (on mount and after a successful save), matching the
+  // previous draft-or-record behavior.
+  useEffect(() => {
+    if (record && !form.formState.isDirty) {
+      form.reset(leadFormValuesFromView(record));
+    }
+  }, [form, record]);
 
   const invalidate = () => {
     void queryClient.invalidateQueries({ queryKey: ['lead', id] });
@@ -60,7 +71,10 @@ export const LeadDetailPage = ({ id }: { readonly id: string }) => {
         body: JSON.stringify(toUpdateLeadRequest(values)),
         method: 'PATCH',
       }),
-    onSuccess: () => {
+    onSuccess: (_response, values) => {
+      // Mark the draft clean with what was just saved; the refetch that follows
+      // then reseeds the form from the server.
+      form.reset(values);
       toast.success('Lead saved');
       invalidate();
     },
@@ -249,12 +263,14 @@ export const LeadDetailPage = ({ id }: { readonly id: string }) => {
               }
             })}
           >
-            <textarea
-              className={cn(inputClass, 'min-h-20')}
-              placeholder="Add a note…"
-              rows={3}
-              {...noteForm.register('body')}
-            />
+            <Field label="Note">
+              <textarea
+                className={cn(inputClass, 'min-h-20')}
+                placeholder="Add a note…"
+                rows={3}
+                {...noteForm.register('body')}
+              />
+            </Field>
             {addNote.error && <Notice error={addNote.error} />}
             <div>
               <Button

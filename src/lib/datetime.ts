@@ -44,9 +44,11 @@ export const toLocalInputValue = (date: Date, zone = localZone()): string =>
 
 // Form validation: returns the message to show, or true when the wall clock is
 // a usable future instant. An empty input means "server default" and is valid.
+// `now` is injectable so the policy is testable without mocking the clock.
 export const wallClockIssue = (
   value: string,
   zone = localZone(),
+  now: Temporal.Instant = Temporal.Now.instant(),
 ): string | true => {
   if (value === '') {
     return true;
@@ -61,8 +63,7 @@ export const wallClockIssue = (
       return 'That local time does not exist on this date (daylight saving).';
     }
 
-    return Temporal.Instant.compare(zoned.toInstant(), Temporal.Now.instant()) >
-      0
+    return Temporal.Instant.compare(zoned.toInstant(), now) > 0
       ? true
       : 'Expiration must be in the future.';
   } catch {

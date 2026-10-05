@@ -1074,6 +1074,9 @@ const LoginPage = () => {
   });
 
   const handleTokenSubmit = async (event: React.FormEvent) => {
+    // Cancel the native submission first: if the synchronous guard rejects the
+    // duplicate, the password/token inputs must never fall through to a GET.
+    event.preventDefault();
     if (!claimRegistration()) {
       return;
     }
@@ -1108,6 +1111,9 @@ const LoginPage = () => {
   });
 
   const handleDetailsSubmit = async (event: React.FormEvent) => {
+    // Cancel the native submission first: if the synchronous guard rejects the
+    // duplicate, the credentials must never fall through to a GET.
+    event.preventDefault();
     if (!claimRegistration()) {
       return;
     }
@@ -1133,24 +1139,22 @@ const LoginPage = () => {
             className="grid gap-4"
             onSubmit={submitSignIn}
           >
-            <label className="grid gap-1 text-sm text-slate-300">
-              Email
+            <Field label="Email">
               <input
                 placeholder="you@example.com"
                 required
                 type="email"
                 {...signInForm.register('email')}
               />
-            </label>
-            <label className="grid gap-1 text-sm text-slate-300">
-              Password
+            </Field>
+            <Field label="Password">
               <input
                 minLength={8}
                 required
                 type="password"
                 {...signInForm.register('password')}
               />
-            </label>
+            </Field>
             {signInError && (
               <p
                 className="rounded-md border border-rose-500/30 bg-rose-500/10 p-3 text-sm text-rose-100"
@@ -1171,14 +1175,13 @@ const LoginPage = () => {
             className="grid gap-4"
             onSubmit={handleTokenSubmit}
           >
-            <label className="grid gap-1 text-sm text-slate-300">
-              Invite token
+            <Field label="Invite token">
               <input
                 placeholder="Shared with you by a staff member"
                 required
                 {...tokenForm.register('inviteToken')}
               />
-            </label>
+            </Field>
             {error && (
               <p
                 className="rounded-md border border-rose-500/30 bg-rose-500/10 p-3 text-sm text-rose-100"
@@ -1199,32 +1202,29 @@ const LoginPage = () => {
             className="grid gap-4"
             onSubmit={handleDetailsSubmit}
           >
-            <label className="grid gap-1 text-sm text-slate-300">
-              Name
+            <Field label="Name">
               <input
                 placeholder="Ada Lovelace"
                 required
                 {...detailsForm.register('name')}
               />
-            </label>
-            <label className="grid gap-1 text-sm text-slate-300">
-              Email
+            </Field>
+            <Field label="Email">
               <input
                 placeholder="you@example.com"
                 required
                 type="email"
                 {...detailsForm.register('email')}
               />
-            </label>
-            <label className="grid gap-1 text-sm text-slate-300">
-              Password
+            </Field>
+            <Field label="Password">
               <input
                 minLength={8}
                 required
                 type="password"
                 {...detailsForm.register('password')}
               />
-            </label>
+            </Field>
             {error && (
               <p
                 className="rounded-md border border-rose-500/30 bg-rose-500/10 p-3 text-sm text-rose-100"
