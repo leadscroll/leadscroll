@@ -30,6 +30,7 @@ import {
   asc,
   desc,
   eq,
+  exists,
   getTableColumns,
   gt,
   isNotNull,
@@ -37,6 +38,7 @@ import {
   or,
   sql,
 } from 'drizzle-orm';
+import { alias } from 'drizzle-orm/sqlite-core';
 
 export type Env = {
   ASSETS: Fetcher;
@@ -715,7 +717,9 @@ export const revokeAccountSession = async (
 /**
  * Deletes every session of the account except the current one, identified by
  * its row id (resolved from the authenticated request). Returns the number
- * of active sessions revoked; expired rows are also cleaned up.
+ * of active sessions revoked; expired rows are also cleaned up. The caller
+ * must still own a live session when this DELETE executes, so an operation
+ * authenticated before password rotation cannot delete its replacement.
  */
 export const revokeOtherAccountSessions = async (
   environment: Env,
@@ -723,12 +727,29 @@ export const revokeOtherAccountSessions = async (
   currentSessionId: string,
 ): Promise<number> => {
   const revokedAt = new Date();
-  const revoked = await getDatabase(environment)
+  const database = getDatabase(environment);
+  const callerSession = alias(session, 'account_session_authority');
+  const liveCaller = database
+    .select({ id: callerSession.id })
+    .from(callerSession)
+    .where(
+      and(
+        eq(callerSession.id, currentSessionId),
+        eq(callerSession.userId, userId),
+        gt(
+          callerSession.expiresAt,
+          sql`(cast(unixepoch('subsecond') * 1000 as integer))`,
+        ),
+      ),
+    );
+  const revoked = await database
     .delete(session)
     .where(
       and(
         eq(session.userId, userId),
         sql`${session.id} <> ${currentSessionId}`,
+        // Check authority in the same SQL statement; a pre-read would race.
+        exists(liveCaller),
       ),
     )
     .returning({ expiresAt: session.expiresAt });

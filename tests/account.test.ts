@@ -1,3 +1,4 @@
+import { type Env, revokeOtherAccountSessions } from '@/db/repository';
 import { build } from 'esbuild';
 import { convertV4MiniflareOptions, Miniflare } from 'miniflare';
 import { readdir, readFile } from 'node:fs/promises';
@@ -955,6 +956,84 @@ test('development bypass has no real session and cannot use account-session endp
     ] as const) {
       expect((await fx.raw(path, method)).status).toBe(401);
     }
+  } finally {
+    await fx.dispose();
+  }
+});
+
+test('a delayed bulk revocation using a pre-rotation identity preserves the replacement session', async () => {
+  const { adminCookie, adminUserId, fx } = await startSignedInFixture();
+  try {
+    const before = await listSessions(fx, adminCookie);
+    const authenticatedSessionId = before.find((row) => row.current)?.id;
+    expect(authenticatedSessionId).toBeDefined();
+    const changed = await fx.raw(
+      '/api/auth/change-password',
+      'POST',
+      {
+        currentPassword: INITIAL_PASSWORD,
+        newPassword: 'rotated-race-password',
+      },
+      { Cookie: adminCookie },
+    );
+    expect(changed.status).toBe(200);
+    const replacement = await listSessions(fx, changed.cookie);
+    expect(replacement).toHaveLength(1);
+    expect(replacement[0].id).not.toBe(authenticatedSessionId);
+
+    // Reproduce the delayed persistence step with the identity authenticated
+    // before rotation; reauthenticating the old cookie would hide this race.
+    // This repository operation only consults the database binding.
+    const revoked = await revokeOtherAccountSessions(
+      { DB: fx.db } as Env,
+      adminUserId,
+      authenticatedSessionId ?? '',
+    );
+    expect(revoked).toBe(0);
+    expect(await listSessions(fx, changed.cookie)).toEqual(replacement);
+  } finally {
+    await fx.dispose();
+  }
+});
+
+test('bulk revocation refuses expired or foreign caller authority in the DELETE itself', async () => {
+  const { adminCookie, adminUserId, fx, otherCookie } =
+    await startSignedInFixture();
+  try {
+    const foreign = await addForeignAccount(fx, adminCookie);
+    const rows = await listSessions(fx, adminCookie);
+    const otherId = rows.find((row) => !row.current)?.id;
+    expect(otherId).toBeDefined();
+    const repositoryEnvironment = { DB: fx.db } as Env;
+    expect(
+      await revokeOtherAccountSessions(
+        repositoryEnvironment,
+        adminUserId,
+        foreign.sessions[0].id,
+      ),
+    ).toBe(0);
+    expect(await listSessions(fx, adminCookie)).toEqual(rows);
+
+    await fx.db
+      .prepare('UPDATE session SET expires_at = ? WHERE id = ?')
+      .bind(Date.now() - 1, otherId)
+      .run();
+    expect(
+      await revokeOtherAccountSessions(
+        repositoryEnvironment,
+        adminUserId,
+        otherId ?? '',
+      ),
+    ).toBe(0);
+    expect(await listSessions(fx, adminCookie)).toHaveLength(1);
+    expect(
+      (
+        await fx.raw('/v1/account/sessions', 'GET', undefined, {
+          Cookie: otherCookie,
+        })
+      ).status,
+    ).toBe(401);
+    expect(await listSessions(fx, foreign.cookie)).toEqual(foreign.sessions);
   } finally {
     await fx.dispose();
   }
