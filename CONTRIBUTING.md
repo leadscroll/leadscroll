@@ -18,9 +18,13 @@ GitHub Issues is the project backlog. Deferred work recorded in a gig's
 `NOTES.md` must be filed as an issue and linked from there — the issue is the
 durable record, the note only points at it.
 
-- Use `tech-debt` (structural, not user-visible), `security`, `potential`
-  (worth doing if the product signal appears), or `blocked` (waiting on an
-  external dependency or a decision), in addition to the existing labels.
+Vulnerability-related work is the exception: report it privately as described
+in `SECURITY.md`, and never include vulnerability details in a public issue.
+
+- Use `tech-debt` (structural, not user-visible), `security` (hardening and
+  policy work, not vulnerability reports), `potential` (worth doing if the
+  product signal appears), or `blocked` (waiting on an external dependency or
+  a decision), in addition to the existing labels.
 - Prefix titles with the area: `[api]`, `[ui]`, `[sdk]`, `[ci]`, `[datetime]`,
   `[search]`, `[deps]`.
 - Reference the issue from the PR that resolves it (`Closes #NN`) and close it
