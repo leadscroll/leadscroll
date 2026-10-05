@@ -22,6 +22,7 @@ import {
   registrationReducer,
   type SignUpFailure,
 } from './lib/registration-flow';
+import { releaseLabel } from './lib/release';
 import { cn } from './lib/styles';
 import {
   emptyTokenFormValues,
@@ -164,6 +165,9 @@ const Shell = ({ children }: { readonly children: React.ReactNode }) => {
           </button>
           <p className="mt-2 px-3 text-xs leading-relaxed text-slate-500">
             Cloudflare-native CRM alpha
+            <span className="mt-1 block tabular-nums">
+              {releaseLabel(LEADSCROLL_BUILD_DATE)}
+            </span>
           </p>
         </div>
       </aside>
