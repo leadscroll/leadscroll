@@ -660,6 +660,81 @@ export const setStaffAccountDisabled = async (
   return { kind: 'updated', record: { ...target, disabledAt: null } };
 };
 
+// --- Self-service session management ---------------------------------------
+//
+// The Better Auth session row's token is a bearer-equivalent secret, so the
+// account surface projects only ids and metadata and never returns it.
+
+export type AccountSessionRecord = {
+  createdAt: Date;
+  expiresAt: Date;
+  id: string;
+  ipAddress: null | string;
+  userAgent: null | string;
+};
+
+const accountSessionColumns = {
+  createdAt: session.createdAt,
+  expiresAt: session.expiresAt,
+  id: session.id,
+  ipAddress: session.ipAddress,
+  userAgent: session.userAgent,
+} as const;
+
+/**
+ * Lists the account's live sessions (unexpired), newest first, never
+ * including token material.
+ */
+export const listAccountSessions = async (
+  environment: Env,
+  userId: string,
+): Promise<AccountSessionRecord[]> =>
+  getDatabase(environment)
+    .select(accountSessionColumns)
+    .from(session)
+    .where(and(eq(session.userId, userId), gt(session.expiresAt, new Date())))
+    .orderBy(desc(session.createdAt));
+
+/**
+ * Deletes one of the account's own sessions by row id. Returns false when
+ * the id matches no session of this account (including one already
+ * revoked or belonging to somebody else). Expired rows are also deleted.
+ */
+export const revokeAccountSession = async (
+  environment: Env,
+  userId: string,
+  sessionId: string,
+): Promise<boolean> => {
+  const [result] = await getDatabase(environment)
+    .delete(session)
+    .where(and(eq(session.id, sessionId), eq(session.userId, userId)))
+    .returning({ id: session.id });
+  return result !== undefined;
+};
+
+/**
+ * Deletes every session of the account except the current one, identified by
+ * its row id (resolved from the authenticated request). Returns the number
+ * of active sessions revoked; expired rows are also cleaned up.
+ */
+export const revokeOtherAccountSessions = async (
+  environment: Env,
+  userId: string,
+  currentSessionId: string,
+): Promise<number> => {
+  const revokedAt = new Date();
+  const revoked = await getDatabase(environment)
+    .delete(session)
+    .where(
+      and(
+        eq(session.userId, userId),
+        sql`${session.id} <> ${currentSessionId}`,
+      ),
+    )
+    .returning({ expiresAt: session.expiresAt });
+  return revoked.filter((row) => row.expiresAt > revokedAt).length;
+};
+
 /**
  * Intake authorization gate. A token is usable only while unrevoked,
  * scoped to intake:write, and unexpired: legacy rows with a NULL expiry

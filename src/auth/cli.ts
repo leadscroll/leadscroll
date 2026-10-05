@@ -1,4 +1,5 @@
 import { logAuthMessage } from './logging';
+import { PASSWORD_MAX, PASSWORD_MIN } from '@/domain/password-policy';
 import { drizzleAdapter } from '@better-auth/drizzle-adapter';
 import { betterAuth } from 'better-auth';
 import { drizzle } from 'drizzle-orm/sqlite-proxy';
@@ -14,6 +15,10 @@ export const auth = betterAuth({
     }),
     { provider: 'sqlite' },
   ),
-  emailAndPassword: { enabled: true },
+  emailAndPassword: {
+    enabled: true,
+    maxPasswordLength: PASSWORD_MAX,
+    minPasswordLength: PASSWORD_MIN,
+  },
   logger: { level: 'warn', log: logAuthMessage },
 });

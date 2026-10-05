@@ -1,3 +1,8 @@
+import {
+  CURRENT_PASSWORD_MAX,
+  PASSWORD_MAX,
+  PASSWORD_MIN,
+} from './password-policy';
 import { Schema } from 'effect';
 
 // Naming: runtime schema values end in `Schema` (`CreateLeadRequestSchema`,
@@ -241,3 +246,38 @@ export type ApiError = Schema.Schema.Type<typeof ApiErrorSchema>;
 
 export const normalizeEmail = (email: string): string =>
   email.trim().toLowerCase();
+
+// Self-service account contracts. Better Auth session ids are opaque strings.
+export const UpdateAccountProfileRequestSchema = Schema.Struct({
+  name: NonEmptyStringSchema.pipe(Schema.maxLength(200)),
+});
+export type UpdateAccountProfileRequest = Schema.Schema.Type<
+  typeof UpdateAccountProfileRequestSchema
+>;
+
+export const ChangeAccountPasswordRequestSchema = Schema.Struct({
+  currentPassword: Schema.String.pipe(
+    Schema.minLength(1),
+    Schema.maxLength(CURRENT_PASSWORD_MAX),
+  ),
+  newPassword: Schema.String.pipe(
+    Schema.minLength(PASSWORD_MIN),
+    Schema.maxLength(PASSWORD_MAX),
+    Schema.filter((value) => value.trim().length > 0),
+  ),
+});
+export type ChangeAccountPasswordRequest = Schema.Schema.Type<
+  typeof ChangeAccountPasswordRequestSchema
+>;
+
+export const AccountSessionViewSchema = Schema.Struct({
+  createdAt: Schema.String,
+  current: Schema.Boolean,
+  expiresAt: Schema.String,
+  id: Schema.String,
+  ipAddress: Schema.NullOr(Schema.String),
+  userAgent: Schema.NullOr(Schema.String),
+});
+export type AccountSessionView = Schema.Schema.Type<
+  typeof AccountSessionViewSchema
+>;

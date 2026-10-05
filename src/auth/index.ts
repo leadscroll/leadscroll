@@ -2,6 +2,7 @@ import { logAuthMessage } from './logging';
 import { createClient } from '@/db/driver';
 import { type Env } from '@/db/repository';
 import * as schema from '@/db/schema';
+import { PASSWORD_MAX, PASSWORD_MIN } from '@/domain/password-policy';
 import { drizzleAdapter } from '@better-auth/drizzle-adapter';
 import { betterAuth } from 'better-auth';
 import { APIError, createAuthMiddleware } from 'better-auth/api';
@@ -196,6 +197,8 @@ export const createAuth = (environment: Env, request: Request) => {
     }),
     emailAndPassword: {
       enabled: true,
+      maxPasswordLength: PASSWORD_MAX,
+      minPasswordLength: PASSWORD_MIN,
     },
     hooks: {
       before: createAuthMiddleware(async (context) => {
