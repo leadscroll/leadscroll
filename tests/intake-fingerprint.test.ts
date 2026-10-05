@@ -1,8 +1,8 @@
 import { intakeRequestFingerprint, isIntakeKey } from '@/domain/intake';
-import { type IntakeInput } from '@/domain/schemas';
+import { type IntakeRequest } from '@/domain/schemas';
 import { describe, expect, test } from 'vitest';
 
-const baseInput = (overrides: Partial<IntakeInput> = {}): IntakeInput => ({
+const baseInput = (overrides: Partial<IntakeRequest> = {}): IntakeRequest => ({
   customFields: overrides.customFields,
   email: overrides.email ?? 'Alex@Example.COM',
   estimatedValue: overrides.estimatedValue,
@@ -14,7 +14,7 @@ const baseInput = (overrides: Partial<IntakeInput> = {}): IntakeInput => ({
 describe('intake request fingerprint', () => {
   test('is stable across object property order', async () => {
     const a = baseInput();
-    const b: IntakeInput = {
+    const b: IntakeRequest = {
       email: 'Alex@Example.COM',
       firstName: ' Alex ',
       source: 'website_form',

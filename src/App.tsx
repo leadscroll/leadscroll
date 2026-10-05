@@ -1,16 +1,33 @@
 import { Button } from './components/ui/Button';
 import { Dialog } from './components/ui/Dialog';
+import { Field } from './components/ui/Field';
 import { LeadDetailPage } from './leads/LeadDetailPage';
 import { LeadsPage } from './leads/LeadsPage';
 import { signIn, signOut, signUp, useSession } from './lib/auth-client';
+import {
+  localTimezoneLabel,
+  toLocalInputValue,
+  wallClockIssue,
+} from './lib/datetime';
 import { request } from './lib/http';
+import {
+  emptyInviteFormValues,
+  type InviteFormValues,
+  toCreateInviteRequest,
+} from './lib/inviteFormValues';
 import { quietFetch } from './lib/quiet-fetch';
 import {
   initialRegistrationState,
+  isInviteUnavailable,
   registrationReducer,
   type SignUpFailure,
 } from './lib/registration-flow';
 import { cn } from './lib/styles';
+import {
+  emptyTokenFormValues,
+  toCreateTokenRequest,
+  type TokenFormValues,
+} from './lib/tokenFormValues';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Copy,
@@ -23,6 +40,7 @@ import {
   Users,
 } from 'lucide-react';
 import { useReducer, useRef, useState } from 'react';
+import { useForm } from 'react-hook-form';
 import { toast } from 'sonner';
 import { Link, Route, Switch, useLocation } from 'wouter';
 
@@ -200,13 +218,6 @@ const inviteStatus = (
   return 'active';
 };
 
-// datetime-local inputs only carry local wall-clock time, so shift the
-// instant into local parts before handing it to the input element.
-const toLocalInputValue = (date: Date) =>
-  new Date(date.getTime() - date.getTimezoneOffset() * 60_000)
-    .toISOString()
-    .slice(0, 16);
-
 const copyToClipboard = async (value: string, message = 'Copied') => {
   await navigator.clipboard.writeText(value);
   toast.success(message);
@@ -221,15 +232,6 @@ const publicIntakeSnippet = (token: string): string =>
     '</form>',
     `<script src="${window.location.origin}/sdk/v1.js" defer></script>`,
   ].join('\n');
-
-const localTimezoneLabel = () => {
-  const offsetMinutes = -new Date().getTimezoneOffset();
-  const absolute = Math.abs(offsetMinutes);
-  const offset = `UTC${offsetMinutes < 0 ? '-' : '+'}${String(
-    Math.floor(absolute / 60),
-  ).padStart(2, '0')}:${String(absolute % 60).padStart(2, '0')}`;
-  return `${Intl.DateTimeFormat().resolvedOptions().timeZone ?? 'local'} (${offset})`;
-};
 
 const tokenStatus = (
   token: Token,
@@ -268,25 +270,28 @@ const CreateTokenDialog = ({
 }) => {
   const queryClient = useQueryClient();
   const [copyFailed, setCopyFailed] = useState(false);
-  const [formError, setFormError] = useState<null | string>(null);
-  const [name, setName] = useState('');
   const [rawToken, setRawToken] = useState<null | string>(null);
-  const [tokenType, setTokenType] = useState<'api' | 'browser'>('api');
-  // The parent remounts this dialog (via its key) on every open, so state is
-  // always fresh: empty form, 90-day default matching the backend, no raw
+  // The parent remounts this dialog (via its key) on every open, so the form
+  // is always fresh: empty name, 90-day default matching the backend, no raw
   // token, and an idle create mutation.
-  const [expiration, setExpiration] = useState(defaultExpiration);
-  const [neverExpires, setNeverExpires] = useState(false);
+  const form = useForm<TokenFormValues>({
+    defaultValues: emptyTokenFormValues(defaultExpiration),
+    mode: 'onTouched',
+  });
+  const errors = form.formState.errors;
+  const expiration = form.watch('expiration');
+  const name = form.watch('name');
+  const neverExpires = form.watch('neverExpires');
+  const tokenType = form.watch('type');
   const create = useMutation({
-    mutationFn: (input: { expiresAt?: null | string; name: string }) =>
+    mutationFn: (values: TokenFormValues) =>
       request<Token & { token: string }>('/v1/tokens', {
-        body: JSON.stringify({ ...input, type: tokenType }),
+        body: JSON.stringify(toCreateTokenRequest(values)),
         method: 'POST',
       }),
     onSuccess: (created) => {
       // Keep the dialog open: the raw token is shown once and must stay
       // visible until the staff member explicitly dismisses it.
-      setFormError(null);
       setRawToken(created.token);
       queryClient.invalidateQueries({ queryKey: ['tokens'] });
     },
@@ -301,33 +306,6 @@ const CreateTokenDialog = ({
     }
 
     onOpenChange(value);
-  };
-
-  const submit = () => {
-    const trimmedName = name.trim();
-    if (!trimmedName) {
-      setFormError('Enter a token name.');
-      return;
-    }
-
-    // The input value is local wall-clock time; new Date parses it as local
-    // time and toISOString converts it to the UTC ISO string the API expects.
-    const parsedExpiration =
-      neverExpires || !expiration ? undefined : new Date(expiration);
-    if (
-      parsedExpiration &&
-      (!Number.isFinite(parsedExpiration.getTime()) ||
-        parsedExpiration.getTime() <= Date.now())
-    ) {
-      setFormError('Expiration must be in the future.');
-      return;
-    }
-
-    setFormError(null);
-    create.mutate({
-      expiresAt: neverExpires ? null : parsedExpiration?.toISOString(),
-      name: trimmedName,
-    });
   };
 
   const copyToken = async () => {
@@ -385,30 +363,24 @@ const CreateTokenDialog = ({
       ) : (
         <form
           className="grid gap-4"
-          onSubmit={(event) => {
-            event.preventDefault();
-            submit();
-          }}
+          onSubmit={form.handleSubmit((values) => {
+            create.mutate(values);
+          })}
         >
-          <label className="grid gap-1 text-sm text-slate-300">
-            Token name
+          <Field
+            error={errors.name?.message}
+            label="Token name"
+          >
             <input
-              onChange={(event) => setName(event.target.value)}
+              aria-invalid={errors.name ? true : undefined}
               placeholder="Website form intake"
-              value={name}
+              {...form.register('name', { required: 'Enter a token name.' })}
             />
-          </label>
+          </Field>
           <div className="grid gap-1">
             <label className="grid gap-1 text-sm text-slate-300">
               Token type
-              <select
-                onChange={(event) =>
-                  setTokenType(
-                    event.target.value === 'browser' ? 'browser' : 'api',
-                  )
-                }
-                value={tokenType}
-              >
+              <select {...form.register('type')}>
                 <option value="api">API — server integrations</option>
                 <option value="browser">Browser — website forms</option>
               </select>
@@ -422,29 +394,32 @@ const CreateTokenDialog = ({
           <div className="grid gap-1">
             {!neverExpires && (
               <>
-                <label className="grid gap-1 text-sm text-slate-300">
-                  Expiration
+                <Field
+                  error={errors.expiration?.message}
+                  label="Expiration"
+                >
                   <input
-                    onChange={(event) => setExpiration(event.target.value)}
+                    aria-invalid={errors.expiration ? true : undefined}
                     type="datetime-local"
-                    value={expiration}
+                    {...form.register('expiration', {
+                      validate: (value) =>
+                        neverExpires || wallClockIssue(value),
+                    })}
                   />
-                </label>
+                </Field>
                 <p className="text-xs text-slate-500">
-                  Local time ({localTimezoneLabel()})
+                  Local time ({localTimezoneLabel(expiration)})
                 </p>
               </>
             )}
             <label className="flex items-center gap-2 text-xs text-slate-400">
               <input
-                checked={neverExpires}
-                onChange={(event) => setNeverExpires(event.target.checked)}
                 type="checkbox"
+                {...form.register('neverExpires')}
               />
               Never expires
             </label>
           </div>
-          {formError && <p className="text-sm text-rose-300">{formError}</p>}
           {create.error && <ErrorState error={create.error} />}
           <div className="flex justify-end gap-2">
             <Button
@@ -644,23 +619,26 @@ const CreateInviteDialog = ({
 }) => {
   const queryClient = useQueryClient();
   const [copyFailed, setCopyFailed] = useState(false);
-  const [formError, setFormError] = useState<null | string>(null);
-  const [name, setName] = useState('');
   const [rawToken, setRawToken] = useState<null | string>(null);
-  // The parent remounts this dialog (via its key) on every open, so state is
-  // always fresh: empty form, 7-day default matching the backend, no raw
+  // The parent remounts this dialog (via its key) on every open, so the form
+  // is always fresh: empty name, 7-day default matching the backend, no raw
   // token, and an idle create mutation.
-  const [expiration, setExpiration] = useState(defaultExpiration);
+  const form = useForm<InviteFormValues>({
+    defaultValues: emptyInviteFormValues(defaultExpiration),
+    mode: 'onTouched',
+  });
+  const errors = form.formState.errors;
+  const expiration = form.watch('expiration');
+  const name = form.watch('name');
   const create = useMutation({
-    mutationFn: (input: { expiresAt?: string; name: string }) =>
+    mutationFn: (values: InviteFormValues) =>
       request<Invite & { token: string }>('/v1/invites', {
-        body: JSON.stringify(input),
+        body: JSON.stringify(toCreateInviteRequest(values)),
         method: 'POST',
       }),
     onSuccess: (created) => {
       // Keep the dialog open: the raw invite token is shown once and must
       // stay visible until the staff member explicitly dismisses it.
-      setFormError(null);
       setRawToken(created.token);
       queryClient.invalidateQueries({ queryKey: ['invites'] });
     },
@@ -675,32 +653,6 @@ const CreateInviteDialog = ({
     }
 
     onOpenChange(value);
-  };
-
-  const submit = () => {
-    const trimmedName = name.trim();
-    if (!trimmedName) {
-      setFormError('Enter an invite name.');
-      return;
-    }
-
-    // The input value is local wall-clock time; new Date parses it as local
-    // time and toISOString converts it to the UTC ISO string the API expects.
-    const parsedExpiration = expiration ? new Date(expiration) : undefined;
-    if (
-      parsedExpiration &&
-      (!Number.isFinite(parsedExpiration.getTime()) ||
-        parsedExpiration.getTime() <= Date.now())
-    ) {
-      setFormError('Expiration must be in the future.');
-      return;
-    }
-
-    setFormError(null);
-    create.mutate({
-      expiresAt: parsedExpiration?.toISOString(),
-      name: trimmedName,
-    });
   };
 
   const copyToken = async () => {
@@ -756,33 +708,37 @@ const CreateInviteDialog = ({
       ) : (
         <form
           className="grid gap-4"
-          onSubmit={(event) => {
-            event.preventDefault();
-            submit();
-          }}
+          onSubmit={form.handleSubmit((values) => {
+            create.mutate(values);
+          })}
         >
-          <label className="grid gap-1 text-sm text-slate-300">
-            Invite name
+          <Field
+            error={errors.name?.message}
+            label="Invite name"
+          >
             <input
-              onChange={(event) => setName(event.target.value)}
+              aria-invalid={errors.name ? true : undefined}
               placeholder="Weekend onboarding"
-              value={name}
+              {...form.register('name', { required: 'Enter an invite name.' })}
             />
-          </label>
+          </Field>
           <div className="grid gap-1">
-            <label className="grid gap-1 text-sm text-slate-300">
-              Expiration
+            <Field
+              error={errors.expiration?.message}
+              label="Expiration"
+            >
               <input
-                onChange={(event) => setExpiration(event.target.value)}
+                aria-invalid={errors.expiration ? true : undefined}
                 type="datetime-local"
-                value={expiration}
+                {...form.register('expiration', {
+                  validate: (value) => wallClockIssue(value),
+                })}
               />
-            </label>
+            </Field>
             <p className="text-xs text-slate-500">
-              Local time ({localTimezoneLabel()})
+              Local time ({localTimezoneLabel(expiration)})
             </p>
           </div>
-          {formError && <p className="text-sm text-rose-300">{formError}</p>}
           {create.error && <ErrorState error={create.error} />}
           <div className="flex justify-end gap-2">
             <Button
@@ -1026,10 +982,24 @@ const StaffPage = () => {
 
 const LoginPage = () => {
   const [mode, setMode] = useState<'sign-in' | 'sign-up'>('sign-in');
-  const [signInEmail, setSignInEmail] = useState('');
-  const [signInError, setSignInError] = useState<null | string>(null);
-  const [signInPassword, setSignInPassword] = useState('');
-  const [signInPending, setSignInPending] = useState(false);
+  const signInForm = useForm<{ email: string; password: string }>({
+    defaultValues: { email: '', password: '' },
+    mode: 'onTouched',
+  });
+  const signInError = signInForm.formState.errors.root?.server?.message;
+  const signInPending = signInForm.formState.isSubmitting;
+  const tokenForm = useForm<{ inviteToken: string }>({
+    defaultValues: { inviteToken: '' },
+    mode: 'onTouched',
+  });
+  const detailsForm = useForm<{
+    email: string;
+    name: string;
+    password: string;
+  }>({
+    defaultValues: { email: '', name: '', password: '' },
+    mode: 'onTouched',
+  });
   const [registration, dispatch] = useReducer(
     registrationReducer,
     undefined,
@@ -1043,10 +1013,32 @@ const LoginPage = () => {
     registrationBusy.current = false;
   };
 
-  const { busy: pending, error, fields, step } = registration;
+  // The synchronous guard is claimed by the JSX submit handlers (not by the
+  // handleSubmit callbacks, which the compiler would treat as render-time
+  // calls) so a fast double submit cannot start a second request before the
+  // reducer's busy flag has re-rendered.
+  const claimRegistration = (): boolean => {
+    if (registrationBusy.current) {
+      return false;
+    }
+
+    registrationBusy.current = true;
+    return true;
+  };
+
+  const { busy: pending, error, step } = registration;
+
+  // Clears the form values the reducer cannot reach; every transition that
+  // restarts the flow calls this so the token and the credentials do not
+  // outlive the step that collected them.
+  const resetRegistrationForms = () => {
+    tokenForm.reset();
+    detailsForm.reset();
+  };
 
   const startRegistration = () => {
     setMode('sign-up');
+    resetRegistrationForms();
     dispatch({ type: 'begin-registration' });
   };
 
@@ -1054,31 +1046,21 @@ const LoginPage = () => {
     setMode('sign-in');
   };
 
-  const submitSignIn = async (event: React.FormEvent) => {
-    event.preventDefault();
-    setSignInError(null);
-    setSignInPending(true);
-    const result = await signIn.email({
-      email: signInEmail,
-      password: signInPassword,
-    });
-    setSignInPending(false);
+  const submitSignIn = signInForm.handleSubmit(async (values) => {
+    signInForm.clearErrors('root.server');
+    const result = await signIn.email(values);
     if (result.error) {
-      setSignInError(result.error.message ?? 'Authentication failed.');
+      signInForm.setError('root.server', {
+        message: result.error.message ?? 'Authentication failed.',
+      });
     }
-  };
+  });
 
-  const submitTokenStep = async (event: React.FormEvent) => {
-    event.preventDefault();
-    if (registrationBusy.current) {
-      return;
-    }
-
-    registrationBusy.current = true;
+  const submitTokenValues = tokenForm.handleSubmit(async ({ inviteToken }) => {
     dispatch({ type: 'token-submit' });
     try {
       const response = await quietFetch('/api/invites/validate', {
-        body: JSON.stringify({ token: fields.inviteToken.trim() }),
+        body: JSON.stringify({ token: inviteToken.trim() }),
         headers: {
           Accept: 'application/json',
           'Content-Type': 'application/json',
@@ -1088,32 +1070,53 @@ const LoginPage = () => {
       dispatch({ ok: response.ok, type: 'token-result' });
     } catch {
       dispatch({ ok: false, type: 'token-result' });
+    }
+  });
+
+  const handleTokenSubmit = async (event: React.FormEvent) => {
+    if (!claimRegistration()) {
+      return;
+    }
+
+    try {
+      await submitTokenValues(event);
     } finally {
       releaseRegistration();
     }
   };
 
-  const submitDetailsStep = async (event: React.FormEvent) => {
-    event.preventDefault();
-    if (registrationBusy.current) {
-      return;
-    }
-
-    registrationBusy.current = true;
+  const submitDetailsValues = detailsForm.handleSubmit(async (values) => {
     dispatch({ type: 'details-submit' });
     const result = await signUp.email({
-      email: fields.email,
+      email: values.email,
       fetchOptions: {
-        headers: { 'X-Setup-Token': fields.inviteToken.trim() },
+        headers: { 'X-Setup-Token': tokenForm.getValues('inviteToken').trim() },
       },
-      name: fields.name,
-      password: fields.password,
+      name: values.name,
+      password: values.password,
     });
+    if (result.error && isInviteUnavailable(result.error)) {
+      // The grant stopped being usable while the details were typed: drop
+      // the token and the credentials together with the step.
+      resetRegistrationForms();
+    }
+
     dispatch({
       error: (result.error ?? null) as null | SignUpFailure,
       type: 'details-result',
     });
-    releaseRegistration();
+  });
+
+  const handleDetailsSubmit = async (event: React.FormEvent) => {
+    if (!claimRegistration()) {
+      return;
+    }
+
+    try {
+      await submitDetailsValues(event);
+    } finally {
+      releaseRegistration();
+    }
   };
 
   return (
@@ -1133,25 +1136,19 @@ const LoginPage = () => {
             <label className="grid gap-1 text-sm text-slate-300">
               Email
               <input
-                onChange={(event) => {
-                  setSignInEmail(event.target.value);
-                }}
                 placeholder="you@example.com"
                 required
                 type="email"
-                value={signInEmail}
+                {...signInForm.register('email')}
               />
             </label>
             <label className="grid gap-1 text-sm text-slate-300">
               Password
               <input
                 minLength={8}
-                onChange={(event) => {
-                  setSignInPassword(event.target.value);
-                }}
                 required
                 type="password"
-                value={signInPassword}
+                {...signInForm.register('password')}
               />
             </label>
             {signInError && (
@@ -1172,21 +1169,14 @@ const LoginPage = () => {
         ) : step === 1 ? (
           <form
             className="grid gap-4"
-            onSubmit={submitTokenStep}
+            onSubmit={handleTokenSubmit}
           >
             <label className="grid gap-1 text-sm text-slate-300">
               Invite token
               <input
-                onChange={(event) => {
-                  dispatch({
-                    name: 'inviteToken',
-                    type: 'field-change',
-                    value: event.target.value,
-                  });
-                }}
                 placeholder="Shared with you by a staff member"
                 required
-                value={fields.inviteToken}
+                {...tokenForm.register('inviteToken')}
               />
             </label>
             {error && (
@@ -1207,53 +1197,32 @@ const LoginPage = () => {
         ) : (
           <form
             className="grid gap-4"
-            onSubmit={submitDetailsStep}
+            onSubmit={handleDetailsSubmit}
           >
             <label className="grid gap-1 text-sm text-slate-300">
               Name
               <input
-                onChange={(event) => {
-                  dispatch({
-                    name: 'name',
-                    type: 'field-change',
-                    value: event.target.value,
-                  });
-                }}
                 placeholder="Ada Lovelace"
                 required
-                value={fields.name}
+                {...detailsForm.register('name')}
               />
             </label>
             <label className="grid gap-1 text-sm text-slate-300">
               Email
               <input
-                onChange={(event) => {
-                  dispatch({
-                    name: 'email',
-                    type: 'field-change',
-                    value: event.target.value,
-                  });
-                }}
                 placeholder="you@example.com"
                 required
                 type="email"
-                value={fields.email}
+                {...detailsForm.register('email')}
               />
             </label>
             <label className="grid gap-1 text-sm text-slate-300">
               Password
               <input
                 minLength={8}
-                onChange={(event) => {
-                  dispatch({
-                    name: 'password',
-                    type: 'field-change',
-                    value: event.target.value,
-                  });
-                }}
                 required
                 type="password"
-                value={fields.password}
+                {...detailsForm.register('password')}
               />
             </label>
             {error && (
@@ -1266,7 +1235,10 @@ const LoginPage = () => {
             )}
             <Button
               disabled={pending}
-              onClick={() => dispatch({ type: 'back-to-token' })}
+              onClick={() => {
+                resetRegistrationForms();
+                dispatch({ type: 'back-to-token' });
+              }}
               tone="secondary"
               type="button"
             >

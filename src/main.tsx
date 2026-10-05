@@ -15,13 +15,23 @@ if (rootElement === null) {
   throw new Error('The #root element is missing from the page');
 }
 
-createRoot(rootElement).render(
-  <QueryClientProvider client={queryClient}>
-    <App />
-    <Toaster
-      position="bottom-right"
-      richColors
-      theme="dark"
-    />
-  </QueryClientProvider>,
-);
+const start = async () => {
+  // Temporal is native in current Firefox/Chromium; the polyfill is a separate
+  // chunk fetched only by runtimes that lack it (Safari/iOS).
+  if (!('Temporal' in globalThis)) {
+    await import('temporal-polyfill/global');
+  }
+
+  createRoot(rootElement).render(
+    <QueryClientProvider client={queryClient}>
+      <App />
+      <Toaster
+        position="bottom-right"
+        richColors
+        theme="dark"
+      />
+    </QueryClientProvider>,
+  );
+};
+
+void start();

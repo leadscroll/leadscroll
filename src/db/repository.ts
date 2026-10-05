@@ -19,11 +19,11 @@ import { type RegistrationGrant } from '@/auth/registration-repository';
 import { type IntakeResponse } from '@/domain/intake';
 import { encodeKeysetCursor, type Keyset } from '@/domain/pagination';
 import {
-  type CreateLeadInput,
-  type IntakeInput,
+  type CreateLeadRequest,
+  type IntakeRequest,
   normalizeEmail,
   type SkippedField,
-  type UpdateLeadInput,
+  type UpdateLeadRequest,
 } from '@/domain/schemas';
 import {
   and,
@@ -817,7 +817,7 @@ export const outcomeForStoredIntakeKey = (
 
 export const createLeadAtomically = async (
   environment: Env,
-  input: IntakeInput,
+  input: IntakeRequest,
   idempotencyKey: string,
   requestHash: string,
   provenance?: { origin: null | string; tokenId: null | string },
@@ -899,7 +899,7 @@ export const createLeadAtomically = async (
 
 export const createLead = async (
   environment: Env,
-  input: CreateLeadInput,
+  input: CreateLeadRequest,
 ): Promise<LeadRecord> => {
   const timestamp = now();
   const email = input.email ? normalizeEmail(input.email) : null;
@@ -929,7 +929,7 @@ export const createLead = async (
 export const updateLead = async (
   environment: Env,
   leadId: string,
-  input: UpdateLeadInput,
+  input: UpdateLeadRequest,
 ): Promise<LeadRecord | null> => {
   const patch: Partial<typeof leads.$inferInsert> = { updatedAt: now() };
   if (input.customFields !== undefined) {

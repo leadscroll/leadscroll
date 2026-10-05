@@ -49,17 +49,17 @@ import {
 import { isIntakeKey } from '@/domain/intake';
 import { decodeKeysetCursor, LIST_LIMIT_DEFAULT } from '@/domain/pagination';
 import {
-  BulkDeleteLeadsRequest,
-  CreateInviteRequest,
-  CreateLeadActivityRequest,
-  CreateLeadRequest,
-  CreateTokenRequest,
-  HealthResponse,
-  IntakeRequest,
-  ListLeadsQueryRequest,
-  SetStaffDisabledRequest,
-  UpdateLeadRequest,
-  ValidateInviteRequest,
+  BulkDeleteLeadsRequestSchema,
+  CreateInviteRequestSchema,
+  CreateLeadActivityRequestSchema,
+  CreateLeadRequestSchema,
+  CreateTokenRequestSchema,
+  HealthSchema,
+  IntakeRequestSchema,
+  ListLeadsQuerySchema,
+  SetStaffDisabledRequestSchema,
+  UpdateLeadRequestSchema,
+  ValidateInviteRequestSchema,
 } from '@/domain/schemas';
 import { Effect, Either, Schema } from 'effect';
 import { Elysia } from 'elysia';
@@ -339,7 +339,7 @@ const createAppWithAuth = (environment: Env, getAuth: AuthForRequest) => {
         // keys an API integration chose for `/v1/intakes`.
         const idempotencyKey = `browser:${tokenRecord.id}:${clientKey}`;
 
-        const parsed = await parse(IntakeRequest, body);
+        const parsed = await parse(IntakeRequestSchema, body);
         if ('error' in parsed) {
           return withPublicCors(parsed.error);
         }
@@ -458,7 +458,7 @@ const createAppWithAuth = (environment: Env, getAuth: AuthForRequest) => {
         }
       })
       .get('/health', () => ({ ok: true }), {
-        response: { '200': Schema.standardSchemaV1(HealthResponse) },
+        response: { '200': Schema.standardSchemaV1(HealthSchema) },
       })
       // Contract spike: Elysia's Standard Schema path yields `code: 'VALIDATION'`
       // errors. Normalize them to the same `{ code, details, message }` envelope
@@ -513,7 +513,7 @@ const createAppWithAuth = (environment: Env, getAuth: AuthForRequest) => {
             );
           }
 
-          const parsed = await parse(IntakeRequest, body);
+          const parsed = await parse(IntakeRequestSchema, body);
           if ('error' in parsed) {
             return parsed.error;
           }
@@ -587,7 +587,7 @@ const createAppWithAuth = (environment: Env, getAuth: AuthForRequest) => {
           return rejectedOrigin;
         }
 
-        const parsed = await parse(ValidateInviteRequest, body);
+        const parsed = await parse(ValidateInviteRequestSchema, body);
         if ('error' in parsed) {
           return parsed.error;
         }
@@ -648,7 +648,7 @@ const createAppWithAuth = (environment: Env, getAuth: AuthForRequest) => {
           });
           return { data: page.leads, nextCursor: page.nextCursor };
         },
-        { query: Schema.standardSchemaV1(ListLeadsQueryRequest) },
+        { query: Schema.standardSchemaV1(ListLeadsQuerySchema) },
       )
       .post(
         '/v1/leads',
@@ -661,7 +661,7 @@ const createAppWithAuth = (environment: Env, getAuth: AuthForRequest) => {
             ? result.error
             : Response.json({ data: result.data }, { status: 201 });
         },
-        { body: Schema.standardSchemaV1(CreateLeadRequest) },
+        { body: Schema.standardSchemaV1(CreateLeadRequestSchema) },
       )
       .post(
         '/v1/leads/bulk-delete',
@@ -674,7 +674,7 @@ const createAppWithAuth = (environment: Env, getAuth: AuthForRequest) => {
             ? result.error
             : { data: { deleted: result.data } };
         },
-        { body: Schema.standardSchemaV1(BulkDeleteLeadsRequest) },
+        { body: Schema.standardSchemaV1(BulkDeleteLeadsRequestSchema) },
       )
       .patch(
         '/v1/leads/:id',
@@ -691,7 +691,7 @@ const createAppWithAuth = (environment: Env, getAuth: AuthForRequest) => {
             ? { data: result.data }
             : errorResponse(404, 'not_found', 'Lead not found.');
         },
-        { body: Schema.standardSchemaV1(UpdateLeadRequest) },
+        { body: Schema.standardSchemaV1(UpdateLeadRequestSchema) },
       )
       .get('/v1/leads/:id/activities', async ({ params }) => {
         return { data: await listLeadActivities(environment, params.id) };
@@ -717,7 +717,7 @@ const createAppWithAuth = (environment: Env, getAuth: AuthForRequest) => {
             ? Response.json({ data: result.data }, { status: 201 })
             : errorResponse(404, 'not_found', 'Lead not found.');
         },
-        { body: Schema.standardSchemaV1(CreateLeadActivityRequest) },
+        { body: Schema.standardSchemaV1(CreateLeadActivityRequestSchema) },
       )
       .get('/v1/leads/:id', async ({ params }) => {
         const lead = await getLead(environment, params.id);
@@ -729,7 +729,7 @@ const createAppWithAuth = (environment: Env, getAuth: AuthForRequest) => {
         return { data: await listApiTokens(environment) };
       })
       .post('/v1/tokens', async ({ body }) => {
-        const parsed = await parse(CreateTokenRequest, body);
+        const parsed = await parse(CreateTokenRequestSchema, body);
         if ('error' in parsed) {
           return parsed.error;
         }
@@ -754,7 +754,7 @@ const createAppWithAuth = (environment: Env, getAuth: AuthForRequest) => {
         return { data: await listStaffInvites(environment) };
       })
       .post('/v1/invites', async ({ body }) => {
-        const parsed = await parse(CreateInviteRequest, body);
+        const parsed = await parse(CreateInviteRequestSchema, body);
         if ('error' in parsed) {
           return parsed.error;
         }
@@ -788,7 +788,7 @@ const createAppWithAuth = (environment: Env, getAuth: AuthForRequest) => {
         return { data: await listStaffAccounts(environment) };
       })
       .patch('/v1/staff/:id', async ({ adminEmail, body, params }) => {
-        const parsed = await parse(SetStaffDisabledRequest, body);
+        const parsed = await parse(SetStaffDisabledRequestSchema, body);
         if ('error' in parsed) {
           return parsed.error;
         }

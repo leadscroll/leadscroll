@@ -32,6 +32,7 @@
     "react-hook-form": "^7.71.1",
     "sonner": "^2.0.8",
     "tailwind-merge": "^3.4.0",
+    "temporal-polyfill": "^1.0.5",
     "wouter": "^3.7.1"
   },
   "description": "A Cloudflare-native, self-hosted CRM for inbound lead teams.",
