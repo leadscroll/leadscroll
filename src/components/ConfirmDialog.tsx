@@ -8,6 +8,7 @@ export const ConfirmDialog = ({
   onOpenChange,
   open,
   pending = false,
+  pendingLabel = 'Deleting…',
   title,
 }: {
   readonly confirmLabel?: string;
@@ -16,6 +17,7 @@ export const ConfirmDialog = ({
   readonly onOpenChange: (open: boolean) => void;
   readonly open: boolean;
   readonly pending?: boolean;
+  readonly pendingLabel?: string;
   readonly title: string;
 }) => (
   <Dialog
@@ -37,7 +39,7 @@ export const ConfirmDialog = ({
           onClick={onConfirm}
           tone="danger"
         >
-          {pending ? 'Deleting…' : confirmLabel}
+          {pending ? pendingLabel : confirmLabel}
         </Button>
       </div>
     </div>
