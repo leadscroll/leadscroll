@@ -39,7 +39,7 @@ export const revokeAccountSessionCommand = (
     }
 
     const revoked = yield* persist(() =>
-      revokeAccountSession(environment, identity.userId, id),
+      revokeAccountSession(environment, identity.userId, id, identity.id),
     );
     return revoked ? ('revoked' as const) : ('missing' as const);
   });

@@ -683,6 +683,32 @@ const accountSessionColumns = {
   userAgent: session.userAgent,
 } as const;
 
+// Both deletion sinks must validate the caller in the mutation statement.
+// Checking authority separately would allow recovery to revoke the caller
+// between that read and the DELETE.
+const hasLiveAccountSession = (
+  database: ReturnType<typeof getDatabase>,
+  userId: string,
+  currentSessionId: string,
+) => {
+  const callerSession = alias(session, 'account_session_authority');
+  return exists(
+    database
+      .select({ id: callerSession.id })
+      .from(callerSession)
+      .where(
+        and(
+          eq(callerSession.id, currentSessionId),
+          eq(callerSession.userId, userId),
+          gt(
+            callerSession.expiresAt,
+            sql`(cast(unixepoch('subsecond') * 1000 as integer))`,
+          ),
+        ),
+      ),
+  );
+};
+
 /**
  * Lists the account's live sessions (unexpired), newest first, never
  * including token material.
@@ -700,16 +726,27 @@ export const listAccountSessions = async (
 /**
  * Deletes one of the account's own sessions by row id. Returns false when
  * the id matches no session of this account (including one already
- * revoked or belonging to somebody else). Expired rows are also deleted.
+ * revoked or belonging to somebody else), or when caller authority is no
+ * longer live. The caller cannot be the target. Expired target rows are also
+ * deleted when the caller still owns a live session.
  */
 export const revokeAccountSession = async (
   environment: Env,
   userId: string,
   sessionId: string,
+  currentSessionId: string,
 ): Promise<boolean> => {
-  const [result] = await getDatabase(environment)
+  const database = getDatabase(environment);
+  const [result] = await database
     .delete(session)
-    .where(and(eq(session.id, sessionId), eq(session.userId, userId)))
+    .where(
+      and(
+        eq(session.id, sessionId),
+        eq(session.userId, userId),
+        sql`${session.id} <> ${currentSessionId}`,
+        hasLiveAccountSession(database, userId, currentSessionId),
+      ),
+    )
     .returning({ id: session.id });
   return result !== undefined;
 };
@@ -728,28 +765,13 @@ export const revokeOtherAccountSessions = async (
 ): Promise<number> => {
   const revokedAt = new Date();
   const database = getDatabase(environment);
-  const callerSession = alias(session, 'account_session_authority');
-  const liveCaller = database
-    .select({ id: callerSession.id })
-    .from(callerSession)
-    .where(
-      and(
-        eq(callerSession.id, currentSessionId),
-        eq(callerSession.userId, userId),
-        gt(
-          callerSession.expiresAt,
-          sql`(cast(unixepoch('subsecond') * 1000 as integer))`,
-        ),
-      ),
-    );
   const revoked = await database
     .delete(session)
     .where(
       and(
         eq(session.userId, userId),
         sql`${session.id} <> ${currentSessionId}`,
-        // Check authority in the same SQL statement; a pre-read would race.
-        exists(liveCaller),
+        hasLiveAccountSession(database, userId, currentSessionId),
       ),
     )
     .returning({ expiresAt: session.expiresAt });

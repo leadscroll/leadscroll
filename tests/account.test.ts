@@ -1,4 +1,8 @@
-import { type Env, revokeOtherAccountSessions } from '@/db/repository';
+import {
+  type Env,
+  revokeAccountSession,
+  revokeOtherAccountSessions,
+} from '@/db/repository';
 import { build } from 'esbuild';
 import { convertV4MiniflareOptions, Miniflare } from 'miniflare';
 import { readdir, readFile } from 'node:fs/promises';
@@ -1033,6 +1037,108 @@ test('bulk revocation refuses expired or foreign caller authority in the DELETE 
         })
       ).status,
     ).toBe(401);
+    expect(await listSessions(fx, foreign.cookie)).toEqual(foreign.sessions);
+  } finally {
+    await fx.dispose();
+  }
+});
+
+test('a delayed individual revocation cannot remove the session retained by bulk recovery', async () => {
+  const { adminCookie, adminUserId, fx, otherCookie } =
+    await startSignedInFixture();
+  try {
+    const before = await listSessions(fx, adminCookie);
+    const authenticatedSessionId = before.find((row) => row.current)?.id;
+    const recoverySessionId = before.find((row) => !row.current)?.id;
+    expect(authenticatedSessionId).toBeDefined();
+    expect(recoverySessionId).toBeDefined();
+
+    // Session A has authenticated and learned B's target id. B recovers by
+    // revoking all others before A's already-authorized DELETE executes.
+    const recovered = await fx.raw(
+      '/v1/account/sessions/revoke-others',
+      'POST',
+      undefined,
+      { Cookie: otherCookie },
+    );
+    expect(recovered.status).toBe(200);
+    expect(recovered.json.data).toEqual({ revoked: 1 });
+    const retained = await listSessions(fx, otherCookie);
+    expect(retained).toHaveLength(1);
+    expect(retained[0].id).toBe(recoverySessionId);
+
+    const revoked = await revokeAccountSession(
+      { DB: fx.db } as Env,
+      adminUserId,
+      recoverySessionId ?? '',
+      authenticatedSessionId ?? '',
+    );
+    expect(revoked).toBe(false);
+    expect(await listSessions(fx, otherCookie)).toEqual(retained);
+    expect(
+      (
+        await fx.raw('/v1/account/sessions', 'GET', undefined, {
+          Cookie: adminCookie,
+        })
+      ).status,
+    ).toBe(401);
+  } finally {
+    await fx.dispose();
+  }
+});
+
+test('individual revocation requires live own caller authority and preserves the caller', async () => {
+  const { adminCookie, adminUserId, fx, otherCookie } =
+    await startSignedInFixture();
+  try {
+    const foreign = await addForeignAccount(fx, adminCookie);
+    const rows = await listSessions(fx, adminCookie);
+    const callerId = rows.find((row) => row.current)?.id ?? '';
+    const targetId = rows.find((row) => !row.current)?.id ?? '';
+    expect(callerId).not.toBe('');
+    expect(targetId).not.toBe('');
+    const repositoryEnvironment = { DB: fx.db } as Env;
+    expect(
+      await revokeAccountSession(
+        repositoryEnvironment,
+        adminUserId,
+        targetId,
+        foreign.sessions[0].id,
+      ),
+    ).toBe(false);
+    expect(
+      await revokeAccountSession(
+        repositoryEnvironment,
+        adminUserId,
+        callerId,
+        callerId,
+      ),
+    ).toBe(false);
+    expect(await listSessions(fx, adminCookie)).toEqual(rows);
+
+    await fx.db
+      .prepare('UPDATE session SET expires_at = ? WHERE id = ?')
+      .bind(Date.now() - 1, callerId)
+      .run();
+    expect(
+      await revokeAccountSession(
+        repositoryEnvironment,
+        adminUserId,
+        targetId,
+        callerId,
+      ),
+    ).toBe(false);
+    expect(await listSessions(fx, otherCookie)).toHaveLength(1);
+    // A live caller can still remove an expired target row, as documented.
+    expect(
+      await revokeAccountSession(
+        repositoryEnvironment,
+        adminUserId,
+        callerId,
+        targetId,
+      ),
+    ).toBe(true);
+    expect(await listSessions(fx, otherCookie)).toHaveLength(1);
     expect(await listSessions(fx, foreign.cookie)).toEqual(foreign.sessions);
   } finally {
     await fx.dispose();
