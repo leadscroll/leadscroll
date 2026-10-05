@@ -4,7 +4,11 @@ import { Field } from './components/ui/Field';
 import { LeadDetailPage } from './leads/LeadDetailPage';
 import { LeadsPage } from './leads/LeadsPage';
 import { signIn, signOut, signUp, useSession } from './lib/auth-client';
-import { isFutureLocalDateTime, toLocalInputValue } from './lib/datetime';
+import {
+  localTimezoneLabel,
+  toLocalInputValue,
+  wallClockIssue,
+} from './lib/datetime';
 import { request } from './lib/http';
 import {
   emptyInviteFormValues,
@@ -229,15 +233,6 @@ const publicIntakeSnippet = (token: string): string =>
     `<script src="${window.location.origin}/sdk/v1.js" defer></script>`,
   ].join('\n');
 
-const localTimezoneLabel = () => {
-  const offsetMinutes = -new Date().getTimezoneOffset();
-  const absolute = Math.abs(offsetMinutes);
-  const offset = `UTC${offsetMinutes < 0 ? '-' : '+'}${String(
-    Math.floor(absolute / 60),
-  ).padStart(2, '0')}:${String(absolute % 60).padStart(2, '0')}`;
-  return `${Intl.DateTimeFormat().resolvedOptions().timeZone ?? 'local'} (${offset})`;
-};
-
 const tokenStatus = (
   token: Token,
 ): 'active' | 'expired' | 'never' | 'revoked' => {
@@ -284,6 +279,7 @@ const CreateTokenDialog = ({
     mode: 'onTouched',
   });
   const errors = form.formState.errors;
+  const expiration = form.watch('expiration');
   const name = form.watch('name');
   const neverExpires = form.watch('neverExpires');
   const tokenType = form.watch('type');
@@ -407,15 +403,12 @@ const CreateTokenDialog = ({
                     type="datetime-local"
                     {...form.register('expiration', {
                       validate: (value) =>
-                        neverExpires ||
-                        value === '' ||
-                        isFutureLocalDateTime(value) ||
-                        'Expiration must be in the future.',
+                        neverExpires || wallClockIssue(value),
                     })}
                   />
                 </Field>
                 <p className="text-xs text-slate-500">
-                  Local time ({localTimezoneLabel()})
+                  Local time ({localTimezoneLabel(expiration)})
                 </p>
               </>
             )}
@@ -635,6 +628,7 @@ const CreateInviteDialog = ({
     mode: 'onTouched',
   });
   const errors = form.formState.errors;
+  const expiration = form.watch('expiration');
   const name = form.watch('name');
   const create = useMutation({
     mutationFn: (values: InviteFormValues) =>
@@ -737,15 +731,12 @@ const CreateInviteDialog = ({
                 aria-invalid={errors.expiration ? true : undefined}
                 type="datetime-local"
                 {...form.register('expiration', {
-                  validate: (value) =>
-                    value === '' ||
-                    isFutureLocalDateTime(value) ||
-                    'Expiration must be in the future.',
+                  validate: (value) => wallClockIssue(value),
                 })}
               />
             </Field>
             <p className="text-xs text-slate-500">
-              Local time ({localTimezoneLabel()})
+              Local time ({localTimezoneLabel(expiration)})
             </p>
           </div>
           {create.error && <ErrorState error={create.error} />}
