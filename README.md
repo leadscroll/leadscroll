@@ -157,6 +157,37 @@ cannot disable itself, and the last enabled account cannot be disabled; both
 return `409 conflict`. Unknown ids return `404 not_found`, and both endpoints
 require an authenticated staff session.
 
+### Managing your own account
+
+Account (above Sign out) is the self-service surface for the signed-in staff
+member: display name, password, and active sessions.
+
+The name change goes through `POST /api/auth/update-user` with a validated
+`{ "name" }` body (1–200 characters after trimming); anything else — an
+`email` field included — is rejected with `422`. Email addresses cannot be
+changed on this deployment: there is no email-sending infrastructure to
+verify a new address, and authorization and activity attribution use email. An administrator can
+invite a replacement account and disable the old one; identity and history
+are not transferred.
+
+The password change goes through `POST /api/auth/change-password`, which
+requires the current password, enforces the same 8–255 character policy as
+sign-up, and is rate limited (3 attempts per 10 seconds per client address).
+A successful change revokes every other session of the account and re-issues
+the caller's session cookie, so other devices must sign in again with the
+new password.
+
+Sessions are listed at `GET /v1/account/sessions` as
+(`id`, `createdAt`, `expiresAt`, `ipAddress`, `userAgent`, `current`) —
+never the session token, which is a bearer-equivalent secret. This guarantee
+applies to this list, not upstream Better Auth responses. Revoke one
+with `DELETE /v1/account/sessions/:id` (the current session refuses with
+`409`; use sign out instead) or all others at once with
+`POST /v1/account/sessions/revoke-others`. All three require an
+enabled staff session and trusted-origin writes like the rest of the
+staff API. Unknown or foreign session ids return `404`; individual success is
+`204`. The bulk response counts active sessions removed and keeps the caller.
+
 ### Optional auth URL override
 
 By default, authentication uses the origin of each incoming Worker request, so a

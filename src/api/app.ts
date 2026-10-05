@@ -1,6 +1,11 @@
 import { logRequest } from './logging';
 import { mapIntakeBodyError, parseIntakeBody } from '@/api/intake-parser';
 import {
+  listAccountSessionsCommand,
+  revokeAccountSessionCommand,
+  revokeOtherAccountSessionsCommand,
+} from '@/application/account-commands';
+import {
   createIntakeCommand,
   createLeadActivityCommand,
   createLeadCommand,
@@ -21,6 +26,7 @@ import {
   requireSessionIdentity,
   UnauthorizedError,
 } from '@/auth/access';
+import { createAccountAuthEndpoints } from '@/auth/account-management';
 import { handleInvitationSignUp } from '@/auth/invitation-sign-up';
 import {
   blockedRetryAfter,
@@ -232,7 +238,7 @@ const requireAdmin = async (
 ) => {
   try {
     return {
-      email: await requireSessionIdentity(
+      identity: await requireSessionIdentity(
         request,
         getAuth(request),
         environment,
@@ -301,6 +307,7 @@ const withPublicCors = (
 };
 
 const createAppWithAuth = (environment: Env, getAuth: AuthForRequest) => {
+  const accountEndpoints = createAccountAuthEndpoints(getAuth, environment);
   const publicIntake = new Elysia({ name: 'public-intake' })
     .options(
       '/v1/public/intakes/:token',
@@ -413,10 +420,18 @@ const createAppWithAuth = (environment: Env, getAuth: AuthForRequest) => {
       // POST /sign-up/email is the invitation boundary: it resolves the grant
       // before any account write and re-issues the session through Better
       // Auth's sign-in endpoint.
-      .mount('/api/auth', async (request: Request) => {
+      .mount('/api/auth', async (mountedRequest: Request) => {
         try {
-          const url = new URL(request.url);
-          const path = url.pathname;
+          const url = new URL(mountedRequest.url);
+          const accountPath = url.pathname.replace(/\/+$/u, '');
+          // Normalize only account endpoints so their field/revocation boundary
+          // covers trailing slashes. Preserve existing sign-up alias rejection.
+          const path =
+            accountPath === '/update-user' || accountPath === '/change-password'
+              ? accountPath
+              : url.pathname;
+          url.pathname = path;
+          const request = new Request(url, mountedRequest);
 
           // A client already over a limit skips Better Auth (and the database
           // limiter's read/update) until its retry window passes. The database
@@ -433,6 +448,18 @@ const createAppWithAuth = (environment: Env, getAuth: AuthForRequest) => {
 
             if (request.method === 'POST' && path === '/sign-in/email') {
               return handleDisabledAccountSignIn(environment, request, getAuth);
+            }
+
+            // Self-service account management: the interceptors validate and
+            // re-attach the body before Better Auth runs.
+            if (request.method === 'POST' && path === '/change-password') {
+              const raw = await request.text();
+              return accountEndpoints.changePassword(request, raw);
+            }
+
+            if (request.method === 'POST' && path === '/update-user') {
+              const raw = await request.text();
+              return accountEndpoints.updateUser(request, raw);
             }
 
             url.pathname = `/api/auth${path}`;
@@ -624,7 +651,12 @@ const createAppWithAuth = (environment: Env, getAuth: AuthForRequest) => {
           throw rejectedWrite;
         }
 
-        return { adminEmail: admin.email };
+        return {
+          adminEmail: admin.identity.email,
+          // The account-sessions routes need the caller's own session row;
+          // no raw token is propagated into application context.
+          adminSession: admin.identity.session,
+        };
       })
       .get(
         '/v1/leads',
@@ -821,6 +853,76 @@ const createAppWithAuth = (environment: Env, getAuth: AuthForRequest) => {
 
         return { data: outcome.record };
       })
+      // Self-service session management. The list never includes token
+      // material; the current session is flagged so the UI can distinguish
+      // "this device" from revocable rows.
+      .get('/v1/account/sessions', async ({ adminSession, request }) => {
+        if (!adminSession) {
+          return errorResponse(
+            401,
+            'unauthorized',
+            'A real session is required.',
+          );
+        }
+
+        const result = await run(
+          request,
+          listAccountSessionsCommand(environment, adminSession),
+        );
+        return 'error' in result ? result.error : { data: result.data };
+      })
+      .delete(
+        '/v1/account/sessions/:id',
+        async ({ adminSession, params, request }) => {
+          if (!adminSession) {
+            return errorResponse(
+              401,
+              'unauthorized',
+              'A real session is required.',
+            );
+          }
+
+          const result = await run(
+            request,
+            revokeAccountSessionCommand(environment, adminSession, params.id),
+          );
+          if ('error' in result) {
+            return result.error;
+          }
+
+          if (result.data === 'current') {
+            return errorResponse(
+              409,
+              'conflict',
+              'The current session cannot revoke itself; use sign out instead.',
+            );
+          }
+
+          return result.data === 'revoked'
+            ? new Response(null, { status: 204 })
+            : errorResponse(404, 'not_found', 'Session not found.');
+        },
+      )
+      .post(
+        '/v1/account/sessions/revoke-others',
+        async ({ adminSession, request }) => {
+          if (!adminSession) {
+            return errorResponse(
+              401,
+              'unauthorized',
+              'A real session is required.',
+            );
+          }
+
+          const result = await run(
+            request,
+            revokeOtherAccountSessionsCommand(environment, adminSession),
+          );
+          return 'error' in result
+            ? result.error
+            : { data: { revoked: result.data } };
+        },
+      )
   );
 };
 

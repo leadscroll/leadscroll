@@ -27,13 +27,12 @@ import {
   type Env,
   isBootstrapGrantAvailable,
 } from '@/db/repository';
+import { PASSWORD_MAX, PASSWORD_MIN } from '@/domain/password-policy';
 import { hashPassword } from 'better-auth/crypto';
 
 const NAME_MAX = 200;
 const EMAIL_MAX = 254;
 const LOCAL_MAX = 64;
-const PASSWORD_MIN = 8;
-const PASSWORD_MAX = 255;
 
 const errorResponse = (status: number, code: string, message: string) =>
   Response.json({ code, message }, { status });

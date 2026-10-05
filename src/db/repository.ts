@@ -30,6 +30,7 @@ import {
   asc,
   desc,
   eq,
+  exists,
   getTableColumns,
   gt,
   isNotNull,
@@ -37,6 +38,7 @@ import {
   or,
   sql,
 } from 'drizzle-orm';
+import { alias } from 'drizzle-orm/sqlite-core';
 
 export type Env = {
   ASSETS: Fetcher;
@@ -658,6 +660,122 @@ export const setStaffAccountDisabled = async (
   }
 
   return { kind: 'updated', record: { ...target, disabledAt: null } };
+};
+
+// --- Self-service session management ---------------------------------------
+//
+// The Better Auth session row's token is a bearer-equivalent secret, so the
+// account surface projects only ids and metadata and never returns it.
+
+export type AccountSessionRecord = {
+  createdAt: Date;
+  expiresAt: Date;
+  id: string;
+  ipAddress: null | string;
+  userAgent: null | string;
+};
+
+const accountSessionColumns = {
+  createdAt: session.createdAt,
+  expiresAt: session.expiresAt,
+  id: session.id,
+  ipAddress: session.ipAddress,
+  userAgent: session.userAgent,
+} as const;
+
+// Both deletion sinks must validate the caller in the mutation statement.
+// Checking authority separately would allow recovery to revoke the caller
+// between that read and the DELETE.
+const hasLiveAccountSession = (
+  database: ReturnType<typeof getDatabase>,
+  userId: string,
+  currentSessionId: string,
+) => {
+  const callerSession = alias(session, 'account_session_authority');
+  return exists(
+    database
+      .select({ id: callerSession.id })
+      .from(callerSession)
+      .where(
+        and(
+          eq(callerSession.id, currentSessionId),
+          eq(callerSession.userId, userId),
+          gt(
+            callerSession.expiresAt,
+            sql`(cast(unixepoch('subsecond') * 1000 as integer))`,
+          ),
+        ),
+      ),
+  );
+};
+
+/**
+ * Lists the account's live sessions (unexpired), newest first, never
+ * including token material.
+ */
+export const listAccountSessions = async (
+  environment: Env,
+  userId: string,
+): Promise<AccountSessionRecord[]> =>
+  getDatabase(environment)
+    .select(accountSessionColumns)
+    .from(session)
+    .where(and(eq(session.userId, userId), gt(session.expiresAt, new Date())))
+    .orderBy(desc(session.createdAt));
+
+/**
+ * Deletes one of the account's own sessions by row id. Returns false when
+ * the id matches no session of this account (including one already
+ * revoked or belonging to somebody else), or when caller authority is no
+ * longer live. The caller cannot be the target. Expired target rows are also
+ * deleted when the caller still owns a live session.
+ */
+export const revokeAccountSession = async (
+  environment: Env,
+  userId: string,
+  sessionId: string,
+  currentSessionId: string,
+): Promise<boolean> => {
+  const database = getDatabase(environment);
+  const [result] = await database
+    .delete(session)
+    .where(
+      and(
+        eq(session.id, sessionId),
+        eq(session.userId, userId),
+        sql`${session.id} <> ${currentSessionId}`,
+        hasLiveAccountSession(database, userId, currentSessionId),
+      ),
+    )
+    .returning({ id: session.id });
+  return result !== undefined;
+};
+
+/**
+ * Deletes every session of the account except the current one, identified by
+ * its row id (resolved from the authenticated request). Returns the number
+ * of active sessions revoked; expired rows are also cleaned up. The caller
+ * must still own a live session when this DELETE executes, so an operation
+ * authenticated before password rotation cannot delete its replacement.
+ */
+export const revokeOtherAccountSessions = async (
+  environment: Env,
+  userId: string,
+  currentSessionId: string,
+): Promise<number> => {
+  const revokedAt = new Date();
+  const database = getDatabase(environment);
+  const revoked = await database
+    .delete(session)
+    .where(
+      and(
+        eq(session.userId, userId),
+        sql`${session.id} <> ${currentSessionId}`,
+        hasLiveAccountSession(database, userId, currentSessionId),
+      ),
+    )
+    .returning({ expiresAt: session.expiresAt });
+  return revoked.filter((row) => row.expiresAt > revokedAt).length;
 };
 
 /**
