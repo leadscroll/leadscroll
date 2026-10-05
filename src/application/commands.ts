@@ -12,9 +12,9 @@ import {
 } from '@/db/repository';
 import { intakeRequestFingerprint } from '@/domain/intake';
 import {
-  type CreateLeadInput,
-  type IntakeInput,
-  type UpdateLeadInput,
+  type CreateLeadRequest,
+  type IntakeRequest,
+  type UpdateLeadRequest,
 } from '@/domain/schemas';
 import { Effect } from 'effect';
 
@@ -38,7 +38,7 @@ const validate = <A>(operation: () => A) =>
 
 export const createIntakeCommand = (
   environment: Env,
-  input: IntakeInput,
+  input: IntakeRequest,
   idempotencyKey: string,
   provenance?: { origin: null | string; tokenId: null | string },
   rawPayload?: unknown,
@@ -71,7 +71,7 @@ export const createIntakeCommand = (
     );
   });
 
-export const createLeadCommand = (environment: Env, input: CreateLeadInput) =>
+export const createLeadCommand = (environment: Env, input: CreateLeadRequest) =>
   Effect.gen(function* () {
     yield* validate(() => {
       if (!input.email && !input.firstName && !input.lastName) {
@@ -88,7 +88,7 @@ export const createLeadCommand = (environment: Env, input: CreateLeadInput) =>
 export const updateLeadCommand = (
   environment: Env,
   leadId: string,
-  input: UpdateLeadInput,
+  input: UpdateLeadRequest,
 ) => persist(() => updateLead(environment, leadId, input));
 
 export const softDeleteLeadsCommand = (

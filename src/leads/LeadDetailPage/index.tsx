@@ -7,19 +7,23 @@ import { inputClass } from '@/components/ui/form';
 import { fieldTitle } from '@/domain/customFields';
 import { leadDisplayName } from '@/domain/leadDisplay';
 import { type LeadActivity, type LeadView } from '@/domain/schemas';
+import {
+  emptyLeadFormValues,
+  type LeadFormValues,
+  leadFormValuesFromView,
+  toUpdateLeadRequest,
+} from '@/leads/leadFormValues';
 import { request } from '@/lib/http';
 import { cn } from '@/lib/styles';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ChevronLeft } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { useForm } from 'react-hook-form';
 import { toast } from 'sonner';
 import { Link, useLocation } from 'wouter';
 
 const formatCustomValue = (value: unknown): string =>
   typeof value === 'string' ? value : JSON.stringify(value);
-
-const nullable = (value: string): null | string =>
-  value.trim() === '' ? null : value.trim();
 
 export const LeadDetailPage = ({ id }: { readonly id: string }) => {
   const queryClient = useQueryClient();
@@ -32,29 +36,29 @@ export const LeadDetailPage = ({ id }: { readonly id: string }) => {
     queryFn: () => request<LeadActivity[]>(`/v1/leads/${id}/activities`),
     queryKey: ['lead-activities', id],
   });
-  const [note, setNote] = useState('');
   const [confirmDelete, setConfirmDelete] = useState(false);
-  const [draft, setDraft] = useState<null | {
-    email: string;
-    estimatedValue: string;
-    firstName: string;
-    lastName: string;
-    source: string;
-  }>(null);
+  const noteForm = useForm<{ body: string }>({
+    defaultValues: { body: '' },
+    mode: 'onTouched',
+  });
+  const noteBody = noteForm.watch('body');
 
   const record = lead.data;
-  const currentDraft =
-    draft ??
-    (record
-      ? {
-          email: record.email ?? '',
-          estimatedValue:
-            record.estimatedValue === null ? '' : String(record.estimatedValue),
-          firstName: record.firstName ?? '',
-          lastName: record.lastName ?? '',
-          source: record.source,
-        }
-      : null);
+  const form = useForm<LeadFormValues>({
+    defaultValues: record
+      ? leadFormValuesFromView(record)
+      : emptyLeadFormValues,
+    mode: 'onTouched',
+  });
+
+  // A background refetch must not clobber unsaved edits: reseed the form only
+  // while it is clean (on mount and after a successful save), matching the
+  // previous draft-or-record behavior.
+  useEffect(() => {
+    if (record && !form.formState.isDirty) {
+      form.reset(leadFormValuesFromView(record));
+    }
+  }, [form, record]);
 
   const invalidate = () => {
     void queryClient.invalidateQueries({ queryKey: ['lead', id] });
@@ -62,36 +66,27 @@ export const LeadDetailPage = ({ id }: { readonly id: string }) => {
   };
 
   const save = useMutation({
-    mutationFn: () =>
+    mutationFn: (values: LeadFormValues) =>
       request(`/v1/leads/${id}`, {
-        body: JSON.stringify({
-          email: currentDraft ? nullable(currentDraft.email) : undefined,
-          estimatedValue:
-            currentDraft && currentDraft.estimatedValue.trim() === ''
-              ? null
-              : Number(currentDraft?.estimatedValue),
-          firstName: currentDraft
-            ? nullable(currentDraft.firstName)
-            : undefined,
-          lastName: currentDraft ? nullable(currentDraft.lastName) : undefined,
-          source: currentDraft?.source.trim() || undefined,
-        }),
+        body: JSON.stringify(toUpdateLeadRequest(values)),
         method: 'PATCH',
       }),
-    onSuccess: () => {
-      setDraft(null);
+    onSuccess: (_response, values) => {
+      // Mark the draft clean with what was just saved; the refetch that follows
+      // then reseeds the form from the server.
+      form.reset(values);
       toast.success('Lead saved');
       invalidate();
     },
   });
   const addNote = useMutation({
-    mutationFn: () =>
+    mutationFn: (body: string) =>
       request(`/v1/leads/${id}/activities`, {
-        body: JSON.stringify({ body: note }),
+        body: JSON.stringify({ body }),
         method: 'POST',
       }),
     onSuccess: () => {
-      setNote('');
+      noteForm.reset();
       toast.success('Note added');
       void queryClient.invalidateQueries({
         queryKey: ['lead-activities', id],
@@ -115,7 +110,7 @@ export const LeadDetailPage = ({ id }: { readonly id: string }) => {
     return <p className="p-8 text-slate-400">Loading lead…</p>;
   }
 
-  if (lead.error || !record || !currentDraft) {
+  if (lead.error || !record) {
     return (
       <div className="p-8">
         <Notice error={lead.error ?? new Error('Lead not found.')} />
@@ -150,63 +145,44 @@ export const LeadDetailPage = ({ id }: { readonly id: string }) => {
           <h2 className="mb-4 font-semibold text-white">Details</h2>
           <form
             className="grid gap-3"
-            onSubmit={(event) => {
-              event.preventDefault();
-              save.mutate();
-            }}
+            onSubmit={form.handleSubmit((values) => {
+              save.mutate(values);
+            })}
           >
             <div className="grid gap-3 sm:grid-cols-2">
               <Field label="First name">
                 <input
                   className={inputClass}
-                  onChange={(event) =>
-                    setDraft({ ...currentDraft, firstName: event.target.value })
-                  }
-                  value={currentDraft.firstName}
+                  {...form.register('firstName')}
                 />
               </Field>
               <Field label="Last name">
                 <input
                   className={inputClass}
-                  onChange={(event) =>
-                    setDraft({ ...currentDraft, lastName: event.target.value })
-                  }
-                  value={currentDraft.lastName}
+                  {...form.register('lastName')}
                 />
               </Field>
             </div>
             <Field label="Email">
               <input
                 className={inputClass}
-                onChange={(event) =>
-                  setDraft({ ...currentDraft, email: event.target.value })
-                }
                 type="email"
-                value={currentDraft.email}
+                {...form.register('email')}
               />
             </Field>
             <div className="grid gap-3 sm:grid-cols-2">
               <Field label="Source">
                 <input
                   className={inputClass}
-                  onChange={(event) =>
-                    setDraft({ ...currentDraft, source: event.target.value })
-                  }
-                  value={currentDraft.source}
+                  {...form.register('source')}
                 />
               </Field>
               <Field label="Estimated value">
                 <input
                   className={inputClass}
                   min="0"
-                  onChange={(event) =>
-                    setDraft({
-                      ...currentDraft,
-                      estimatedValue: event.target.value,
-                    })
-                  }
                   type="number"
-                  value={currentDraft.estimatedValue}
+                  {...form.register('estimatedValue')}
                 />
               </Field>
             </div>
@@ -281,24 +257,24 @@ export const LeadDetailPage = ({ id }: { readonly id: string }) => {
           <h2 className="mb-4 font-semibold text-white">Activity</h2>
           <form
             className="mb-4 grid gap-2"
-            onSubmit={(event) => {
-              event.preventDefault();
-              if (note.trim()) {
-                addNote.mutate();
+            onSubmit={noteForm.handleSubmit(({ body }) => {
+              if (body.trim()) {
+                addNote.mutate(body);
               }
-            }}
+            })}
           >
-            <textarea
-              className={cn(inputClass, 'min-h-20')}
-              onChange={(event) => setNote(event.target.value)}
-              placeholder="Add a note…"
-              rows={3}
-              value={note}
-            />
+            <Field label="Note">
+              <textarea
+                className={cn(inputClass, 'min-h-20')}
+                placeholder="Add a note…"
+                rows={3}
+                {...noteForm.register('body')}
+              />
+            </Field>
             {addNote.error && <Notice error={addNote.error} />}
             <div>
               <Button
-                disabled={!note.trim() || addNote.isPending}
+                disabled={!noteBody.trim() || addNote.isPending}
                 type="submit"
               >
                 Add note
