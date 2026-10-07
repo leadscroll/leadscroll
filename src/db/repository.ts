@@ -1305,13 +1305,17 @@ const leadTagStatements = (
   assignments.map((assignment) =>
     prepare(
       environment.DB,
-      'INSERT INTO lead_tags (id, workspace_id, lead_id, tag_id, scope_id, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+      `INSERT INTO lead_tags (id, workspace_id, lead_id, tag_id, scope_id, created_at)
+        VALUES (?, ?, ?, ?, (
+          SELECT scope_id FROM tags WHERE id = ? AND workspace_id = ?
+        ), ?)`,
     ).bind(
       id(),
       DEFAULT_WORKSPACE_ID,
       leadId,
       assignment.tagId,
-      assignment.scopeId,
+      assignment.tagId,
+      DEFAULT_WORKSPACE_ID,
       timestamp,
     ),
   );
@@ -1941,9 +1945,6 @@ export const bulkTag = async (
     return { kind: 'unknown-tag', tagIds: resolved.unknown };
   }
 
-  const scopedIds = resolved.assignments
-    .map((assignment) => assignment.scopeId)
-    .filter((scopeId): scopeId is string => scopeId !== null);
   const timestamp = now().getTime();
   const statements: Statement[] = [
     prepare(
@@ -1953,13 +1954,16 @@ export const bulkTag = async (
           AND lead_id IN (SELECT value FROM json_each(?))
           AND (
             tag_id IN (SELECT value FROM json_each(?))
-            OR scope_id IN (SELECT value FROM json_each(?))
+            OR scope_id IN (
+              SELECT scope_id FROM tags
+              WHERE id IN (SELECT value FROM json_each(?))
+            )
           )`,
     ).bind(
       DEFAULT_WORKSPACE_ID,
       JSON.stringify(uniqueLeads),
       JSON.stringify(uniqueTags),
-      JSON.stringify(scopedIds),
+      JSON.stringify(uniqueTags),
     ),
     prepare(
       environment.DB,
@@ -1968,20 +1972,24 @@ export const bulkTag = async (
           '0' || substr(hex(randomblob(13)), 1, 25),
           l.workspace_id,
           l.id,
-          json_extract(assignment.value, '$.tagId'),
-          json_extract(assignment.value, '$.scopeId'),
+          tag.id,
+          tag.scope_id,
           ?
         FROM json_each(?) AS ids
         JOIN leads AS l
           ON l.id = ids.value
           AND l.workspace_id = ?
           AND l.deleted_at IS NULL
-        CROSS JOIN json_each(?) AS assignment`,
+        CROSS JOIN json_each(?) AS tids
+        JOIN tags AS tag
+          ON tag.id = tids.value
+          AND tag.workspace_id = ?`,
     ).bind(
       timestamp,
       JSON.stringify(uniqueLeads),
       DEFAULT_WORKSPACE_ID,
-      JSON.stringify(resolved.assignments),
+      JSON.stringify(uniqueTags),
+      DEFAULT_WORKSPACE_ID,
     ),
   ];
   await executeAtomically(environment.DB, statements);
