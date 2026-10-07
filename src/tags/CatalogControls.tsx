@@ -1,5 +1,4 @@
-import { tagColors } from './catalog';
-import { type TagColor } from './model';
+import { type TagColor, tagColors } from './types';
 import { Menu } from '@base-ui/react/menu';
 import { Check, Ellipsis } from 'lucide-react';
 

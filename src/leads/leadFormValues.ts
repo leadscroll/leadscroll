@@ -33,7 +33,9 @@ export const emptyLeadFormValues: LeadFormValues = {
   estimatedValue: '',
   firstName: '',
   lastName: '',
-  source: 'Website',
+  // The separate source control is replaced by the source:* tag; manual
+  // creates omit source so the server records its manual default.
+  source: '',
 };
 
 const trimmedOrUndefined = (value: string): string | undefined => {

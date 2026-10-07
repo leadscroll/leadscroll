@@ -1,12 +1,10 @@
 import { BrandMark } from '@/components/BrandMark';
 import { Avatar } from '@/components/ui/Avatar';
-import { tagsPreviewEnabled } from '@/design-preview/tags/TagProvider';
 import { signOut, useSession } from '@/lib/auth-client';
 import { releaseLabel } from '@/lib/release';
 import { cn } from '@/lib/styles';
 import {
   ArrowUpRight,
-  Bell,
   KeyRound,
   LayoutList,
   LogOut,
@@ -18,15 +16,10 @@ import { Link, useLocation } from 'wouter';
 
 const navigation = [
   { href: '/leads', icon: LayoutList, label: 'All leads' },
-  ...(tagsPreviewEnabled
-    ? [{ href: '/settings/tags', icon: Tags, label: 'Tags' }]
-    : []),
+  { href: '/settings/tags', icon: Tags, label: 'Tags' },
   { href: '/settings/invites', icon: Mail, label: 'Invitations' },
   { href: '/settings/staff', icon: Users, label: 'Team members' },
   { href: '/settings/tokens', icon: KeyRound, label: 'Intake tokens' },
-  ...(tagsPreviewEnabled
-    ? [{ href: '/preview/toasts', icon: Bell, label: 'Toast preview' }]
-    : []),
 ];
 
 export const AppShell = ({

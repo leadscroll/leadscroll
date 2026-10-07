@@ -1,13 +1,18 @@
-import { parseTagName, renameCatalogScope, saveCatalogTag } from './catalog';
-import { type Tag, type TagGroup, tagLabel } from './model';
-import { useTags } from './TagProvider';
+import { useTagMutations } from './api';
+import { type Tag, type TagScope } from './types';
 import { Button } from '@/components/ui/Button';
 import { Dialog } from '@/components/ui/Dialog';
 import { Field } from '@/components/ui/Field';
 import { Form } from '@/components/ui/Form';
 import { inputClass } from '@/components/ui/form';
+import { parseTagName } from '@/domain/tags';
 import { useForm } from 'react-hook-form';
 import { toast } from 'sonner';
+
+const messageOf = (error: unknown): string =>
+  error instanceof Error
+    ? error.message
+    : 'The request could not be completed.';
 
 export const TagForm = ({
   initialName = '',
@@ -18,18 +23,12 @@ export const TagForm = ({
   readonly onClose: () => void;
   readonly tag?: Tag;
 }) => {
-  const tags = useTags();
+  const { createTag, renameTag } = useTagMutations();
   const form = useForm({
-    defaultValues: {
-      name: tag && tags ? tagLabel(tag, tags.state.groups) : initialName,
-    },
+    defaultValues: { name: tag ? tag.label : initialName },
     mode: 'onTouched',
   });
   const parsed = parseTagName(form.watch('name'));
-  if (!tags) {
-    return null;
-  }
-
   const hint =
     'error' in parsed
       ? 'Use scope:value for an exclusive tag, or a plain name.'
@@ -48,20 +47,24 @@ export const TagForm = ({
     >
       <Form
         className="lead-form"
-        onSubmit={form.handleSubmit(({ name }) => {
-          const result = saveCatalogTag(tags.state, name, tag?.id);
-          if ('error' in result) {
+        onSubmit={form.handleSubmit(async ({ name }) => {
+          try {
+            if (tag) {
+              await renameTag({ id: tag.id, name });
+              toast.success('Tag renamed');
+            } else {
+              await createTag(name);
+              toast.success('Tag created');
+            }
+
+            onClose();
+          } catch (error) {
             form.setError(
               'name',
-              { message: result.error },
+              { message: messageOf(error) },
               { shouldFocus: true },
             );
-            return;
           }
-
-          tags.setState(result.state);
-          toast.success(tag ? 'Tag renamed' : 'Tag created');
-          onClose();
         })}
       >
         <Field
@@ -92,21 +95,17 @@ export const TagForm = ({
 };
 
 export const ScopeNameForm = ({
-  group,
   onClose,
+  scope,
 }: {
-  readonly group: TagGroup;
   readonly onClose: () => void;
+  readonly scope: TagScope;
 }) => {
-  const tags = useTags();
+  const { renameScope } = useTagMutations();
   const form = useForm({
-    defaultValues: { prefix: group.prefix },
+    defaultValues: { prefix: scope.prefix },
     mode: 'onTouched',
   });
-  if (!tags) {
-    return null;
-  }
-
   return (
     <Dialog
       description="Updates the prefix of every tag in this scope. Assigned leads keep their tags."
@@ -120,20 +119,18 @@ export const ScopeNameForm = ({
     >
       <Form
         className="lead-form"
-        onSubmit={form.handleSubmit(({ prefix }) => {
-          const result = renameCatalogScope(tags.state, group.id, prefix);
-          if ('error' in result) {
+        onSubmit={form.handleSubmit(async ({ prefix }) => {
+          try {
+            await renameScope({ id: scope.id, prefix });
+            toast.success('Scope renamed');
+            onClose();
+          } catch (error) {
             form.setError(
               'prefix',
-              { message: result.error },
+              { message: messageOf(error) },
               { shouldFocus: true },
             );
-            return;
           }
-
-          tags.setState(result.state);
-          toast.success('Scope renamed');
-          onClose();
         })}
       >
         <Field

@@ -1,11 +1,11 @@
-import { addTags, type Tag, tagLabel } from './model';
+import { useTagCatalog } from './api';
 import { TagChip } from './TagChips';
-import { tagsPreviewEnabled, useTags } from './TagProvider';
+import { addTags, type Tag, tagsForIds } from './types';
 import { Combobox } from '@base-ui/react/combobox';
 import { Check, ChevronDown, X } from 'lucide-react';
 import { useRef, useState } from 'react';
 
-const PreviewTagInput = ({
+export const TagInput = ({
   catalogSelection = false,
   label = 'Tags',
   onChange,
@@ -16,17 +16,12 @@ const PreviewTagInput = ({
   readonly onChange: (ids: string[]) => void;
   readonly value: string[];
 }) => {
-  const tags = useTags();
+  const catalog = useTagCatalog();
   const anchor = useRef<HTMLDivElement>(null);
   const [search, setSearch] = useState('');
   const [announcement, setAnnouncement] = useState('');
-  if (!tags) {
-    return null;
-  }
-
-  const { state } = tags;
-  const available = state.tags;
-  const selected = available.filter((tag) => value.includes(tag.id));
+  const available = catalog.data?.tags ?? [];
+  const selected = tagsForIds(value, available);
 
   return (
     <div className="tag-input-container">
@@ -35,7 +30,7 @@ const PreviewTagInput = ({
         inputValue={search}
         isItemEqualToValue={(a: Tag, b: Tag) => a.id === b.id}
         items={available}
-        itemToStringLabel={(tag: Tag) => tagLabel(tag, state.groups)}
+        itemToStringLabel={(tag: Tag) => tag.label}
         multiple
         onInputValueChange={setSearch}
         onValueChange={(next: Tag[], details) => {
@@ -48,12 +43,14 @@ const PreviewTagInput = ({
 
           const ids = next.map((tag) => tag.id);
           const added = ids.filter((id) => !value.includes(id));
-          const resolved = catalogSelection ? ids : addTags(ids, added, state);
+          const resolved = catalogSelection
+            ? ids
+            : addTags(ids, added, available);
           const removed = selected.filter((tag) => !resolved.includes(tag.id));
           setAnnouncement(
             removed.length
-              ? `Removed ${removed.map((tag) => tagLabel(tag, state.groups)).join(', ')}. ${resolved.length} tags selected.`
-              : `${resolved.length} tags selected.`,
+              ? `Removed ${removed.map((tag) => tag.label).join(', ')}. ${String(resolved.length)} tags selected.`
+              : `${String(resolved.length)} tags selected.`,
           );
           onChange(resolved);
           setSearch('');
@@ -74,20 +71,14 @@ const PreviewTagInput = ({
                 chosen.map((tag) => (
                   <Combobox.Chip
                     aria-description="Press Backspace or Delete to remove"
-                    aria-label={tagLabel(tag, state.groups)}
+                    aria-label={tag.label}
                     className="tag-input-chip"
-                    data-color={
-                      state.groups.find((group) => group.id === tag.groupId)
-                        ?.color ?? tag.color
-                    }
+                    data-color={tag.color}
                     key={tag.id}
                   >
-                    <TagChip
-                      state={state}
-                      tag={tag}
-                    />
+                    <TagChip tag={tag} />
                     <Combobox.ChipRemove
-                      aria-label={`Remove ${tagLabel(tag, state.groups)}`}
+                      aria-label={`Remove ${tag.label}`}
                       className="tag-chip-remove"
                     >
                       <X size={12} />
@@ -137,10 +128,7 @@ const PreviewTagInput = ({
                         <Check size={14} />
                       </Combobox.ItemIndicator>
                     </span>
-                    <TagChip
-                      state={state}
-                      tag={tag}
-                    />
+                    <TagChip tag={tag} />
                   </Combobox.Item>
                 )}
               </Combobox.List>
@@ -158,6 +146,3 @@ const PreviewTagInput = ({
     </div>
   );
 };
-
-// Keep the prototype combobox out of the production bundle.
-export const TagInput = tagsPreviewEnabled ? PreviewTagInput : () => null;

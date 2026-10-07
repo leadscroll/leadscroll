@@ -13,10 +13,12 @@
  * on an ancestor such as a fieldset — are sent. Unmarked named controls are
  * never transmitted and the SDK warns in the console so a forgotten marker is
  * visible. Fields named email/firstName/lastName/source map to lead columns
- * (first_name and first-name spellings work too); every other marked field
- * becomes a custom field, with repeated names collected as arrays. Password
- * inputs and credential/payment autocomplete fields are never sent, even when
- * marked. Names starting with an underscore are skipped by convention.
+ * (first_name and first-name spellings work too); a `tags` field collects a
+ * de-duplicated classification list (repeated controls and comma-separated
+ * values each contribute) that may contain any scope:value name. Every other
+ * marked field becomes a custom field, with repeated names collected as arrays.
+ * Password inputs and credential/payment autocomplete fields are never sent,
+ * even when marked. Names starting with an underscore are skipped by convention.
  *
  * The origin is taken from this script's own src, so the form can live on any
  * site. No cookies are sent.
@@ -51,6 +53,7 @@
     last_name: 'lastName',
     lastname: 'lastName',
     source: 'source',
+    tags: 'tags',
   };
 
   // Definitional secrets: refused even when a marker includes them. The
@@ -217,7 +220,21 @@
         }
 
         const mapped = FIELD_MAP[name.toLowerCase()];
-        if (mapped) {
+        if (mapped === 'tags') {
+          // Classification tags: repeated controls and comma-separated values
+          // each contribute, de-duplicated below. Unknown names are allowed;
+          // the server creates them under the normal domain rules.
+          if (!Array.isArray(payload.tags)) {
+            payload.tags = [];
+          }
+
+          for (const part of value.split(',')) {
+            const tag = part.trim();
+            if (tag && !payload.tags.includes(tag)) {
+              payload.tags.push(tag);
+            }
+          }
+        } else if (mapped) {
           // Scalar lead fields take the first value; repeats are ignored.
           if (!(mapped in payload)) {
             payload[mapped] = value;
@@ -246,6 +263,14 @@
 
     if (Object.keys(payload.customFields).length === 0) {
       delete payload.customFields;
+    }
+
+    // Bounded like the request contract: at most 100 tags, 71 characters each.
+    if (Array.isArray(payload.tags)) {
+      payload.tags = payload.tags.slice(0, 100).map((tag) => tag.slice(0, 71));
+      if (payload.tags.length === 0) {
+        delete payload.tags;
+      }
     }
 
     return payload;

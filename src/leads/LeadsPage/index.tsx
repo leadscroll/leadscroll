@@ -5,13 +5,12 @@ import { PageHeader } from '@/components/PageHeader';
 import { Avatar } from '@/components/ui/Avatar';
 import { Button } from '@/components/ui/Button';
 import { Form } from '@/components/ui/Form';
-import { BulkTags } from '@/design-preview/tags/LeadTags';
-import { LeadTagCell } from '@/design-preview/tags/TagChips';
-import { matchesTagFilter, TagFilter } from '@/design-preview/tags/TagFilter';
-import { useTags } from '@/design-preview/tags/TagProvider';
 import { leadDisplayName } from '@/domain/leadDisplay';
 import { type LeadView } from '@/domain/schemas';
 import { request, requestBody } from '@/lib/http';
+import { BulkTags } from '@/tags/LeadTags';
+import { LeadTagCell } from '@/tags/TagChips';
+import { TagFilter } from '@/tags/TagFilter';
 import {
   useInfiniteQuery,
   useMutation,
@@ -35,7 +34,6 @@ type LeadPage = { data: LeadView[]; nextCursor: null | string };
 
 export const LeadsPage = () => {
   const queryClient = useQueryClient();
-  const tags = useTags();
   const [tagFilter, setTagFilter] = useState('');
   const [search, setSearch] = useState('');
   const hasFilters = Boolean(search || tagFilter);
@@ -56,18 +54,23 @@ export const LeadsPage = () => {
         parameters.set('query', search);
       }
 
+      // Tag filters run on the server before the keyset page is cut, so the
+      // list never filters only the rows already loaded in the browser.
+      if (tagFilter.startsWith('tag:')) {
+        parameters.set('tag', tagFilter.slice(4));
+      } else if (tagFilter.startsWith('group:')) {
+        parameters.set('tagScope', tagFilter.slice(6));
+      }
+
       if (pageParam) {
         parameters.set('cursor', pageParam);
       }
 
       return requestBody<LeadPage>(`/v1/leads?${parameters.toString()}`);
     },
-    queryKey: ['leads', search],
+    queryKey: ['leads', search, tagFilter],
   });
-  const loaded = leads.data?.pages.flatMap((page) => page.data) ?? [];
-  const rows = tags
-    ? loaded.filter((lead) => matchesTagFilter(lead.id, tagFilter, tags.state))
-    : loaded;
+  const rows = leads.data?.pages.flatMap((page) => page.data) ?? [];
 
   const invalidate = () => {
     void queryClient.invalidateQueries({ queryKey: ['leads'] });
@@ -86,16 +89,8 @@ export const LeadsPage = () => {
     },
     onSuccess: () => {
       toast.success(
-        `${selected.length} ${selected.length === 1 ? 'lead' : 'leads'} deleted`,
+        `${String(selected.length)} ${selected.length === 1 ? 'lead' : 'leads'} deleted`,
       );
-      tags?.setState((current) => ({
-        ...current,
-        assignments: Object.fromEntries(
-          Object.entries(current.assignments).filter(
-            ([id]) => !selected.includes(id),
-          ),
-        ),
-      }));
       setSelected([]);
       setConfirmDelete(false);
       invalidate();
@@ -233,8 +228,7 @@ export const LeadsPage = () => {
                     />
                   </th>
                   <th scope="col">Name</th>
-                  {tags && <th scope="col">Tags</th>}
-                  {!tags && <th scope="col">Source</th>}
+                  <th scope="col">Tags</th>
                   <th
                     className="numeric-cell"
                     scope="col"
@@ -295,19 +289,7 @@ export const LeadsPage = () => {
                         )}
                       </div>
                     </td>
-                    <LeadTagCell id={lead.id} />
-                    {!tags && (
-                      <td>
-                        {lead.source ? (
-                          <span className="source-badge">
-                            <span aria-hidden="true" />
-                            {lead.source}
-                          </span>
-                        ) : (
-                          <span className="text-muted">—</span>
-                        )}
-                      </td>
-                    )}
+                    <LeadTagCell tags={lead.tags} />
                     <td className="numeric-cell">
                       {lead.estimatedValue === null ? (
                         <span className="text-muted">—</span>

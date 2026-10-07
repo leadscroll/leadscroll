@@ -6,8 +6,6 @@ import { Button } from '@/components/ui/Button';
 import { Field } from '@/components/ui/Field';
 import { Form } from '@/components/ui/Form';
 import { inputClass } from '@/components/ui/form';
-import { LeadTags } from '@/design-preview/tags/LeadTags';
-import { useTags } from '@/design-preview/tags/TagProvider';
 import { fieldTitle } from '@/domain/customFields';
 import { leadDisplayName } from '@/domain/leadDisplay';
 import { type LeadActivity, type LeadView } from '@/domain/schemas';
@@ -17,9 +15,9 @@ import {
   leadFormValuesFromView,
   toUpdateLeadRequest,
 } from '@/leads/leadFormValues';
-import { LeadSourceField } from '@/leads/LeadSourceField';
 import { request } from '@/lib/http';
 import { cn } from '@/lib/styles';
+import { LeadTags } from '@/tags/LeadTags';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowLeft, Clock3, MessageSquare, Trash2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
@@ -32,7 +30,6 @@ const formatCustomValue = (value: unknown): string =>
 
 export const LeadDetailPage = ({ id }: { readonly id: string }) => {
   const queryClient = useQueryClient();
-  const tags = useTags();
   const [, setLocation] = useLocation();
   const lead = useQuery({
     queryFn: () => request<LeadView>(`/v1/leads/${id}`),
@@ -110,12 +107,6 @@ export const LeadDetailPage = ({ id }: { readonly id: string }) => {
         method: 'POST',
       }),
     onSuccess: () => {
-      tags?.setState((current) => ({
-        ...current,
-        assignments: Object.fromEntries(
-          Object.entries(current.assignments).filter(([key]) => key !== id),
-        ),
-      }));
       toast.success('Lead deleted');
       void queryClient.invalidateQueries({ queryKey: ['leads'] });
       setLocation('/leads');
@@ -178,6 +169,7 @@ export const LeadDetailPage = ({ id }: { readonly id: string }) => {
           </div>
         </div>
         <LeadTags
+          assigned={record.tags}
           id={id}
           key={id}
         />
@@ -219,17 +211,14 @@ export const LeadDetailPage = ({ id }: { readonly id: string }) => {
                   {...form.register('email')}
                 />
               </Field>
-              <div className="grid gap-3 sm:grid-cols-2">
-                <LeadSourceField register={form.register} />
-                <Field label="Estimated value">
-                  <input
-                    className={inputClass}
-                    min="0"
-                    type="number"
-                    {...form.register('estimatedValue')}
-                  />
-                </Field>
-              </div>
+              <Field label="Estimated value">
+                <input
+                  className={inputClass}
+                  min="0"
+                  type="number"
+                  {...form.register('estimatedValue')}
+                />
+              </Field>
               {save.error && <Notice error={save.error} />}
               <div className="save-row">
                 <span

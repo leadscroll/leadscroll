@@ -4,16 +4,15 @@ import { Dialog } from '@/components/ui/Dialog';
 import { Field } from '@/components/ui/Field';
 import { Form } from '@/components/ui/Form';
 import { inputClass } from '@/components/ui/form';
-import { TagInput } from '@/design-preview/tags/TagInput';
-import { useTags } from '@/design-preview/tags/TagProvider';
 import { type LeadView } from '@/domain/schemas';
 import {
   emptyLeadFormValues,
   type LeadFormValues,
   toCreateLeadRequest,
 } from '@/leads/leadFormValues';
-import { LeadSourceField } from '@/leads/LeadSourceField';
 import { request } from '@/lib/http';
+import { useTagCatalog } from '@/tags/api';
+import { TagInput } from '@/tags/TagInput';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { useForm } from 'react-hook-form';
@@ -25,12 +24,9 @@ export const CreateLeadDialog = ({
   readonly onOpenChange: (open: boolean) => void;
 }) => {
   const queryClient = useQueryClient();
-  const tags = useTags();
-  const [tagIds, setTagIds] = useState<string[]>(
-    tags?.state.tags.some((tag) => tag.id === 'source-manual')
-      ? ['source-manual']
-      : [],
-  );
+  const catalog = useTagCatalog();
+  const [tagIds, setTagIds] = useState<string[]>([]);
+  const catalogTags = catalog.data?.tags ?? [];
   const form = useForm<LeadFormValues>({
     defaultValues: emptyLeadFormValues,
     mode: 'onTouched',
@@ -38,18 +34,23 @@ export const CreateLeadDialog = ({
   const create = useMutation({
     mutationFn: (values: LeadFormValues) =>
       request<LeadView>('/v1/leads', {
-        body: JSON.stringify(toCreateLeadRequest(values)),
+        body: JSON.stringify({
+          ...toCreateLeadRequest(values),
+          // The chip draft is sent as classification names; the server
+          // resolves or creates them under the same domain rules as intake.
+          ...(tagIds.length
+            ? {
+                tags: catalogTags
+                  .filter((tag) => tagIds.includes(tag.id))
+                  .map((tag) => tag.label),
+              }
+            : {}),
+        }),
         method: 'POST',
       }),
-    onSuccess: (lead) => {
-      if (tags) {
-        tags.setState((current) => ({
-          ...current,
-          assignments: { ...current.assignments, [lead.id]: tagIds },
-        }));
-      }
-
+    onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['leads'] });
+      void queryClient.invalidateQueries({ queryKey: ['tag-catalog'] });
       toast.success('Lead created');
       onOpenChange(false);
     },
@@ -124,19 +125,16 @@ export const CreateLeadDialog = ({
             {...form.register('email')}
           />
         </Field>
-        <div className="grid gap-3 sm:grid-cols-2">
-          <LeadSourceField register={form.register} />
-          <Field label="Estimated value">
-            <input
-              className={inputClass}
-              min="0"
-              placeholder="0"
-              type="number"
-              {...form.register('estimatedValue')}
-            />
-          </Field>
-        </div>
-        {tags && (
+        <Field label="Estimated value">
+          <input
+            className={inputClass}
+            min="0"
+            placeholder="0"
+            type="number"
+            {...form.register('estimatedValue')}
+          />
+        </Field>
+        {catalog.data && (
           <div className="create-tags">
             <span className="field-label">Tags</span>
             <TagInput

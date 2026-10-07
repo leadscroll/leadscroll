@@ -1,10 +1,10 @@
-import { removeCatalogTag } from './catalog';
+import { useTagCatalog, useTagMutations } from './api';
 import { CatalogColor, CatalogMenu } from './CatalogControls';
-import { type Tag, type TagGroup, tagLabel } from './model';
 import { TagChip } from './TagChips';
 import { ScopeNameForm, TagForm } from './TagForms';
-import { useTags } from './TagProvider';
+import { type CatalogTag, type Tag, type TagScope } from './types';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
+import { Notice } from '@/components/Notice';
 import { PageHeader } from '@/components/PageHeader';
 import { Button } from '@/components/ui/Button';
 import { ChevronDown, ChevronRight, Plus, Search } from 'lucide-react';
@@ -12,67 +12,90 @@ import { useState } from 'react';
 import { toast } from 'sonner';
 
 type Editor =
-  | { group: TagGroup; kind: 'scope' }
-  | { initialName?: string; kind: 'tag'; tag?: Tag };
+  | { initialName?: string; kind: 'tag'; tag?: Tag }
+  | { kind: 'scope'; scope: TagScope };
+
+const messageOf = (error: unknown): string =>
+  error instanceof Error
+    ? error.message
+    : 'The request could not be completed.';
 
 export const TagsPage = () => {
-  const tags = useTags();
+  const catalog = useTagCatalog();
+  const { deleteTag, setScopeColor, setTagColor } = useTagMutations();
   const [search, setSearch] = useState('');
   const [collapsed, setCollapsed] = useState<string[]>([]);
   const [editor, setEditor] = useState<Editor | null>(null);
-  const [deleting, setDeleting] = useState<null | Tag>(null);
-  if (!tags) {
-    return null;
+  const [deleting, setDeleting] = useState<CatalogTag | null>(null);
+
+  if (catalog.isPending) {
+    return (
+      <div
+        aria-live="polite"
+        className="empty-state"
+      >
+        <span className="loading-dot" />
+        <p>Loading tags…</p>
+      </div>
+    );
   }
 
-  const { state } = tags;
-  const visible = state.tags.filter((tag) =>
-    tagLabel(tag, state.groups).includes(search.trim().toLowerCase()),
+  if (catalog.error || !catalog.data) {
+    return (
+      <div className="page-notice">
+        <Notice
+          error={catalog.error ?? new Error('The tag catalog failed to load.')}
+        />
+      </div>
+    );
+  }
+
+  const { scopes, tags } = catalog.data;
+  const visible = tags.filter((tag) =>
+    tag.label.includes(search.trim().toLowerCase()),
   );
-  const groups = [...state.groups].toSorted((a, b) =>
+  const orderedScopes = [...scopes].toSorted((a, b) =>
     a.prefix.localeCompare(b.prefix),
   );
-  const count = (id: string) =>
-    Object.values(state.assignments).filter((ids) => ids.includes(id)).length;
-  const tagRow = (tag: Tag) => (
+  const tagRow = (tag: CatalogTag) => (
     <tr
       className={
-        tag.groupId ? 'catalog-tag-row catalog-tag-child' : 'catalog-tag-row'
+        tag.scopeId ? 'catalog-tag-row catalog-tag-child' : 'catalog-tag-row'
       }
       key={tag.id}
     >
       <td>
         <TagChip
-          compact={Boolean(tag.groupId)}
-          state={state}
+          compact={Boolean(tag.scopeId)}
           tag={tag}
         />
       </td>
       <td>
-        {!tag.groupId && (
+        {!tag.scopeId && (
           <CatalogColor
             color={tag.color}
             label={tag.name}
             onChange={(color) => {
-              tags.setState((current) => ({
-                ...current,
-                tags: current.tags.map((item) =>
-                  item.id === tag.id ? { ...item, color } : item,
-                ),
-              }));
-              toast.success('Tag color updated');
+              void (async () => {
+                try {
+                  await setTagColor({ color, id: tag.id });
+                  toast.success('Tag color updated');
+                } catch (error) {
+                  toast.error(messageOf(error));
+                }
+              })();
             }}
           />
         )}
       </td>
-      <td className="catalog-usage">{count(tag.id)}</td>
+      <td className="catalog-usage">{tag.leadCount}</td>
       <td>
         <CatalogMenu
           actions={[
             { label: 'Rename', onClick: () => setEditor({ kind: 'tag', tag }) },
             { danger: true, label: 'Delete', onClick: () => setDeleting(tag) },
           ]}
-          label={`Actions for ${tagLabel(tag, state.groups)}`}
+          label={`Actions for ${tag.label}`}
         />
       </td>
     </tr>
@@ -92,7 +115,7 @@ export const TagsPage = () => {
       <div className="tag-catalog-page">
         <div className="tag-catalog-toolbar">
           <span>
-            {state.tags.length} tags · {state.groups.length} scopes
+            {tags.length} tags · {scopes.length} scopes
           </span>
           <div className="search-control">
             <Search
@@ -137,34 +160,31 @@ export const TagsPage = () => {
                 </th>
               </tr>
             </thead>
-            {groups.map((group) => {
+            {orderedScopes.map((scope) => {
               const members = visible
-                .filter((tag) => tag.groupId === group.id)
+                .filter((tag) => tag.scopeId === scope.id)
                 .toSorted((a, b) => a.name.localeCompare(b.name));
               if (!members.length) {
                 return null;
               }
 
-              const expanded = !collapsed.includes(group.id);
-              const scopeIds = state.tags
-                .filter((tag) => tag.groupId === group.id)
+              const expanded = !collapsed.includes(scope.id);
+              const scopeIds = tags
+                .filter((tag) => tag.scopeId === scope.id)
                 .map((tag) => tag.id);
-              const usage = Object.values(state.assignments).filter((ids) =>
-                scopeIds.some((id) => ids.includes(id)),
-              ).length;
               return (
-                <tbody key={group.id}>
+                <tbody key={scope.id}>
                   <tr className="catalog-scope-row">
                     <td>
                       <button
                         aria-expanded={expanded}
-                        aria-label={`${expanded ? 'Collapse' : 'Expand'} ${group.prefix} scope`}
+                        aria-label={`${expanded ? 'Collapse' : 'Expand'} ${scope.prefix} scope`}
                         className="catalog-scope-toggle"
                         onClick={() =>
                           setCollapsed((current) =>
                             expanded
-                              ? [...current, group.id]
-                              : current.filter((id) => id !== group.id),
+                              ? [...current, scope.id]
+                              : current.filter((id) => id !== scope.id),
                           )
                         }
                         type="button"
@@ -174,26 +194,29 @@ export const TagsPage = () => {
                         ) : (
                           <ChevronRight size={14} />
                         )}
-                        <span>{group.prefix}</span>
+                        <span>{scope.prefix}</span>
                         <span className="count-badge">{scopeIds.length}</span>
                       </button>
                     </td>
                     <td>
                       <CatalogColor
-                        color={group.color}
-                        label={`${group.prefix} scope`}
+                        color={scope.color}
+                        label={`${scope.prefix} scope`}
                         onChange={(color) => {
-                          tags.setState((current) => ({
-                            ...current,
-                            groups: current.groups.map((item) =>
-                              item.id === group.id ? { ...item, color } : item,
-                            ),
-                          }));
-                          toast.success('Scope color updated');
+                          void (async () => {
+                            try {
+                              await setScopeColor({ color, id: scope.id });
+                              toast.success('Scope color updated');
+                            } catch (error) {
+                              toast.error(messageOf(error));
+                            }
+                          })();
                         }}
                       />
                     </td>
-                    <td className="catalog-usage">{usage}</td>
+                    <td className="catalog-usage">
+                      {members.reduce((total, tag) => total + tag.leadCount, 0)}
+                    </td>
                     <td>
                       <CatalogMenu
                         actions={[
@@ -201,16 +224,16 @@ export const TagsPage = () => {
                             label: 'New tag',
                             onClick: () =>
                               setEditor({
-                                initialName: `${group.prefix}:`,
+                                initialName: `${scope.prefix}:`,
                                 kind: 'tag',
                               }),
                           },
                           {
                             label: 'Rename scope',
-                            onClick: () => setEditor({ group, kind: 'scope' }),
+                            onClick: () => setEditor({ kind: 'scope', scope }),
                           },
                         ]}
-                        label={`Actions for ${group.prefix} scope`}
+                        label={`Actions for ${scope.prefix} scope`}
                       />
                     </td>
                   </tr>
@@ -220,7 +243,7 @@ export const TagsPage = () => {
             })}
             <tbody>
               {visible
-                .filter((tag) => !tag.groupId)
+                .filter((tag) => !tag.scopeId)
                 .toSorted((a, b) => a.name.localeCompare(b.name))
                 .map(tagRow)}
             </tbody>
@@ -247,17 +270,25 @@ export const TagsPage = () => {
       )}
       {editor?.kind === 'scope' && (
         <ScopeNameForm
-          group={editor.group}
           onClose={() => setEditor(null)}
+          scope={editor.scope}
         />
       )}
       {deleting && (
         <ConfirmDialog
-          description={`Delete ${tagLabel(deleting, state.groups)}? It will be removed from ${count(deleting.id)} ${count(deleting.id) === 1 ? 'lead' : 'leads'}. Other tags and leads will remain.`}
+          description={`Delete ${deleting.label}? It will be removed from ${String(deleting.leadCount)} ${deleting.leadCount === 1 ? 'lead' : 'leads'}. Other tags and leads will remain.`}
           onConfirm={() => {
-            tags.setState((current) => removeCatalogTag(current, deleting.id));
-            setDeleting(null);
-            toast.success('Tag deleted');
+            void (async () => {
+              try {
+                const result = await deleteTag(deleting.id);
+                setDeleting(null);
+                toast.success(
+                  `Tag deleted${result.removed ? ` from ${String(result.removed)} ${result.removed === 1 ? 'lead' : 'leads'}` : ''}`,
+                );
+              } catch (error) {
+                toast.error(messageOf(error));
+              }
+            })();
           }}
           onOpenChange={(open) => {
             if (!open) {

@@ -247,6 +247,28 @@ try {
     const { page, requests } = await start(
       browser,
       form(
+        [
+          '<input name="tags" value="campaign:spring, vip" data-leadscroll-collect>',
+          '<input name="tags" value="vip" data-leadscroll-collect>',
+          '<input name="email" value="tagged@example.test" data-leadscroll-collect>',
+        ].join(''),
+      ),
+    );
+    await submit(page);
+    assert.equal(requests.length, 1);
+    assert.deepEqual(requests[0].body, {
+      email: 'tagged@example.test',
+      source: 'website_form',
+      tags: ['campaign:spring', 'vip'],
+    });
+    await page.close();
+    pass('marked tags fields collect a de-duplicated classification list');
+  }
+
+  {
+    const { page, requests } = await start(
+      browser,
+      form(
         '<input name="email" value="retry@example.test" data-leadscroll-collect>',
       ),
       (request, count) =>

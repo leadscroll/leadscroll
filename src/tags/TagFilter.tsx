@@ -1,26 +1,11 @@
-import { tagLabel, type TagState } from './model';
-import { useTags } from './TagProvider';
+import { useTagCatalog } from './api';
 import { X } from 'lucide-react';
 
-export const matchesTagFilter = (
-  id: string,
-  filter: string,
-  state: TagState,
-): boolean => {
-  const assigned = state.assignments[id] ?? [];
-  if (filter.startsWith('group:')) {
-    return state.tags.some(
-      (tag) => tag.groupId === filter.slice(6) && assigned.includes(tag.id),
-    );
-  }
-
-  if (filter.startsWith('tag:')) {
-    return assigned.includes(filter.slice(4));
-  }
-
-  return true;
-};
-
+/**
+ * Exact-tag / any-tag-in-scope filter. The control emits an encoded selection
+ * (`tag:<id>` or `group:<scopeId>`) that the leads page turns into server-side
+ * query parameters, so filtering always happens before pagination.
+ */
 export const TagFilter = ({
   onChange,
   value,
@@ -28,11 +13,13 @@ export const TagFilter = ({
   readonly onChange: (value: string) => void;
   readonly value: string;
 }) => {
-  const tags = useTags();
-  if (!tags) {
+  const catalog = useTagCatalog();
+  if (catalog.isPending) {
     return null;
   }
 
+  const scopes = catalog.data?.scopes ?? [];
+  const tags = catalog.data?.tags ?? [];
   return (
     <div className="tag-filter">
       <select
@@ -42,22 +29,22 @@ export const TagFilter = ({
       >
         <option value="">All tags</option>
         <optgroup label="Any tag in a prefix">
-          {tags.state.groups.map((group) => (
+          {scopes.map((scope) => (
             <option
-              key={group.id}
-              value={`group:${group.id}`}
+              key={scope.id}
+              value={`group:${scope.id}`}
             >
-              {group.prefix}:*
+              {scope.prefix}:*
             </option>
           ))}
         </optgroup>
         <optgroup label="Specific tag">
-          {tags.state.tags.map((tag) => (
+          {tags.map((tag) => (
             <option
               key={tag.id}
               value={`tag:${tag.id}`}
             >
-              {tagLabel(tag, tags.state.groups)}
+              {tag.label}
             </option>
           ))}
         </optgroup>

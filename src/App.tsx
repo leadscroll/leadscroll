@@ -7,12 +7,6 @@ import { TokenExpirationField } from './components/TokenExpirationField';
 import { Button } from './components/ui/Button';
 import { Dialog } from './components/ui/Dialog';
 import { Field } from './components/ui/Field';
-import {
-  TagPreviewProvider,
-  tagsPreviewEnabled,
-} from './design-preview/tags/TagProvider';
-import { TagsPage } from './design-preview/tags/TagsPage';
-import { ToastPreview } from './design-preview/ToastPreview';
 import { LeadDetailPage } from './leads/LeadDetailPage';
 import { LeadsPage } from './leads/LeadsPage';
 import { signIn, signUp, useSession } from './lib/auth-client';
@@ -40,6 +34,7 @@ import {
   toCreateTokenRequest,
   type TokenFormValues,
 } from './lib/tokenFormValues';
+import { TagsPage } from './tags/TagsPage';
 import { Form } from '@/components/ui/Form';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Copy, Plus } from 'lucide-react';
@@ -1203,16 +1198,9 @@ const AppContent = () => {
         <Route path="/leads">
           <LeadsPage />
         </Route>
-        {tagsPreviewEnabled && (
-          <Route path="/settings/tags">
-            <TagsPage />
-          </Route>
-        )}
-        {tagsPreviewEnabled && (
-          <Route path="/preview/toasts">
-            <ToastPreview />
-          </Route>
-        )}
+        <Route path="/settings/tags">
+          <TagsPage />
+        </Route>
         <Route path="/settings/account">
           <AccountPage />
         </Route>
@@ -1235,8 +1223,6 @@ const AppContent = () => {
 
 export const App = () => (
   <AccountSessionCacheBoundary>
-    <TagPreviewProvider>
-      <AppContent />
-    </TagPreviewProvider>
+    <AppContent />
   </AccountSessionCacheBoundary>
 );

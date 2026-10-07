@@ -286,9 +286,12 @@ The CRM serves a small, dependency-free SDK at `/sdk/v1.js`. Give a form a
   control, or to an ancestor such as a `<fieldset>` to mark everything inside.
   Unmarked named controls are never transmitted, and the SDK logs a console
   warning listing them.
-- `email`, `firstName`/`first_name`/`first-name`, `lastName`, and `source`
-  map to lead fields; every other marked input lands in `customFields`, and
-  repeated names (checkbox groups, multi-selects) become arrays.
+- `email`, `firstName`/`first_name`/`first-name`, `lastName`, `source`,
+  and `tags` map to lead fields; every other marked input lands in
+  `customFields`, and repeated names (checkbox groups, multi-selects) become
+  arrays. A marked `tags` control collects a de-duplicated list of
+  `scope:value`/plain names for classification; unknown names are created on
+  intake, and repeated controls or comma-separated values each contribute.
 - The endpoint origin comes from the script's own `src`, so the form can live
   on any site. No cookies or credentials are sent.
 - Attribute overrides: `data-leadscroll-source`, `data-leadscroll-success`,

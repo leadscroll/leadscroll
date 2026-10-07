@@ -1,17 +1,31 @@
-import { addTags } from './model';
+import { useTagCatalog, useTagMutations } from './api';
 import { TagChips } from './TagChips';
 import { TagInput } from './TagInput';
 import { TagPicker } from './TagPicker';
-import { useTags } from './TagProvider';
+import { type Tag } from './types';
 import { Button } from '@/components/ui/Button';
 import { Pencil, Tags } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
 
-export const LeadTags = ({ id }: { readonly id: string }) => {
-  const tags = useTags();
+const messageOf = (error: unknown): string =>
+  error instanceof Error
+    ? error.message
+    : 'The request could not be completed.';
+
+export const LeadTags = ({
+  assigned,
+  id,
+}: {
+  readonly assigned: readonly Tag[];
+  readonly id: string;
+}) => {
+  const catalog = useTagCatalog();
+  const { saveLeadTags } = useTagMutations();
   const [draft, setDraft] = useState<null | string[]>(null);
   const [feedback, setFeedback] = useState('');
+  const [error, setError] = useState('');
+  const [saving, setSaving] = useState(false);
   const editor = useRef<HTMLDivElement>(null);
   const preview = useRef<HTMLButtonElement>(null);
   const wasEditing = useRef(false);
@@ -29,34 +43,36 @@ export const LeadTags = ({ id }: { readonly id: string }) => {
     wasEditing.current = editing;
   }, [editing]);
 
-  if (!tags) {
-    return null;
-  }
-
-  const assigned = tags.state.assignments[id] ?? [];
-  const save = () => {
+  const assignedIds = assigned.map((tag) => tag.id);
+  const catalogTags = catalog.data?.tags ?? [];
+  const save = async () => {
     if (draft === null) {
       return;
     }
 
     const next = draft.filter((tagId) =>
-      tags.state.tags.some((tag) => tag.id === tagId),
+      catalogTags.some((tag) => tag.id === tagId),
     );
     if (
-      next.length === assigned.length &&
-      next.every((tagId) => assigned.includes(tagId))
+      next.length === assignedIds.length &&
+      next.every((tagId) => assignedIds.includes(tagId))
     ) {
       setFeedback('No changes to save.');
       return;
     }
 
-    tags.setState((current) => ({
-      ...current,
-      assignments: { ...current.assignments, [id]: next },
-    }));
-    setDraft(null);
-    setFeedback('');
-    toast.success('Tags saved');
+    setSaving(true);
+    setError('');
+    try {
+      await saveLeadTags({ id, tagIds: next });
+      setDraft(null);
+      setFeedback('');
+      toast.success('Tags saved');
+    } catch (saveError) {
+      setError(messageOf(saveError));
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -69,16 +85,17 @@ export const LeadTags = ({ id }: { readonly id: string }) => {
           aria-label="Edit lead tags"
           className="record-tags-preview"
           onClick={() => {
-            setDraft([...assigned]);
+            setDraft([...assignedIds]);
             setFeedback('');
+            setError('');
           }}
           ref={preview}
           type="button"
         >
           {assigned.length ? (
             <TagChips
-              ids={assigned}
-              limit={tags.state.tags.length}
+              limit={assigned.length}
+              tags={assigned}
             />
           ) : (
             <span className="text-muted">Add tags…</span>
@@ -100,15 +117,25 @@ export const LeadTags = ({ id }: { readonly id: string }) => {
               onChange={(ids) => {
                 setDraft(ids);
                 setFeedback('');
+                setError('');
               }}
               value={draft}
             />
             <div className="record-tag-actions">
-              <Button onClick={save}>Save tags</Button>
               <Button
+                disabled={saving}
+                onClick={() => {
+                  void save();
+                }}
+              >
+                {saving ? 'Saving…' : 'Save tags'}
+              </Button>
+              <Button
+                disabled={saving}
                 onClick={() => {
                   setDraft(null);
                   setFeedback('');
+                  setError('');
                 }}
                 tone="ghost"
               >
@@ -124,6 +151,14 @@ export const LeadTags = ({ id }: { readonly id: string }) => {
               {feedback}
             </p>
           )}
+          {error && (
+            <p
+              className="field-error"
+              role="alert"
+            >
+              {error}
+            </p>
+          )}
         </div>
       )}
     </div>
@@ -137,12 +172,8 @@ export const BulkTags = ({
   readonly ids: string[];
   readonly onApplied: () => void;
 }) => {
-  const tags = useTags();
+  const { bulkTags } = useTagMutations();
   const [mode, setMode] = useState<'add' | 'remove' | null>(null);
-  if (!tags) {
-    return null;
-  }
-
   return (
     <>
       <Button
@@ -161,31 +192,24 @@ export const BulkTags = ({
         <TagPicker
           initial={[]}
           onApply={(chosen) => {
-            tags.setState((current) => ({
-              ...current,
-              assignments: {
-                ...current.assignments,
-                ...Object.fromEntries(
-                  ids.map((id) => [
-                    id,
-                    mode === 'remove'
-                      ? (current.assignments[id] ?? []).filter(
-                          (tag) => !chosen.includes(tag),
-                        )
-                      : addTags(current.assignments[id] ?? [], chosen, current),
-                  ]),
-                ),
-              },
-            }));
-            toast.success(`Tags updated on ${ids.length} leads`);
-            onApplied();
+            void (async () => {
+              try {
+                await bulkTags({ ids, mode, tagIds: chosen });
+                toast.success(
+                  `Tags updated on ${String(ids.length)} lead${ids.length === 1 ? '' : 's'}`,
+                );
+                onApplied();
+              } catch (error) {
+                toast.error(messageOf(error));
+              }
+            })();
           }}
           onClose={() => setMode(null)}
           removal={mode === 'remove'}
           title={
             mode === 'remove'
-              ? `Remove tags from ${ids.length} leads`
-              : `Add tags to ${ids.length} leads`
+              ? `Remove tags from ${String(ids.length)} leads`
+              : `Add tags to ${String(ids.length)} leads`
           }
         />
       )}
