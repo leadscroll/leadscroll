@@ -11,8 +11,11 @@ import {
   bootstrapState,
   idempotencyKeys,
   leads,
+  leadTags,
   session,
   staffInvites,
+  tags,
+  tagScopes,
   user,
 } from './schema';
 import { type RegistrationGrant } from '@/auth/registration-repository';
@@ -23,8 +26,10 @@ import {
   type IntakeRequest,
   normalizeEmail,
   type SkippedField,
+  type TagColor,
   type UpdateLeadRequest,
 } from '@/domain/schemas';
+import { tagLabel, type TagSpec } from '@/domain/tags';
 import {
   and,
   asc,
@@ -85,6 +90,8 @@ export type LeadPageOptions = {
   cursor?: Keyset | null;
   limit: number;
   query?: string;
+  tagId?: string;
+  tagScopeId?: string;
 };
 
 export type LeadRecord = {
@@ -101,6 +108,7 @@ export type LeadRecord = {
   rawPayload?: null | Record<string, unknown>;
   skippedFields: null | SkippedField[];
   source: string;
+  tags: TagViewRecord[];
   tokenId: null | string;
   tokenName?: null | string;
   tokenType?: 'api' | 'browser' | null;
@@ -136,6 +144,29 @@ const duplicateCountExpression = sql<number>`(
     AND duplicate.email = leads.email
 )`;
 
+/**
+ * Assigned tags as a JSON array in the SAME list/detail SELECT, so rendering a
+ * page never fans out into a per-lead lookup and the page query keeps one
+ * statement with a constant number of bound parameters. `COALESCE` keeps the
+ * no-tags case as `[]` instead of NULL. Order is applied after parsing.
+ */
+const tagsJsonExpression = sql<string>`COALESCE((
+  SELECT json_group_array(json_object(
+    'color', tag.color,
+    'createdAt', tag.created_at,
+    'id', tag.id,
+    'name', tag.name,
+    'scopeColor', scope.color,
+    'scopeId', tag.scope_id,
+    'scopePrefix', scope.prefix,
+    'updatedAt', tag.updated_at
+  ))
+  FROM lead_tags AS assignment
+  JOIN tags AS tag ON tag.id = assignment.tag_id
+  LEFT JOIN tag_scopes AS scope ON scope.id = tag.scope_id
+  WHERE assignment.lead_id = leads.id
+), '[]')`;
+
 type LeadListRow = Omit<
   typeof leads.$inferSelect,
   'rawPayload' | 'workspaceId'
@@ -145,6 +176,7 @@ const toLead = (
   row: LeadListRow & { duplicateCount: number },
   detail: {
     rawPayload?: null | Record<string, unknown>;
+    tags?: TagViewRecord[];
     tokenName?: null | string;
     tokenType?: 'api' | 'browser' | null;
   } = {},
@@ -161,12 +193,138 @@ const toLead = (
   origin: row.origin,
   skippedFields: row.skippedFields ?? null,
   source: row.source,
+  tags: detail.tags ?? [],
   tokenId: row.tokenId,
   updatedAt: row.updatedAt,
   ...(detail.rawPayload === undefined ? {} : { rawPayload: detail.rawPayload }),
   ...(detail.tokenName === undefined ? {} : { tokenName: detail.tokenName }),
   ...(detail.tokenType === undefined ? {} : { tokenType: detail.tokenType }),
 });
+
+export type CatalogTagRecord = TagViewRecord & { leadCount: number };
+
+export type TagScopeRecord = {
+  color: TagColor;
+  createdAt: Date;
+  id: string;
+  prefix: string;
+  updatedAt: Date;
+};
+
+export type TagViewRecord = {
+  color: TagColor;
+  createdAt: Date;
+  id: string;
+  label: string;
+  name: string;
+  scopeId: null | string;
+  updatedAt: Date;
+};
+
+const TAG_PALETTE = [
+  'teal',
+  'blue',
+  'violet',
+  'amber',
+] as const satisfies readonly TagColor[];
+
+const nextTagColor = (count: number): TagColor =>
+  TAG_PALETTE[count % TAG_PALETTE.length] ?? 'teal';
+
+const asTagColor = (value: null | string): TagColor =>
+  TAG_PALETTE.includes(value as TagColor) ? (value as TagColor) : 'teal';
+
+type TagRowWithScope = {
+  color: null | string;
+  createdAt: Date;
+  id: string;
+  name: string;
+  scopeColor: null | string;
+  scopeId: null | string;
+  scopePrefix: null | string;
+  updatedAt: Date;
+};
+
+const toTagViewRecord = (row: TagRowWithScope): TagViewRecord => ({
+  color: asTagColor(row.scopeColor ?? row.color),
+  createdAt: row.createdAt,
+  id: row.id,
+  label: tagLabel(row.name, row.scopePrefix),
+  name: row.name,
+  scopeId: row.scopeId,
+  updatedAt: row.updatedAt,
+});
+
+const parseTagsJson = (value: null | string): TagViewRecord[] => {
+  if (!value) {
+    return [];
+  }
+
+  try {
+    const rows = JSON.parse(value) as Array<
+      Omit<TagRowWithScope, 'createdAt' | 'updatedAt'> & {
+        createdAt: number;
+        updatedAt: number;
+      }
+    >;
+    return rows
+      .map((row) =>
+        toTagViewRecord({
+          ...row,
+          createdAt: new Date(row.createdAt),
+          updatedAt: new Date(row.updatedAt),
+        }),
+      )
+      .toSorted((left, right) => left.label.localeCompare(right.label));
+  } catch {
+    return [];
+  }
+};
+
+/**
+ * Loads the assigned tag views for a bounded set of lead ids in one query, so
+ * a list page or detail read never fans out into a per-row lookup.
+ */
+const tagViewsForLeads = async (
+  database: ReturnType<typeof getDatabase>,
+  leadIds: readonly string[],
+): Promise<Map<string, TagViewRecord[]>> => {
+  const result = new Map<string, TagViewRecord[]>();
+  if (leadIds.length === 0) {
+    return result;
+  }
+
+  const rows = await database
+    .select({
+      color: tags.color,
+      createdAt: tags.createdAt,
+      id: tags.id,
+      leadId: leadTags.leadId,
+      name: tags.name,
+      scopeColor: tagScopes.color,
+      scopeId: tags.scopeId,
+      scopePrefix: tagScopes.prefix,
+      updatedAt: tags.updatedAt,
+    })
+    .from(leadTags)
+    .innerJoin(tags, eq(tags.id, leadTags.tagId))
+    .leftJoin(tagScopes, eq(tagScopes.id, tags.scopeId))
+    .where(
+      and(
+        eq(leadTags.workspaceId, DEFAULT_WORKSPACE_ID),
+        sql`${leadTags.leadId} IN (SELECT value FROM json_each(${JSON.stringify(leadIds)}))`,
+      ),
+    )
+    .orderBy(asc(tags.name));
+
+  for (const row of rows) {
+    const list = result.get(row.leadId) ?? [];
+    list.push(toTagViewRecord(row));
+    result.set(row.leadId, list);
+  }
+
+  return result;
+};
 
 /**
  * Keyset (seek) pagination over (created_at DESC, id DESC), excluding
@@ -176,13 +334,28 @@ export const listLeads = async (
   environment: Env,
   options: LeadPageOptions,
 ): Promise<LeadPage> => {
-  const { cursor, limit, query } = options;
+  const { cursor, limit, query, tagId, tagScopeId } = options;
   const predicates = [
     eq(leads.workspaceId, DEFAULT_WORKSPACE_ID),
     isNull(leads.deletedAt),
   ];
   if (query) {
     predicates.push(leadSearchPredicate(query));
+  }
+
+  // Exact-tag and any-tag-in-scope filters are expressions in the same WHERE
+  // clause as the keyset cursor, so the page and its count are cut after
+  // filtering rather than against only the loaded rows.
+  if (tagId) {
+    predicates.push(
+      sql`EXISTS (SELECT 1 FROM lead_tags AS tag_filter WHERE tag_filter.lead_id = ${leads.id} AND tag_filter.tag_id = ${tagId})`,
+    );
+  }
+
+  if (tagScopeId) {
+    predicates.push(
+      sql`EXISTS (SELECT 1 FROM lead_tags AS tag_filter WHERE tag_filter.lead_id = ${leads.id} AND tag_filter.scope_id = ${tagScopeId})`,
+    );
   }
 
   if (cursor) {
@@ -206,6 +379,7 @@ export const listLeads = async (
       origin: leads.origin,
       skippedFields: leads.skippedFields,
       source: leads.source,
+      tagsJson: tagsJsonExpression,
       tokenId: leads.tokenId,
       updatedAt: leads.updatedAt,
     })
@@ -217,7 +391,9 @@ export const listLeads = async (
   const pageRows = hasNextPage ? rows.slice(0, limit) : rows;
   const last = pageRows.at(-1);
   return {
-    leads: pageRows.map((row) => toLead(row)),
+    leads: pageRows.map((row) =>
+      toLead(row, { tags: parseTagsJson(row.tagsJson) }),
+    ),
     nextCursor:
       hasNextPage && last
         ? encodeKeysetCursor({
@@ -236,6 +412,7 @@ export const getLead = async (
     .select({
       ...getTableColumns(leads),
       duplicateCount: duplicateCountExpression,
+      tagsJson: tagsJsonExpression,
     })
     .from(leads)
     .where(
@@ -255,6 +432,7 @@ export const getLead = async (
     : undefined;
   return toLead(row, {
     rawPayload: row.rawPayload,
+    tags: parseTagsJson(row.tagsJson),
     tokenName: token?.name ?? null,
     tokenType: token?.type ?? null,
   });
@@ -933,6 +1111,882 @@ export const outcomeForStoredIntakeKey = (
   }
 };
 
+// --- Tags catalog and lead assignments -------------------------------------
+//
+// A scope is inferred from a `prefix:value` tag name and owns one shared
+// color. A tag stores a stable id; a scoped tag points at its scope and a
+// standalone tag carries its own color. Exclusivity is enforced by the
+// `lead_tags_lead_scope_unique` partial unique index, not by the UI.
+
+type TagPlan = {
+  assignments: Array<{ scopeId: null | string; tagId: string }>;
+  newScopes: Array<{ color: TagColor; id: string; prefix: string }>;
+  newTags: Array<{
+    color: null | TagColor;
+    id: string;
+    name: string;
+    scopeId: null | string;
+  }>;
+};
+
+/**
+ * Deterministic last-in-payload-wins: a later scoped tag replaces an earlier
+ * sibling in the same scope; standalone tags de-duplicate by name.
+ */
+const dedupeTagSpecs = (specs: readonly TagSpec[]): TagSpec[] => {
+  const result: TagSpec[] = [];
+  const scoped = new Map<string, number>();
+  const standalone = new Set<string>();
+  for (const spec of specs) {
+    if (spec.prefix) {
+      const index = scoped.get(spec.prefix);
+      if (index === undefined) {
+        scoped.set(spec.prefix, result.length);
+        result.push(spec);
+      } else {
+        result[index] = spec;
+      }
+    } else if (!standalone.has(spec.name)) {
+      standalone.add(spec.name);
+      result.push(spec);
+    }
+  }
+
+  return result;
+};
+
+const errorText = (error: unknown): string => {
+  const parts: string[] = [];
+  let current: unknown = error;
+  for (
+    let depth = 0;
+    depth < 5 && current !== null && current !== undefined;
+    depth += 1
+  ) {
+    if (current instanceof Error) {
+      parts.push(current.message);
+      current = current.cause;
+    } else {
+      parts.push(String(current));
+      break;
+    }
+  }
+
+  return parts.join(' | ');
+};
+
+const isUniqueViolation = (error: unknown): boolean =>
+  /UNIQUE constraint failed/iu.test(errorText(error));
+
+const uniqueConstraintTarget = (error: unknown): null | string => {
+  const match = /UNIQUE constraint failed: ([\w.]+)/iu.exec(errorText(error));
+  return match?.[1]?.toLowerCase() ?? null;
+};
+
+/**
+ * Reads the current catalog and plans the scopes/tags needed for a set of
+ * specs. Existing rows keep their ids; missing rows get ids generated here so
+ * the caller can reference them in one atomic batch. A concurrent writer can
+ * still win the unique index, which the caller retries against the re-read
+ * catalog.
+ */
+const resolveTagPlan = async (
+  environment: Env,
+  specs: readonly TagSpec[],
+): Promise<TagPlan> => {
+  const deduped = dedupeTagSpecs(specs);
+  const database = getDatabase(environment);
+  const scopeRows = await database
+    .select({ id: tagScopes.id, prefix: tagScopes.prefix })
+    .from(tagScopes)
+    .where(eq(tagScopes.workspaceId, DEFAULT_WORKSPACE_ID));
+  const tagRows = await database
+    .select({ id: tags.id, name: tags.name, scopeId: tags.scopeId })
+    .from(tags)
+    .where(eq(tags.workspaceId, DEFAULT_WORKSPACE_ID));
+  const scopesByPrefix = new Map<string, string>(
+    scopeRows.map((row) => [row.prefix, row.id]),
+  );
+  const tagsByKey = new Map<string, string>(
+    tagRows.map((row) => [`${row.scopeId ?? ''}\u0000${row.name}`, row.id]),
+  );
+
+  const newScopes: TagPlan['newScopes'] = [];
+  const newTags: TagPlan['newTags'] = [];
+  const assignments: TagPlan['assignments'] = [];
+  for (const spec of deduped) {
+    let scopeId: null | string = null;
+    if (spec.prefix) {
+      const existingScope = scopesByPrefix.get(spec.prefix);
+      if (existingScope === undefined) {
+        const plannedScope = newScopes.find(
+          (scope) => scope.prefix === spec.prefix,
+        );
+        if (plannedScope) {
+          scopeId = plannedScope.id;
+        } else {
+          scopeId = id();
+          newScopes.push({
+            color: nextTagColor(scopeRows.length + newScopes.length),
+            id: scopeId,
+            prefix: spec.prefix,
+          });
+        }
+      } else {
+        scopeId = existingScope;
+      }
+    }
+
+    const key = `${scopeId ?? ''}\u0000${spec.name}`;
+    let tagId = tagsByKey.get(key);
+    if (tagId === undefined) {
+      const plannedTag = newTags.find(
+        (tag) => tag.scopeId === scopeId && tag.name === spec.name,
+      );
+      if (plannedTag) {
+        tagId = plannedTag.id;
+      } else {
+        tagId = id();
+        newTags.push({
+          color: scopeId ? null : nextTagColor(tagRows.length + newTags.length),
+          id: tagId,
+          name: spec.name,
+          scopeId,
+        });
+      }
+    }
+
+    assignments.push({ scopeId, tagId });
+  }
+
+  return { assignments, newScopes, newTags };
+};
+
+const tagPlanStatements = (
+  environment: Env,
+  plan: TagPlan,
+  timestamp: number,
+): Statement[] => [
+  ...plan.newScopes.map((scope) =>
+    prepare(
+      environment.DB,
+      'INSERT INTO tag_scopes (id, workspace_id, prefix, color, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
+    ).bind(
+      scope.id,
+      DEFAULT_WORKSPACE_ID,
+      scope.prefix,
+      scope.color,
+      timestamp,
+      timestamp,
+    ),
+  ),
+  ...plan.newTags.map((tag) =>
+    prepare(
+      environment.DB,
+      'INSERT INTO tags (id, workspace_id, name, scope_id, color, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    ).bind(
+      tag.id,
+      DEFAULT_WORKSPACE_ID,
+      tag.name,
+      tag.scopeId,
+      tag.color,
+      timestamp,
+      timestamp,
+    ),
+  ),
+];
+
+const leadTagStatements = (
+  environment: Env,
+  leadId: string,
+  assignments: TagPlan['assignments'],
+  timestamp: number,
+): Statement[] =>
+  assignments.map((assignment) =>
+    prepare(
+      environment.DB,
+      'INSERT INTO lead_tags (id, workspace_id, lead_id, tag_id, scope_id, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+    ).bind(
+      id(),
+      DEFAULT_WORKSPACE_ID,
+      leadId,
+      assignment.tagId,
+      assignment.scopeId,
+      timestamp,
+    ),
+  );
+
+const tagViewSelect = {
+  color: tags.color,
+  createdAt: tags.createdAt,
+  id: tags.id,
+  name: tags.name,
+  scopeColor: tagScopes.color,
+  scopeId: tags.scopeId,
+  scopePrefix: tagScopes.prefix,
+  updatedAt: tags.updatedAt,
+} as const;
+
+const getTagView = async (
+  environment: Env,
+  tagId: string,
+): Promise<TagViewRecord | undefined> => {
+  const row = await getDatabase(environment)
+    .select(tagViewSelect)
+    .from(tags)
+    .leftJoin(tagScopes, eq(tagScopes.id, tags.scopeId))
+    .where(and(eq(tags.workspaceId, DEFAULT_WORKSPACE_ID), eq(tags.id, tagId)))
+    .get();
+  return row ? toTagViewRecord(row) : undefined;
+};
+
+const getScopeView = async (
+  environment: Env,
+  scopeId: string,
+): Promise<TagScopeRecord | undefined> => {
+  const row = await getDatabase(environment)
+    .select()
+    .from(tagScopes)
+    .where(
+      and(
+        eq(tagScopes.workspaceId, DEFAULT_WORKSPACE_ID),
+        eq(tagScopes.id, scopeId),
+      ),
+    )
+    .get();
+  return row
+    ? {
+        color: asTagColor(row.color),
+        createdAt: row.createdAt,
+        id: row.id,
+        prefix: row.prefix,
+        updatedAt: row.updatedAt,
+      }
+    : undefined;
+};
+
+export const listTagCatalog = async (
+  environment: Env,
+): Promise<{ scopes: TagScopeRecord[]; tags: CatalogTagRecord[] }> => {
+  const database = getDatabase(environment);
+  const scopeRows = await database
+    .select()
+    .from(tagScopes)
+    .where(eq(tagScopes.workspaceId, DEFAULT_WORKSPACE_ID))
+    .orderBy(asc(tagScopes.prefix));
+  const tagRows = await database
+    .select({
+      ...tagViewSelect,
+      leadCount: sql<number>`(SELECT count(*) FROM lead_tags AS usage JOIN leads AS used ON used.id = usage.lead_id WHERE usage.tag_id = ${tags.id} AND used.deleted_at IS NULL)`,
+    })
+    .from(tags)
+    .leftJoin(tagScopes, eq(tagScopes.id, tags.scopeId))
+    .where(eq(tags.workspaceId, DEFAULT_WORKSPACE_ID));
+
+  return {
+    scopes: scopeRows.map((row) => ({
+      color: asTagColor(row.color),
+      createdAt: row.createdAt,
+      id: row.id,
+      prefix: row.prefix,
+      updatedAt: row.updatedAt,
+    })),
+    tags: tagRows
+      .map((row) => ({
+        ...toTagViewRecord(row),
+        leadCount: Number(row.leadCount),
+      }))
+      .toSorted((left, right) => left.label.localeCompare(right.label)),
+  };
+};
+
+export type TagMutationOutcome =
+  | {
+      code: 'scope_conflict' | 'scope_exists' | 'tag_exists';
+      kind: 'conflict';
+      message: string;
+    }
+  | { kind: 'not-found' }
+  | { kind: 'ok'; tag: TagViewRecord };
+
+const tagConflict = (
+  target: null | string,
+): Extract<TagMutationOutcome, { kind: 'conflict' }> => {
+  if (target?.startsWith('lead_tags')) {
+    return {
+      code: 'scope_conflict',
+      kind: 'conflict',
+      message:
+        'Some assigned leads already have another tag in that scope. Resolve those conflicts before moving this tag.',
+    };
+  }
+
+  if (target?.startsWith('tag_scopes')) {
+    return {
+      code: 'scope_exists',
+      kind: 'conflict',
+      message: 'That scope already exists. Choose another prefix.',
+    };
+  }
+
+  return {
+    code: 'tag_exists',
+    kind: 'conflict',
+    message: 'That tag already exists. Choose another name.',
+  };
+};
+
+const findTagBySpec = async (
+  environment: Env,
+  scopeId: null | string,
+  name: string,
+) =>
+  getDatabase(environment)
+    .select({ id: tags.id })
+    .from(tags)
+    .where(
+      and(
+        eq(tags.workspaceId, DEFAULT_WORKSPACE_ID),
+        scopeId === null ? isNull(tags.scopeId) : eq(tags.scopeId, scopeId),
+        eq(tags.name, name),
+      ),
+    )
+    .get();
+
+export const createTag = async (
+  environment: Env,
+  spec: TagSpec,
+): Promise<TagMutationOutcome> => {
+  const database = getDatabase(environment);
+  const scope = spec.prefix
+    ? await database
+        .select()
+        .from(tagScopes)
+        .where(
+          and(
+            eq(tagScopes.workspaceId, DEFAULT_WORKSPACE_ID),
+            eq(tagScopes.prefix, spec.prefix),
+          ),
+        )
+        .get()
+    : undefined;
+  const scopeId = scope?.id ?? null;
+  if (await findTagBySpec(environment, scopeId, spec.name)) {
+    return tagConflict('tags.workspace_name');
+  }
+
+  const scopeCount = await database
+    .select({ count: sql<number>`count(*)` })
+    .from(tagScopes)
+    .where(eq(tagScopes.workspaceId, DEFAULT_WORKSPACE_ID))
+    .get();
+  const tagCount = await database
+    .select({ count: sql<number>`count(*)` })
+    .from(tags)
+    .where(eq(tags.workspaceId, DEFAULT_WORKSPACE_ID))
+    .get();
+  const timestamp = now().getTime();
+  const effectiveScopeId = spec.prefix ? (scopeId ?? id()) : null;
+  const tagId = id();
+  const statements: Statement[] = [];
+  if (spec.prefix && !scope) {
+    statements.push(
+      prepare(
+        environment.DB,
+        'INSERT INTO tag_scopes (id, workspace_id, prefix, color, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
+      ).bind(
+        effectiveScopeId,
+        DEFAULT_WORKSPACE_ID,
+        spec.prefix,
+        nextTagColor(Number(scopeCount?.count ?? 0)),
+        timestamp,
+        timestamp,
+      ),
+    );
+  }
+
+  statements.push(
+    prepare(
+      environment.DB,
+      'INSERT INTO tags (id, workspace_id, name, scope_id, color, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    ).bind(
+      tagId,
+      DEFAULT_WORKSPACE_ID,
+      spec.name,
+      effectiveScopeId,
+      effectiveScopeId ? null : nextTagColor(Number(tagCount?.count ?? 0)),
+      timestamp,
+      timestamp,
+    ),
+  );
+
+  try {
+    await executeAtomically(environment.DB, statements);
+  } catch (error) {
+    if (isUniqueViolation(error)) {
+      return tagConflict(uniqueConstraintTarget(error));
+    }
+
+    throw error;
+  }
+
+  const tag = await getTagView(environment, tagId);
+  return tag ? { kind: 'ok', tag } : { kind: 'not-found' };
+};
+
+export const updateTag = async (
+  environment: Env,
+  tagId: string,
+  patch: { color?: TagColor; name?: TagSpec },
+): Promise<TagMutationOutcome> => {
+  const database = getDatabase(environment);
+  const current = await database
+    .select()
+    .from(tags)
+    .where(and(eq(tags.workspaceId, DEFAULT_WORKSPACE_ID), eq(tags.id, tagId)))
+    .get();
+  if (!current) {
+    return { kind: 'not-found' };
+  }
+
+  const timestamp = now().getTime();
+  const statements: Statement[] = [];
+  let targetScopeId: null | string = current.scopeId;
+  let targetColor = current.color;
+  let oldScopeId: null | string = null;
+  let moved = false;
+
+  if (patch.name) {
+    if (patch.name.prefix) {
+      const scope = await database
+        .select()
+        .from(tagScopes)
+        .where(
+          and(
+            eq(tagScopes.workspaceId, DEFAULT_WORKSPACE_ID),
+            eq(tagScopes.prefix, patch.name.prefix),
+          ),
+        )
+        .get();
+      if (scope) {
+        targetScopeId = scope.id;
+      } else {
+        targetScopeId = id();
+        const scopeCount = await database
+          .select({ count: sql<number>`count(*)` })
+          .from(tagScopes)
+          .where(eq(tagScopes.workspaceId, DEFAULT_WORKSPACE_ID))
+          .get();
+        statements.push(
+          prepare(
+            environment.DB,
+            'INSERT INTO tag_scopes (id, workspace_id, prefix, color, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
+          ).bind(
+            targetScopeId,
+            DEFAULT_WORKSPACE_ID,
+            patch.name.prefix,
+            nextTagColor(Number(scopeCount?.count ?? 0)),
+            timestamp,
+            timestamp,
+          ),
+        );
+      }
+    } else {
+      targetScopeId = null;
+      if (!targetColor) {
+        const tagCount = await database
+          .select({ count: sql<number>`count(*)` })
+          .from(tags)
+          .where(eq(tags.workspaceId, DEFAULT_WORKSPACE_ID))
+          .get();
+        targetColor = nextTagColor(Number(tagCount?.count ?? 0));
+      }
+    }
+
+    moved = targetScopeId !== current.scopeId;
+    if (moved) {
+      oldScopeId = current.scopeId;
+    }
+
+    statements.push(
+      prepare(
+        environment.DB,
+        'UPDATE tags SET name = ?, scope_id = ?, color = ?, updated_at = ? WHERE id = ? AND workspace_id = ?',
+      ).bind(
+        patch.name.name,
+        targetScopeId,
+        targetColor,
+        timestamp,
+        tagId,
+        DEFAULT_WORKSPACE_ID,
+      ),
+    );
+    if (moved) {
+      statements.push(
+        prepare(
+          environment.DB,
+          'UPDATE lead_tags SET scope_id = ? WHERE tag_id = ? AND workspace_id = ?',
+        ).bind(targetScopeId, tagId, DEFAULT_WORKSPACE_ID),
+      );
+    }
+  }
+
+  if (patch.color) {
+    if (targetScopeId) {
+      statements.push(
+        prepare(
+          environment.DB,
+          'UPDATE tag_scopes SET color = ?, updated_at = ? WHERE id = ? AND workspace_id = ?',
+        ).bind(patch.color, timestamp, targetScopeId, DEFAULT_WORKSPACE_ID),
+      );
+    } else {
+      statements.push(
+        prepare(
+          environment.DB,
+          'UPDATE tags SET color = ?, updated_at = ? WHERE id = ? AND workspace_id = ?',
+        ).bind(patch.color, timestamp, tagId, DEFAULT_WORKSPACE_ID),
+      );
+    }
+  }
+
+  if (moved && oldScopeId) {
+    // An inferred scope is pruned once its final tag has been moved out.
+    statements.push(
+      prepare(
+        environment.DB,
+        'DELETE FROM tag_scopes WHERE id = ? AND workspace_id = ? AND NOT EXISTS (SELECT 1 FROM tags WHERE scope_id = ?)',
+      ).bind(oldScopeId, DEFAULT_WORKSPACE_ID, oldScopeId),
+    );
+  }
+
+  if (statements.length === 0) {
+    const unchanged = await getTagView(environment, tagId);
+    return unchanged ? { kind: 'ok', tag: unchanged } : { kind: 'not-found' };
+  }
+
+  try {
+    await executeAtomically(environment.DB, statements);
+  } catch (error) {
+    if (isUniqueViolation(error)) {
+      return tagConflict(uniqueConstraintTarget(error));
+    }
+
+    throw error;
+  }
+
+  const tag = await getTagView(environment, tagId);
+  return tag ? { kind: 'ok', tag } : { kind: 'not-found' };
+};
+
+export type TagScopeMutationOutcome =
+  | {
+      code: 'scope_exists';
+      kind: 'conflict';
+      message: string;
+    }
+  | { kind: 'not-found' }
+  | { kind: 'ok'; scope: TagScopeRecord };
+
+export const updateTagScope = async (
+  environment: Env,
+  scopeId: string,
+  patch: { color?: TagColor; prefix?: string },
+): Promise<TagScopeMutationOutcome> => {
+  const database = getDatabase(environment);
+  const current = await database
+    .select()
+    .from(tagScopes)
+    .where(
+      and(
+        eq(tagScopes.workspaceId, DEFAULT_WORKSPACE_ID),
+        eq(tagScopes.id, scopeId),
+      ),
+    )
+    .get();
+  if (!current) {
+    return { kind: 'not-found' };
+  }
+
+  try {
+    await executeAtomically(environment.DB, [
+      prepare(
+        environment.DB,
+        'UPDATE tag_scopes SET color = ?, prefix = ?, updated_at = ? WHERE id = ? AND workspace_id = ?',
+      ).bind(
+        patch.color ?? asTagColor(current.color),
+        patch.prefix ?? current.prefix,
+        now().getTime(),
+        scopeId,
+        DEFAULT_WORKSPACE_ID,
+      ),
+    ]);
+  } catch (error) {
+    if (isUniqueViolation(error)) {
+      return {
+        code: 'scope_exists',
+        kind: 'conflict',
+        message: 'That scope already exists. Choose another name.',
+      };
+    }
+
+    throw error;
+  }
+
+  const scope = await getScopeView(environment, scopeId);
+  return scope ? { kind: 'ok', scope } : { kind: 'not-found' };
+};
+
+export type DeleteTagOutcome =
+  { kind: 'deleted'; removed: number } | { kind: 'not-found' };
+
+export const deleteTag = async (
+  environment: Env,
+  tagId: string,
+): Promise<DeleteTagOutcome> => {
+  const database = getDatabase(environment);
+  const current = await database
+    .select({ scopeId: tags.scopeId })
+    .from(tags)
+    .where(and(eq(tags.workspaceId, DEFAULT_WORKSPACE_ID), eq(tags.id, tagId)))
+    .get();
+  if (!current) {
+    return { kind: 'not-found' };
+  }
+
+  const removed = await database
+    .select({ count: sql<number>`count(*)` })
+    .from(leadTags)
+    .where(eq(leadTags.tagId, tagId))
+    .get();
+  const statements: Statement[] = [
+    prepare(
+      environment.DB,
+      'DELETE FROM lead_tags WHERE tag_id = ? AND workspace_id = ?',
+    ).bind(tagId, DEFAULT_WORKSPACE_ID),
+    prepare(
+      environment.DB,
+      'DELETE FROM tags WHERE id = ? AND workspace_id = ?',
+    ).bind(tagId, DEFAULT_WORKSPACE_ID),
+  ];
+  if (current.scopeId) {
+    statements.push(
+      prepare(
+        environment.DB,
+        'DELETE FROM tag_scopes WHERE id = ? AND workspace_id = ? AND NOT EXISTS (SELECT 1 FROM tags WHERE scope_id = ?)',
+      ).bind(current.scopeId, DEFAULT_WORKSPACE_ID, current.scopeId),
+    );
+  }
+
+  await executeAtomically(environment.DB, statements);
+  return { kind: 'deleted', removed: Number(removed?.count ?? 0) };
+};
+
+const resolveAssignmentsByIds = async (
+  environment: Env,
+  tagIds: readonly string[],
+): Promise<{
+  assignments: TagPlan['assignments'];
+  unknown: string[];
+}> => {
+  const unique = [...new Set(tagIds)];
+  if (unique.length === 0) {
+    return { assignments: [], unknown: [] };
+  }
+
+  const rows = await getDatabase(environment)
+    .select({ id: tags.id, scopeId: tags.scopeId })
+    .from(tags)
+    .where(
+      and(
+        eq(tags.workspaceId, DEFAULT_WORKSPACE_ID),
+        sql`${tags.id} IN (SELECT value FROM json_each(${JSON.stringify(unique)}))`,
+      ),
+    );
+  const byId = new Map<string, null | string>(
+    rows.map((row) => [row.id, row.scopeId]),
+  );
+  const unknown = unique.filter((tagId) => !byId.has(tagId));
+  const assignments: TagPlan['assignments'] = [];
+  const scopeIndex = new Map<string, number>();
+  for (const tagId of unique) {
+    const scopeId = byId.get(tagId);
+    if (scopeId === undefined) {
+      continue;
+    }
+
+    if (scopeId === null) {
+      assignments.push({ scopeId, tagId });
+    } else {
+      const index = scopeIndex.get(scopeId);
+      if (index === undefined) {
+        scopeIndex.set(scopeId, assignments.length);
+        assignments.push({ scopeId, tagId });
+      } else {
+        // Last-in-list wins within an exclusive scope.
+        assignments[index] = { scopeId, tagId };
+      }
+    }
+  }
+
+  return { assignments, unknown };
+};
+
+export type SetLeadTagsOutcome =
+  | { kind: 'not-found' }
+  | { kind: 'ok'; tags: TagViewRecord[] }
+  | { kind: 'unknown-tag'; tagIds: string[] };
+
+export const setLeadTags = async (
+  environment: Env,
+  leadId: string,
+  tagIds: readonly string[],
+): Promise<SetLeadTagsOutcome> => {
+  const database = getDatabase(environment);
+  const lead = await database
+    .select({ id: leads.id })
+    .from(leads)
+    .where(
+      and(
+        eq(leads.workspaceId, DEFAULT_WORKSPACE_ID),
+        eq(leads.id, leadId),
+        isNull(leads.deletedAt),
+      ),
+    )
+    .get();
+  if (!lead) {
+    return { kind: 'not-found' };
+  }
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const resolved = await resolveAssignmentsByIds(environment, tagIds);
+    if (resolved.unknown.length > 0) {
+      return { kind: 'unknown-tag', tagIds: resolved.unknown };
+    }
+
+    const statements: Statement[] = [
+      prepare(
+        environment.DB,
+        'DELETE FROM lead_tags WHERE lead_id = ? AND workspace_id = ?',
+      ).bind(leadId, DEFAULT_WORKSPACE_ID),
+      ...leadTagStatements(
+        environment,
+        leadId,
+        resolved.assignments,
+        now().getTime(),
+      ),
+    ];
+    try {
+      await executeAtomically(environment.DB, statements);
+      const map = await tagViewsForLeads(database, [leadId]);
+      return { kind: 'ok', tags: map.get(leadId) ?? [] };
+    } catch (error) {
+      if (isUniqueViolation(error) && attempt < 2) {
+        continue;
+      }
+
+      throw error;
+    }
+  }
+
+  throw new Error('The lead tags could not be saved after retries.');
+};
+
+export type BulkTagOutcome =
+  | { affected: number; kind: 'ok' }
+  | { kind: 'unknown-lead'; leadIds: string[] }
+  | { kind: 'unknown-tag'; tagIds: string[] };
+
+export const bulkTag = async (
+  environment: Env,
+  leadIds: readonly string[],
+  tagIds: readonly string[],
+  mode: 'add' | 'remove',
+): Promise<BulkTagOutcome> => {
+  const database = getDatabase(environment);
+  const uniqueLeads = [...new Set(leadIds)];
+  const uniqueTags = [...new Set(tagIds)];
+  const existingLeads = await database
+    .select({ id: leads.id })
+    .from(leads)
+    .where(
+      and(
+        eq(leads.workspaceId, DEFAULT_WORKSPACE_ID),
+        isNull(leads.deletedAt),
+        sql`${leads.id} IN (SELECT value FROM json_each(${JSON.stringify(uniqueLeads)}))`,
+      ),
+    );
+  const existingIds = new Set(existingLeads.map((row) => row.id));
+  const missingLeads = uniqueLeads.filter((leadId) => !existingIds.has(leadId));
+  if (missingLeads.length > 0) {
+    return { kind: 'unknown-lead', leadIds: missingLeads };
+  }
+
+  if (mode === 'remove') {
+    const result = await database
+      .delete(leadTags)
+      .where(
+        and(
+          eq(leadTags.workspaceId, DEFAULT_WORKSPACE_ID),
+          sql`${leadTags.leadId} IN (SELECT value FROM json_each(${JSON.stringify(uniqueLeads)}))`,
+          sql`${leadTags.tagId} IN (SELECT value FROM json_each(${JSON.stringify(uniqueTags)}))`,
+        ),
+      )
+      .run();
+    return { affected: Number(result.meta.changes), kind: 'ok' };
+  }
+
+  const resolved = await resolveAssignmentsByIds(environment, uniqueTags);
+  if (resolved.unknown.length > 0) {
+    return { kind: 'unknown-tag', tagIds: resolved.unknown };
+  }
+
+  const scopedIds = resolved.assignments
+    .map((assignment) => assignment.scopeId)
+    .filter((scopeId): scopeId is string => scopeId !== null);
+  const timestamp = now().getTime();
+  const statements: Statement[] = [
+    prepare(
+      environment.DB,
+      `DELETE FROM lead_tags
+        WHERE workspace_id = ?
+          AND lead_id IN (SELECT value FROM json_each(?))
+          AND (
+            tag_id IN (SELECT value FROM json_each(?))
+            OR scope_id IN (SELECT value FROM json_each(?))
+          )`,
+    ).bind(
+      DEFAULT_WORKSPACE_ID,
+      JSON.stringify(uniqueLeads),
+      JSON.stringify(uniqueTags),
+      JSON.stringify(scopedIds),
+    ),
+    prepare(
+      environment.DB,
+      `INSERT INTO lead_tags (id, workspace_id, lead_id, tag_id, scope_id, created_at)
+        SELECT
+          '0' || substr(hex(randomblob(13)), 1, 25),
+          l.workspace_id,
+          l.id,
+          json_extract(assignment.value, '$.tagId'),
+          json_extract(assignment.value, '$.scopeId'),
+          ?
+        FROM json_each(?) AS ids
+        JOIN leads AS l
+          ON l.id = ids.value
+          AND l.workspace_id = ?
+          AND l.deleted_at IS NULL
+        CROSS JOIN json_each(?) AS assignment`,
+    ).bind(
+      timestamp,
+      JSON.stringify(uniqueLeads),
+      DEFAULT_WORKSPACE_ID,
+      JSON.stringify(resolved.assignments),
+    ),
+  ];
+  await executeAtomically(environment.DB, statements);
+  return { affected: uniqueLeads.length, kind: 'ok' };
+};
+
 export const createLeadAtomically = async (
   environment: Env,
   input: IntakeRequest,
@@ -940,6 +1994,7 @@ export const createLeadAtomically = async (
   requestHash: string,
   provenance?: { origin: null | string; tokenId: null | string },
   rawPayload?: unknown,
+  tagSpecs: readonly TagSpec[] = [],
 ): Promise<IntakePersistenceOutcome> => {
   // Raw D1 binds do not accept Date, so work in Unix milliseconds directly.
   const timestamp = now().getTime();
@@ -947,101 +2002,150 @@ export const createLeadAtomically = async (
   const activityId = id();
   const email = normalizeEmail(input.email);
   const response: IntakeResponse = { created: true, leadId };
-  const statements: Statement[] = [
-    prepare(
-      environment.DB,
-      `INSERT INTO leads (
-          id, workspace_id, email, first_name, last_name,
-          source, estimated_value, custom_fields, raw_payload, skipped_fields,
-          origin, token_id, created_at, updated_at, deleted_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
-    ).bind(
-      leadId,
-      DEFAULT_WORKSPACE_ID,
-      email,
-      input.firstName ?? null,
-      input.lastName ?? null,
-      input.source,
-      input.estimatedValue ?? null,
-      JSON.stringify(input.customFields ?? {}),
-      rawPayload === undefined ? null : JSON.stringify(rawPayload),
-      input.skippedFields ? JSON.stringify(input.skippedFields) : null,
-      provenance?.origin ?? null,
-      provenance?.tokenId ?? null,
-      timestamp,
-      timestamp,
-    ),
-    prepare(
-      environment.DB,
-      `INSERT INTO activities (
-          id, workspace_id, lead_id, kind, body, metadata, created_at
-        ) VALUES (?, ?, ?, 'intake', ?, ?, ?)`,
-    ).bind(
-      activityId,
-      DEFAULT_WORKSPACE_ID,
-      leadId,
-      `Received from ${input.source}`,
-      JSON.stringify({ source: input.source }),
-      timestamp,
-    ),
-    prepare(
-      environment.DB,
-      'INSERT INTO idempotency_keys (workspace_id, key, request_hash, response_json, created_at) VALUES (?, ?, ?, ?, ?)',
-    ).bind(
-      DEFAULT_WORKSPACE_ID,
-      idempotencyKey,
-      requestHash,
-      JSON.stringify(response),
-      timestamp,
-    ),
-  ];
+  const leadStatement = prepare(
+    environment.DB,
+    `INSERT INTO leads (
+        id, workspace_id, email, first_name, last_name,
+        source, estimated_value, custom_fields, raw_payload, skipped_fields,
+        origin, token_id, created_at, updated_at, deleted_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+  ).bind(
+    leadId,
+    DEFAULT_WORKSPACE_ID,
+    email,
+    input.firstName ?? null,
+    input.lastName ?? null,
+    input.source,
+    input.estimatedValue ?? null,
+    JSON.stringify(input.customFields ?? {}),
+    rawPayload === undefined ? null : JSON.stringify(rawPayload),
+    input.skippedFields ? JSON.stringify(input.skippedFields) : null,
+    provenance?.origin ?? null,
+    provenance?.tokenId ?? null,
+    timestamp,
+    timestamp,
+  );
+  const activityStatement = prepare(
+    environment.DB,
+    `INSERT INTO activities (
+        id, workspace_id, lead_id, kind, body, metadata, created_at
+      ) VALUES (?, ?, ?, 'intake', ?, ?, ?)`,
+  ).bind(
+    activityId,
+    DEFAULT_WORKSPACE_ID,
+    leadId,
+    `Received from ${input.source}`,
+    JSON.stringify({ source: input.source }),
+    timestamp,
+  );
+  const idempotencyStatement = prepare(
+    environment.DB,
+    'INSERT INTO idempotency_keys (workspace_id, key, request_hash, response_json, created_at) VALUES (?, ?, ?, ?, ?)',
+  ).bind(
+    DEFAULT_WORKSPACE_ID,
+    idempotencyKey,
+    requestHash,
+    JSON.stringify(response),
+    timestamp,
+  );
 
-  try {
-    await executeAtomically(environment.DB, statements);
-    return { kind: 'created', response };
-  } catch (error) {
-    // A unique-key collision means a concurrent request already committed
-    // this key; any other failure committed nothing. Re-read and apply the
-    // SAME fingerprint/legacy rules as the fast path — never an
-    // unconditional replay — then surface the original error if no accepted
-    // row exists.
-    const stored = await getIntakeKey(environment, idempotencyKey);
-    const outcome = outcomeForStoredIntakeKey(stored, requestHash);
-    if (outcome) {
-      return outcome;
+  // A concurrent writer can create the same scope/tag between the plan read
+  // and the batch, which aborts the whole batch on the unique index. Because
+  // the batch is atomic nothing was committed, so a bounded retry re-reads the
+  // catalog and rebuilds the plan. New tags stay in the same batch as the
+  // lead, so a failure rolls every associated write back.
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const plan = await resolveTagPlan(environment, tagSpecs);
+    const statements: Statement[] = [
+      ...tagPlanStatements(environment, plan, timestamp),
+      leadStatement,
+      ...leadTagStatements(environment, leadId, plan.assignments, timestamp),
+      activityStatement,
+      idempotencyStatement,
+    ];
+    try {
+      await executeAtomically(environment.DB, statements);
+      return { kind: 'created', response };
+    } catch (error) {
+      // A unique-key collision on the idempotency row means a concurrent
+      // request already committed this key; any other failure committed
+      // nothing. Re-read and apply the SAME fingerprint/legacy rules as the
+      // fast path — never an unconditional replay.
+      const stored = await getIntakeKey(environment, idempotencyKey);
+      const outcome = outcomeForStoredIntakeKey(stored, requestHash);
+      if (outcome) {
+        return outcome;
+      }
+
+      if (isUniqueViolation(error) && attempt < 2) {
+        continue;
+      }
+
+      throw error;
     }
-
-    throw error;
   }
+
+  throw new Error('The intake could not be persisted after tag conflicts.');
 };
 
 export const createLead = async (
   environment: Env,
   input: CreateLeadRequest,
+  tagSpecs: readonly TagSpec[] = [],
 ): Promise<LeadRecord> => {
-  const timestamp = now();
+  const ms = now().getTime();
+  const leadId = id();
   const email = input.email ? normalizeEmail(input.email) : null;
   const firstName = input.firstName ?? null;
   const lastName = input.lastName ?? null;
-  const record: typeof leads.$inferSelect = {
-    createdAt: timestamp,
-    customFields: input.customFields ?? {},
-    deletedAt: null,
+  const source = input.source ?? 'Manual entry';
+  const estimatedValue = input.estimatedValue ?? null;
+  const customFields = input.customFields ?? {};
+  const leadStatement = prepare(
+    environment.DB,
+    `INSERT INTO leads (
+        id, workspace_id, email, first_name, last_name,
+        source, estimated_value, custom_fields, raw_payload, skipped_fields,
+        origin, token_id, created_at, updated_at, deleted_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, NULL)`,
+  ).bind(
+    leadId,
+    DEFAULT_WORKSPACE_ID,
     email,
-    estimatedValue: input.estimatedValue ?? null,
     firstName,
-    id: id(),
     lastName,
-    origin: null,
-    rawPayload: null,
-    skippedFields: null,
-    source: input.source ?? 'Manual entry',
-    tokenId: null,
-    updatedAt: timestamp,
-    workspaceId: DEFAULT_WORKSPACE_ID,
-  };
-  await getDatabase(environment).insert(leads).values(record);
-  return toLead({ ...record, duplicateCount: 0 });
+    source,
+    estimatedValue,
+    JSON.stringify(customFields),
+    ms,
+    ms,
+  );
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const plan = await resolveTagPlan(environment, tagSpecs);
+    const statements: Statement[] = [
+      ...tagPlanStatements(environment, plan, ms),
+      leadStatement,
+      ...leadTagStatements(environment, leadId, plan.assignments, ms),
+    ];
+    try {
+      await executeAtomically(environment.DB, statements);
+      break;
+    } catch (error) {
+      if (isUniqueViolation(error) && attempt < 2) {
+        continue;
+      }
+
+      throw error;
+    }
+  }
+
+  const lead = await getLead(environment, leadId);
+  if (!lead) {
+    throw new Error('The lead could not be read after creation.');
+  }
+
+  return lead;
 };
 
 export const updateLead = async (

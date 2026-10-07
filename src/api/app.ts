@@ -14,6 +14,15 @@ import {
 } from '@/application/commands';
 import { type DomainError, type PersistenceError } from '@/application/errors';
 import {
+  bulkTagCommand,
+  createTagCommand,
+  deleteTagCommand,
+  listTagsCommand,
+  setLeadTagsCommand,
+  updateTagCommand,
+  updateTagScopeCommand,
+} from '@/application/tag-commands';
+import {
   type Auth,
   AuthConfigurationError,
   authenticationNotConfiguredResponse,
@@ -56,15 +65,20 @@ import { isIntakeKey } from '@/domain/intake';
 import { decodeKeysetCursor, LIST_LIMIT_DEFAULT } from '@/domain/pagination';
 import {
   BulkDeleteLeadsRequestSchema,
+  BulkTagRequestSchema,
   CreateInviteRequestSchema,
   CreateLeadActivityRequestSchema,
   CreateLeadRequestSchema,
+  CreateTagRequestSchema,
   CreateTokenRequestSchema,
   HealthSchema,
   IntakeRequestSchema,
   ListLeadsQuerySchema,
+  SetLeadTagsRequestSchema,
   SetStaffDisabledRequestSchema,
   UpdateLeadRequestSchema,
+  UpdateTagRequestSchema,
+  UpdateTagScopeRequestSchema,
   ValidateInviteRequestSchema,
 } from '@/domain/schemas';
 import { Effect, Either, Schema } from 'effect';
@@ -115,6 +129,20 @@ const rejectUntrustedOrigin = (
 };
 
 const UNSAFE_METHODS = new Set(['DELETE', 'PATCH', 'POST', 'PUT']);
+
+/**
+ * Domain codes that map to a non-422 status; everything else is 422.
+ */
+const DOMAIN_ERROR_STATUS: Record<string, number> = {
+  conflict: 409,
+  not_found: 404,
+  scope_conflict: 409,
+  scope_exists: 409,
+  tag_exists: 409,
+};
+
+const domainErrorStatus = (code: string): number =>
+  DOMAIN_ERROR_STATUS[code] ?? 422;
 
 /**
  * Cookie-authenticated staff routes set no CORS headers, so a hostile page
@@ -168,7 +196,12 @@ const run = async <A>(
     const error = outcome.left;
     if (error._tag === 'DomainError') {
       return {
-        error: errorResponse(422, error.code, error.message, error.details),
+        error: errorResponse(
+          domainErrorStatus(error.code),
+          error.code,
+          error.message,
+          error.details,
+        ),
       } as const;
     }
 
@@ -677,6 +710,8 @@ const createAppWithAuth = (environment: Env, getAuth: AuthForRequest) => {
             cursor,
             limit: query.limit ?? LIST_LIMIT_DEFAULT,
             query: query.query,
+            tagId: query.tag,
+            tagScopeId: query.tagScope,
           });
           return { data: page.leads, nextCursor: page.nextCursor };
         },
@@ -756,6 +791,92 @@ const createAppWithAuth = (environment: Env, getAuth: AuthForRequest) => {
         return lead
           ? { data: lead }
           : errorResponse(404, 'not_found', 'Lead not found.');
+      })
+      // Tag catalog. Scopes are inferred from `prefix:value` names; the API is
+      // the exclusivity boundary and the database constraint is the backstop.
+      .get('/v1/tags', async ({ request }) => {
+        const result = await run(request, listTagsCommand(environment));
+        return 'error' in result ? result.error : { data: result.data };
+      })
+      .post('/v1/tags', async ({ body, request }) => {
+        const parsed = await parse(CreateTagRequestSchema, body);
+        if ('error' in parsed) {
+          return parsed.error;
+        }
+
+        const result = await run(
+          request,
+          createTagCommand(environment, parsed.data.name),
+        );
+        if ('error' in result) {
+          return result.error;
+        }
+
+        return Response.json({ data: result.data.tag }, { status: 201 });
+      })
+      .patch('/v1/tag-scopes/:id', async ({ body, params, request }) => {
+        const parsed = await parse(UpdateTagScopeRequestSchema, body);
+        if ('error' in parsed) {
+          return parsed.error;
+        }
+
+        const result = await run(
+          request,
+          updateTagScopeCommand(environment, params.id, parsed.data),
+        );
+        return 'error' in result ? result.error : { data: result.data.scope };
+      })
+      .patch('/v1/tags/:id', async ({ body, params, request }) => {
+        const parsed = await parse(UpdateTagRequestSchema, body);
+        if ('error' in parsed) {
+          return parsed.error;
+        }
+
+        const result = await run(
+          request,
+          updateTagCommand(environment, params.id, parsed.data),
+        );
+        return 'error' in result ? result.error : { data: result.data.tag };
+      })
+      .delete('/v1/tags/:id', async ({ params, request }) => {
+        const result = await run(
+          request,
+          deleteTagCommand(environment, params.id),
+        );
+        return 'error' in result
+          ? result.error
+          : { data: { removed: result.data.removed } };
+      })
+      .put('/v1/leads/:id/tags', async ({ body, params, request }) => {
+        const parsed = await parse(SetLeadTagsRequestSchema, body);
+        if ('error' in parsed) {
+          return parsed.error;
+        }
+
+        const result = await run(
+          request,
+          setLeadTagsCommand(environment, params.id, parsed.data.tagIds),
+        );
+        return 'error' in result ? result.error : { data: result.data.tags };
+      })
+      .post('/v1/leads/tags/bulk', async ({ body, request }) => {
+        const parsed = await parse(BulkTagRequestSchema, body);
+        if ('error' in parsed) {
+          return parsed.error;
+        }
+
+        const result = await run(
+          request,
+          bulkTagCommand(
+            environment,
+            parsed.data.ids,
+            parsed.data.tagIds,
+            parsed.data.mode,
+          ),
+        );
+        return 'error' in result
+          ? result.error
+          : { data: { affected: result.data.affected } };
       })
       .get('/v1/tokens', async () => {
         return { data: await listApiTokens(environment) };

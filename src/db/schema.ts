@@ -56,6 +56,88 @@ export const leads = sqliteTable(
   ],
 );
 
+// Tag scopes are inferred from a `prefix:value` tag name and own one shared
+// color. The prefix is unique per workspace; a scope's identity (its id)
+// survives renaming. An empty scope is pruned when its last tag is deleted.
+export const tagScopes = sqliteTable(
+  'tag_scopes',
+  {
+    color: text('color').notNull(),
+    createdAt: timestampMs('created_at').notNull(),
+    id: text('id').primaryKey(),
+    prefix: text('prefix').notNull(),
+    updatedAt: timestampMs('updated_at').notNull(),
+    workspaceId: text('workspace_id')
+      .notNull()
+      .references(() => workspaces.id),
+  },
+  (table) => [
+    uniqueIndex('tag_scopes_workspace_prefix_unique').on(
+      table.workspaceId,
+      table.prefix,
+    ),
+  ],
+);
+
+// A stable tag id stores the normalized value. Scoped tags point at their
+// scope and inherit its color; standalone tags carry their own color.
+export const tags = sqliteTable(
+  'tags',
+  {
+    color: text('color'),
+    createdAt: timestampMs('created_at').notNull(),
+    id: text('id').primaryKey(),
+    name: text('name').notNull(),
+    scopeId: text('scope_id').references(() => tagScopes.id),
+    updatedAt: timestampMs('updated_at').notNull(),
+    workspaceId: text('workspace_id')
+      .notNull()
+      .references(() => workspaces.id),
+  },
+  (table) => [
+    uniqueIndex('tags_workspace_scope_name_unique').on(
+      table.workspaceId,
+      table.scopeId,
+      table.name,
+    ),
+    // SQLite treats NULL scope ids as distinct, so standalone-name uniqueness
+    // needs its own partial index.
+    uniqueIndex('tags_workspace_standalone_name_unique')
+      .on(table.workspaceId, table.name)
+      .where(sql`${table.scopeId} IS NULL`),
+    index('tags_workspace_scope_idx').on(table.workspaceId, table.scopeId),
+  ],
+);
+
+// Lead <-> tag assignment. `scope_id` is denormalized onto the join so a
+// partial unique index enforces the global exclusivity rule at the database
+// level: at most one tag per scope on a lead, even under concurrent writes.
+export const leadTags = sqliteTable(
+  'lead_tags',
+  {
+    createdAt: timestampMs('created_at').notNull(),
+    id: text('id').primaryKey(),
+    leadId: text('lead_id')
+      .notNull()
+      .references(() => leads.id),
+    scopeId: text('scope_id').references(() => tagScopes.id),
+    tagId: text('tag_id')
+      .notNull()
+      .references(() => tags.id),
+    workspaceId: text('workspace_id')
+      .notNull()
+      .references(() => workspaces.id),
+  },
+  (table) => [
+    uniqueIndex('lead_tags_lead_tag_unique').on(table.leadId, table.tagId),
+    uniqueIndex('lead_tags_lead_scope_unique')
+      .on(table.leadId, table.scopeId)
+      .where(sql`${table.scopeId} IS NOT NULL`),
+    index('lead_tags_lead_idx').on(table.leadId),
+    index('lead_tags_tag_idx').on(table.tagId),
+  ],
+);
+
 export const activities = sqliteTable(
   'activities',
   {

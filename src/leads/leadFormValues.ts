@@ -21,11 +21,12 @@ export type LeadFormValues = {
   [K in LeadFormField]: string;
 };
 
-// The manual lead form collects every request field except customFields. A
-// new contract field therefore becomes a required form field (and a compile
-// error in `emptyLeadFormValues`) until it is collected or explicitly
-// excluded here, and a removed/renamed field breaks the mappers below.
-type LeadFormField = Exclude<keyof CreateLeadRequest, 'customFields'>;
+// The manual lead form collects every request field except customFields and
+// tags; tags are owned by the chip input draft, not the RHF string form. A new
+// contract field therefore becomes a required form field (and a compile error
+// in `emptyLeadFormValues`) until it is collected or explicitly excluded here,
+// and a removed/renamed field breaks the mappers below.
+type LeadFormField = Exclude<keyof CreateLeadRequest, 'customFields' | 'tags'>;
 
 export const emptyLeadFormValues: LeadFormValues = {
   email: '',

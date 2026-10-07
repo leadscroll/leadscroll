@@ -47,6 +47,94 @@ export const SkippedFieldsSchema = Schema.Array(SkippedFieldSchema).pipe(
 );
 export type SkippedField = Schema.Schema.Type<typeof SkippedFieldSchema>;
 
+// Tags. `prefix:value` tags share a scope and are exclusive per lead; plain
+// tags are standalone. Colors are a closed palette shared by the UI.
+export const TAG_COLORS = ['teal', 'blue', 'violet', 'amber'] as const;
+export const TagColorSchema = Schema.Literal(...TAG_COLORS);
+export type TagColor = Schema.Schema.Type<typeof TagColorSchema>;
+
+// A full tag name is `prefix:value` or a plain value: at most 30 characters
+// for the scope, 40 for the value, plus one delimiter. Parsing (rather than
+// this bound) enforces the single delimiter.
+export const TagNameSchema = NonEmptyStringSchema.pipe(Schema.maxLength(71));
+export const TagScopePrefixSchema = NonEmptyStringSchema.pipe(
+  Schema.maxLength(30),
+);
+
+export const TagScopeViewSchema = Schema.Struct({
+  color: TagColorSchema,
+  createdAt: Schema.String,
+  id: RecordIdSchema,
+  prefix: Schema.String,
+  updatedAt: Schema.String,
+});
+export type TagScopeView = Schema.Schema.Type<typeof TagScopeViewSchema>;
+
+export const TagViewSchema = Schema.Struct({
+  color: TagColorSchema,
+  createdAt: Schema.String,
+  id: RecordIdSchema,
+  label: Schema.String,
+  name: Schema.String,
+  scopeId: Schema.NullOr(RecordIdSchema),
+  updatedAt: Schema.String,
+});
+export type TagView = Schema.Schema.Type<typeof TagViewSchema>;
+
+// Catalog rows additionally report how many active accessible leads use them.
+export const CatalogTagViewSchema = Schema.Struct({
+  ...TagViewSchema.fields,
+  leadCount: Schema.Number.pipe(Schema.int(), Schema.nonNegative()),
+});
+export type CatalogTagView = Schema.Schema.Type<typeof CatalogTagViewSchema>;
+
+export const TagCatalogSchema = Schema.Struct({
+  scopes: Schema.Array(TagScopeViewSchema),
+  tags: Schema.Array(CatalogTagViewSchema),
+});
+export type TagCatalog = Schema.Schema.Type<typeof TagCatalogSchema>;
+
+export const CreateTagRequestSchema = Schema.Struct({ name: TagNameSchema });
+export type CreateTagRequest = Schema.Schema.Type<
+  typeof CreateTagRequestSchema
+>;
+
+export const UpdateTagRequestSchema = Schema.Struct({
+  color: Schema.optional(TagColorSchema),
+  name: Schema.optional(TagNameSchema),
+});
+export type UpdateTagRequest = Schema.Schema.Type<
+  typeof UpdateTagRequestSchema
+>;
+
+export const UpdateTagScopeRequestSchema = Schema.Struct({
+  color: Schema.optional(TagColorSchema),
+  prefix: Schema.optional(TagScopePrefixSchema),
+});
+export type UpdateTagScopeRequest = Schema.Schema.Type<
+  typeof UpdateTagScopeRequestSchema
+>;
+
+export const SetLeadTagsRequestSchema = Schema.Struct({
+  tagIds: Schema.Array(RecordIdSchema).pipe(Schema.maxItems(100)),
+});
+export type SetLeadTagsRequest = Schema.Schema.Type<
+  typeof SetLeadTagsRequestSchema
+>;
+
+export const BulkTagRequestSchema = Schema.Struct({
+  ids: Schema.Array(RecordIdSchema).pipe(
+    Schema.minItems(1),
+    Schema.maxItems(100),
+  ),
+  mode: Schema.Literal('add', 'remove'),
+  tagIds: Schema.Array(RecordIdSchema).pipe(
+    Schema.minItems(1),
+    Schema.maxItems(100),
+  ),
+});
+export type BulkTagRequest = Schema.Schema.Type<typeof BulkTagRequestSchema>;
+
 // Intake is the flat lead payload: one submission creates one lead. The old
 // contact + opportunity shape is gone; `customFields` is stored as a JSON
 // document on the lead with no definition registry.
@@ -60,6 +148,7 @@ export const IntakeRequestSchema = Schema.Struct({
   lastName: Schema.optional(NonEmptyStringSchema),
   skippedFields: Schema.optional(SkippedFieldsSchema),
   source: NonEmptyStringSchema,
+  tags: Schema.optional(Schema.Array(TagNameSchema).pipe(Schema.maxItems(100))),
 });
 export type IntakeRequest = Schema.Schema.Type<typeof IntakeRequestSchema>;
 
@@ -85,6 +174,7 @@ export const LeadViewSchema = Schema.Struct({
   rawPayload: Schema.optional(Schema.NullOr(CustomFieldValuesSchema)),
   skippedFields: Schema.NullOr(SkippedFieldsSchema),
   source: NonEmptyStringSchema,
+  tags: Schema.Array(TagViewSchema),
   tokenId: Schema.NullOr(Schema.String),
   tokenName: Schema.optional(Schema.NullOr(Schema.String)),
   tokenType: Schema.optional(Schema.NullOr(Schema.Literal('api', 'browser'))),
@@ -121,6 +211,10 @@ export const ListLeadsQuerySchema = Schema.Struct({
     ),
   ),
   query: Schema.optional(NonEmptyStringSchema),
+  // Exact-tag and any-tag-in-scope filters are applied server-side before the
+  // keyset page is cut, never against only the loaded rows.
+  tag: Schema.optional(RecordIdSchema),
+  tagScope: Schema.optional(RecordIdSchema),
 });
 export type ListLeadsQuery = Schema.Schema.Type<typeof ListLeadsQuerySchema>;
 
@@ -136,6 +230,7 @@ export const CreateLeadRequestSchema = Schema.Struct({
   firstName: Schema.optional(NonEmptyStringSchema),
   lastName: Schema.optional(NonEmptyStringSchema),
   source: Schema.optional(NonEmptyStringSchema),
+  tags: Schema.optional(Schema.Array(TagNameSchema).pipe(Schema.maxItems(100))),
 });
 export type CreateLeadRequest = Schema.Schema.Type<
   typeof CreateLeadRequestSchema
