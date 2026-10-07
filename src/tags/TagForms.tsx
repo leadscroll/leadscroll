@@ -38,7 +38,7 @@ export const TagForm = ({
   return (
     <Dialog
       onOpenChange={(open) => {
-        if (!open) {
+        if (!open && !form.formState.isSubmitting) {
           onClose();
         }
       }}
@@ -48,6 +48,11 @@ export const TagForm = ({
       <Form
         className="lead-form"
         onSubmit={form.handleSubmit(async ({ name }) => {
+          if (tag && name.trim().toLowerCase() === tag.label) {
+            form.setError('name', { message: 'No changes to save.' });
+            return;
+          }
+
           try {
             if (tag) {
               await renameTag({ id: tag.id, name });
@@ -73,6 +78,7 @@ export const TagForm = ({
         >
           <input
             className={inputClass}
+            disabled={form.formState.isSubmitting}
             maxLength={71}
             placeholder="fall26:considering or vip"
             required
@@ -82,12 +88,22 @@ export const TagForm = ({
         <p className="field-hint">{hint}</p>
         <div className="form-footer">
           <Button
+            disabled={form.formState.isSubmitting}
             onClick={onClose}
             tone="secondary"
           >
             Cancel
           </Button>
-          <Button type="submit">{tag ? 'Save tag' : 'Create tag'}</Button>
+          <Button
+            disabled={form.formState.isSubmitting}
+            type="submit"
+          >
+            {form.formState.isSubmitting
+              ? 'Saving…'
+              : tag
+                ? 'Save tag'
+                : 'Create tag'}
+          </Button>
         </div>
       </Form>
     </Dialog>
@@ -110,7 +126,7 @@ export const ScopeNameForm = ({
     <Dialog
       description="Updates the prefix of every tag in this scope. Assigned leads keep their tags."
       onOpenChange={(open) => {
-        if (!open) {
+        if (!open && !form.formState.isSubmitting) {
           onClose();
         }
       }}
@@ -120,6 +136,11 @@ export const ScopeNameForm = ({
       <Form
         className="lead-form"
         onSubmit={form.handleSubmit(async ({ prefix }) => {
+          if (prefix.trim().toLowerCase() === scope.prefix) {
+            form.setError('prefix', { message: 'No changes to save.' });
+            return;
+          }
+
           try {
             await renameScope({ id: scope.id, prefix });
             toast.success('Scope renamed');
@@ -139,6 +160,7 @@ export const ScopeNameForm = ({
         >
           <input
             className={inputClass}
+            disabled={form.formState.isSubmitting}
             maxLength={30}
             required
             {...form.register('prefix')}
@@ -146,12 +168,18 @@ export const ScopeNameForm = ({
         </Field>
         <div className="form-footer">
           <Button
+            disabled={form.formState.isSubmitting}
             onClick={onClose}
             tone="secondary"
           >
             Cancel
           </Button>
-          <Button type="submit">Save scope</Button>
+          <Button
+            disabled={form.formState.isSubmitting}
+            type="submit"
+          >
+            {form.formState.isSubmitting ? 'Saving…' : 'Save scope'}
+          </Button>
         </div>
       </Form>
     </Dialog>

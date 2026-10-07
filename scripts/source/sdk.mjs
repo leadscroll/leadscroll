@@ -266,6 +266,27 @@ try {
   }
 
   {
+    const longTag = 'x'.repeat(72);
+    const { page, requests } = await start(
+      browser,
+      form(
+        `<input name="tags" value="fall26:open,fall26:closed,fall26:open,${longTag}" data-leadscroll-collect>`,
+      ),
+    );
+    await submit(page);
+    assert.equal(requests.length, 1);
+    assert.deepEqual(requests[0].body.tags, [
+      'fall26:closed',
+      'fall26:open',
+      longTag,
+    ]);
+    await page.close();
+    pass(
+      'tag collection preserves final occurrence order and never truncates names',
+    );
+  }
+
+  {
     const { page, requests } = await start(
       browser,
       form(

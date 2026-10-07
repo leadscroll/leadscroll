@@ -48,6 +48,7 @@ export const Form = ({
           onChangeCapture?.(event);
         }}
         onSubmit={(event) => {
+          event.preventDefault();
           const invalid: Control[] = [];
           for (const element of event.currentTarget.elements) {
             if (

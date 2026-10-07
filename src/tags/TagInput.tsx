@@ -7,11 +7,13 @@ import { useRef, useState } from 'react';
 
 export const TagInput = ({
   catalogSelection = false,
+  disabled = false,
   label = 'Tags',
   onChange,
   value,
 }: {
   readonly catalogSelection?: boolean;
+  readonly disabled?: boolean;
   readonly label?: string;
   readonly onChange: (ids: string[]) => void;
   readonly value: string[];
@@ -27,6 +29,7 @@ export const TagInput = ({
     <div className="tag-input-container">
       <Combobox.Root
         autoHighlight
+        disabled={disabled || !catalog.data || catalog.isError}
         inputValue={search}
         isItemEqualToValue={(a: Tag, b: Tag) => a.id === b.id}
         items={available}
@@ -41,7 +44,11 @@ export const TagInput = ({
             return;
           }
 
-          const ids = next.map((tag) => tag.id);
+          // A catalog refresh must not silently remove unavailable draft ids.
+          const unresolved = value.filter(
+            (id) => !available.some((tag) => tag.id === id),
+          );
+          const ids = [...unresolved, ...next.map((tag) => tag.id)];
           const added = ids.filter((id) => !value.includes(id));
           const resolved = catalogSelection
             ? ids
@@ -136,6 +143,30 @@ export const TagInput = ({
           </Combobox.Positioner>
         </Combobox.Portal>
       </Combobox.Root>
+      {catalog.isPending && (
+        <p
+          className="field-hint"
+          role="status"
+        >
+          Loading tags…
+        </p>
+      )}
+      {catalog.isError && (
+        <p
+          className="field-error"
+          role="alert"
+        >
+          Could not load tags.{' '}
+          <button
+            onClick={() => {
+              void catalog.refetch();
+            }}
+            type="button"
+          >
+            Retry
+          </button>
+        </p>
+      )}
       <span
         aria-live="polite"
         className="sr-only"

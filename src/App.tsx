@@ -1193,7 +1193,12 @@ const AppContent = () => {
     <Shell>
       <Switch>
         <Route path="/leads/:id">
-          {(parameters) => <LeadDetailPage id={parameters.id} />}
+          {(parameters) => (
+            <LeadDetailPage
+              id={parameters.id}
+              key={parameters.id}
+            />
+          )}
         </Route>
         <Route path="/leads">
           <LeadsPage />

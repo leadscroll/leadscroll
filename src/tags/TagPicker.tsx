@@ -12,13 +12,14 @@ export const TagPicker = ({
   title = 'Edit tags',
 }: {
   readonly initial: string[];
-  readonly onApply: (ids: string[]) => void;
+  readonly onApply: (ids: string[]) => Promise<void>;
   readonly onClose: () => void;
   readonly removal?: boolean;
   readonly title?: string;
 }) => {
   const [selected, setSelected] = useState(initial);
   const [error, setError] = useState('');
+  const [pending, setPending] = useState(false);
   const inputContainer = useRef<HTMLDivElement>(null);
   return (
     <Dialog
@@ -28,7 +29,7 @@ export const TagPicker = ({
           : 'Tags in the same exclusive scope will be replaced.'
       }
       onOpenChange={(open) => {
-        if (!open) {
+        if (!open && !pending) {
           onClose();
         }
       }}
@@ -38,6 +39,7 @@ export const TagPicker = ({
       <div ref={inputContainer}>
         <TagInput
           catalogSelection={removal}
+          disabled={pending}
           label={removal ? 'Tags to remove' : 'Tags to add'}
           onChange={(ids) => {
             setSelected(ids);
@@ -56,12 +58,14 @@ export const TagPicker = ({
       </div>
       <div className="form-footer">
         <Button
+          disabled={pending}
           onClick={onClose}
           tone="secondary"
         >
           Cancel
         </Button>
         <Button
+          disabled={pending}
           onClick={() => {
             if (!selected.length) {
               setError('Choose at least one tag.');
@@ -69,11 +73,25 @@ export const TagPicker = ({
               return;
             }
 
-            onApply(selected);
-            onClose();
+            setPending(true);
+            setError('');
+            void (async () => {
+              try {
+                await onApply(selected);
+                onClose();
+              } catch (saveError) {
+                setError(
+                  saveError instanceof Error
+                    ? saveError.message
+                    : 'Tags could not be saved. Try again.',
+                );
+              } finally {
+                setPending(false);
+              }
+            })();
           }}
         >
-          Apply tags
+          {pending ? 'Applying…' : 'Apply tags'}
         </Button>
       </div>
     </Dialog>

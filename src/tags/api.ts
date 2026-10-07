@@ -98,6 +98,7 @@ export const useTagMutations = () => {
         method: 'PUT',
       }),
     onSuccess: (_tags, variables) => {
+      invalidateCatalog();
       void queryClient.invalidateQueries({ queryKey: ['lead', variables.id] });
       invalidateLeads();
     },
@@ -116,7 +117,10 @@ export const useTagMutations = () => {
         body: JSON.stringify({ ids, mode, tagIds }),
         method: 'POST',
       }),
-    onSuccess: invalidateLeads,
+    onSuccess: () => {
+      invalidateCatalog();
+      invalidateLeads();
+    },
   });
 
   return {

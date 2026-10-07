@@ -50,9 +50,19 @@ export const LeadTags = ({
       return;
     }
 
-    const next = draft.filter((tagId) =>
-      catalogTags.some((tag) => tag.id === tagId),
-    );
+    if (!catalog.data || catalog.isError) {
+      setError('Tags could not be loaded. Retry loading them before saving.');
+      return;
+    }
+
+    if (draft.some((tagId) => !catalogTags.some((tag) => tag.id === tagId))) {
+      setError(
+        'A selected tag no longer exists. Cancel and reopen the editor.',
+      );
+      return;
+    }
+
+    const next = draft;
     if (
       next.length === assignedIds.length &&
       next.every((tagId) => assignedIds.includes(tagId))
@@ -113,6 +123,7 @@ export const LeadTags = ({
         >
           <div className="record-tags-editor">
             <TagInput
+              disabled={saving}
               label="Lead tags"
               onChange={(ids) => {
                 setDraft(ids);
@@ -191,18 +202,12 @@ export const BulkTags = ({
       {mode && (
         <TagPicker
           initial={[]}
-          onApply={(chosen) => {
-            void (async () => {
-              try {
-                await bulkTags({ ids, mode, tagIds: chosen });
-                toast.success(
-                  `Tags updated on ${String(ids.length)} lead${ids.length === 1 ? '' : 's'}`,
-                );
-                onApplied();
-              } catch (error) {
-                toast.error(messageOf(error));
-              }
-            })();
+          onApply={async (chosen) => {
+            await bulkTags({ ids, mode, tagIds: chosen });
+            toast.success(
+              `Tags updated on ${String(ids.length)} lead${ids.length === 1 ? '' : 's'}`,
+            );
+            onApplied();
           }}
           onClose={() => setMode(null)}
           removal={mode === 'remove'}

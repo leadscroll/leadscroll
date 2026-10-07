@@ -230,7 +230,11 @@
 
           for (const part of value.split(',')) {
             const tag = part.trim();
-            if (tag && !payload.tags.includes(tag)) {
+            if (tag) {
+              // Keep the final occurrence so scoped last-in-payload wins.
+              payload.tags = payload.tags.filter(
+                (existing) => existing !== tag,
+              );
               payload.tags.push(tag);
             }
           }
@@ -265,12 +269,10 @@
       delete payload.customFields;
     }
 
-    // Bounded like the request contract: at most 100 tags, 71 characters each.
-    if (Array.isArray(payload.tags)) {
-      payload.tags = payload.tags.slice(0, 100).map((tag) => tag.slice(0, 71));
-      if (payload.tags.length === 0) {
-        delete payload.tags;
-      }
+    // Let server validation reject excessive input. Truncating a name here
+    // could silently classify a lead under a different tag.
+    if (Array.isArray(payload.tags) && payload.tags.length === 0) {
+      delete payload.tags;
     }
 
     return payload;
