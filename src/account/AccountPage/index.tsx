@@ -11,6 +11,7 @@ import { Notice } from '@/components/Notice';
 import { PageHeader } from '@/components/PageHeader';
 import { Button } from '@/components/ui/Button';
 import { Field } from '@/components/ui/Field';
+import { Form } from '@/components/ui/Form';
 import { inputClass } from '@/components/ui/form';
 import {
   CURRENT_PASSWORD_MAX,
@@ -44,7 +45,6 @@ const ProfileSection = ({
     handleSubmit,
     register,
     reset,
-    watch,
   } = useForm<AccountProfileFormValues>({
     defaultValues: { name },
     mode: 'onTouched',
@@ -59,7 +59,7 @@ const ProfileSection = ({
     name: string;
     previousRevision: number;
   }>(null);
-  const draftName = watch('name');
+  const [feedback, setFeedback] = useState('');
   useEffect(() => {
     const revision = updatedAt.getTime();
     if (
@@ -108,26 +108,32 @@ const ProfileSection = ({
         Your display name appears in the staff list. Activity history uses your
         email.
       </p>
-      <form
+      <Form
         className="mt-4 grid gap-4"
-        onSubmit={handleSubmit(async (values) => {
-          if (
-            submitLock.current ||
-            pending ||
-            values.name.trim() === (acceptedName.current?.name ?? name)
-          ) {
-            return;
-          }
+        onChange={() => setFeedback('')}
+        onSubmit={(event) => {
+          void handleSubmit(async (values) => {
+            if (submitLock.current || pending) {
+              return;
+            }
 
-          submitLock.current = true;
-          try {
-            await save.mutateAsync(toUpdateAccountProfileRequest(values));
-          } catch {
-            /* Mutation error is displayed below. */
-          } finally {
-            releaseSubmit();
-          }
-        })}
+            if (values.name.trim() === (acceptedName.current?.name ?? name)) {
+              setFeedback('No changes to save.');
+              return;
+            }
+
+            setFeedback('');
+
+            submitLock.current = true;
+            try {
+              await save.mutateAsync(toUpdateAccountProfileRequest(values));
+            } catch {
+              /* Mutation error is displayed below. */
+            } finally {
+              releaseSubmit();
+            }
+          })(event);
+        }}
       >
         <Field
           error={errors.name?.message}
@@ -156,18 +162,23 @@ const ProfileSection = ({
           />
         </Field>
         {save.error && <Notice error={save.error} />}
+        {feedback && (
+          <p
+            className="field-hint"
+            role="status"
+          >
+            {feedback}
+          </p>
+        )}
         <div>
           <Button
-            disabled={
-              pending ||
-              draftName.trim() === (acceptedName.current?.name ?? name)
-            }
+            disabled={pending}
             type="submit"
           >
-            Save name
+            {pending ? 'Saving…' : 'Save name'}
           </Button>
         </div>
-      </form>
+      </Form>
     </section>
   );
 };
@@ -186,7 +197,6 @@ const PasswordSection = () => {
     handleSubmit,
     register,
     reset,
-    watch,
   } = useForm<AccountPasswordFormValues>({
     defaultValues: emptyAccountPasswordFormValues,
     mode: 'onTouched',
@@ -212,7 +222,6 @@ const PasswordSection = () => {
     },
   });
   const pending = rotate.isPending || isSubmitting;
-  const values = watch();
   return (
     <section className="min-w-0 rounded-xl border border-slate-800 bg-slate-900/40 p-5">
       <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-400">
@@ -221,22 +230,24 @@ const PasswordSection = () => {
       <p className="mt-1 text-xs text-slate-500">
         Changing the password signs out every other device.
       </p>
-      <form
+      <Form
         className="mt-4 grid gap-4"
-        onSubmit={handleSubmit(async () => {
-          if (submitLock.current || pending) {
-            return;
-          }
+        onSubmit={(event) => {
+          void handleSubmit(async () => {
+            if (submitLock.current || pending) {
+              return;
+            }
 
-          submitLock.current = true;
-          try {
-            await rotate.mutateAsync();
-          } catch {
-            /* Mutation error is displayed below. */
-          } finally {
-            releaseSubmit();
-          }
-        })}
+            submitLock.current = true;
+            try {
+              await rotate.mutateAsync();
+            } catch {
+              /* Mutation error is displayed below. */
+            } finally {
+              releaseSubmit();
+            }
+          })(event);
+        }}
       >
         <Field
           error={errors.currentPassword?.message}
@@ -298,18 +309,13 @@ const PasswordSection = () => {
         {rotate.error && <Notice error={rotate.error} />}
         <div>
           <Button
-            disabled={
-              pending ||
-              !values.currentPassword ||
-              !values.newPassword ||
-              !values.confirmation
-            }
+            disabled={pending}
             type="submit"
           >
-            Change password
+            {pending ? 'Changing…' : 'Change password'}
           </Button>
         </div>
-      </form>
+      </Form>
     </section>
   );
 };

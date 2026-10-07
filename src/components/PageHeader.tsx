@@ -1,23 +1,27 @@
+import { ChevronRight } from 'lucide-react';
+
 export const PageHeader = ({
   action,
   eyebrow,
   title,
 }: {
   readonly action?: React.ReactNode;
-  readonly eyebrow?: string;
+  readonly eyebrow?: React.ReactNode;
   readonly title: string;
 }) => (
-  <header className="flex flex-wrap items-end justify-between gap-4 border-b border-slate-800 px-5 py-5 sm:px-8">
-    <div>
+  <header className="page-header">
+    <div className="page-breadcrumb">
       {eyebrow && (
-        <p className="mb-1 text-xs font-semibold uppercase tracking-[0.16em] text-cyan-400">
-          {eyebrow}
-        </p>
+        <>
+          <span className="breadcrumb-parent">{eyebrow}</span>
+          <ChevronRight
+            aria-hidden="true"
+            size={13}
+          />
+        </>
       )}
-      <h1 className="text-2xl font-semibold tracking-tight text-white">
-        {title}
-      </h1>
+      <h1>{title}</h1>
     </div>
-    {action}
+    {action && <div className="page-actions">{action}</div>}
   </header>
 );

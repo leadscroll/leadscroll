@@ -1,11 +1,21 @@
 import { AccountPage } from './account/AccountPage';
 import { AccountSessionCacheBoundary } from './account/AccountSessionCacheBoundary';
+import { AppShell as Shell } from './components/AppShell';
+import { BrandMark } from './components/BrandMark';
+import { PageHeader as Header } from './components/PageHeader';
+import { TokenExpirationField } from './components/TokenExpirationField';
 import { Button } from './components/ui/Button';
 import { Dialog } from './components/ui/Dialog';
 import { Field } from './components/ui/Field';
+import {
+  TagPreviewProvider,
+  tagsPreviewEnabled,
+} from './design-preview/tags/TagProvider';
+import { TagsPage } from './design-preview/tags/TagsPage';
+import { ToastPreview } from './design-preview/ToastPreview';
 import { LeadDetailPage } from './leads/LeadDetailPage';
 import { LeadsPage } from './leads/LeadsPage';
-import { signIn, signOut, signUp, useSession } from './lib/auth-client';
+import { signIn, signUp, useSession } from './lib/auth-client';
 import {
   localTimezoneLabel,
   toLocalInputValue,
@@ -24,29 +34,19 @@ import {
   registrationReducer,
   type SignUpFailure,
 } from './lib/registration-flow';
-import { releaseLabel } from './lib/release';
 import { cn } from './lib/styles';
 import {
   emptyTokenFormValues,
   toCreateTokenRequest,
   type TokenFormValues,
 } from './lib/tokenFormValues';
+import { Form } from '@/components/ui/Form';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import {
-  Copy,
-  KeyRound,
-  LayoutList,
-  LogOut,
-  Mail,
-  PanelsTopLeft,
-  Plus,
-  UserRound,
-  Users,
-} from 'lucide-react';
+import { Copy, Plus } from 'lucide-react';
 import { useReducer, useRef, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { toast } from 'sonner';
-import { Link, Route, Switch, useLocation } from 'wouter';
+import { Route, Switch } from 'wouter';
 
 type Invite = {
   createdAt: string;
@@ -75,13 +75,6 @@ type Token = {
   token: null | string;
   type: 'api' | 'browser';
 };
-
-const navigation = [
-  { href: '/leads', icon: LayoutList, label: 'Leads' },
-  { href: '/settings/invites', icon: Mail, label: 'Invitations' },
-  { href: '/settings/staff', icon: Users, label: 'Staff' },
-  { href: '/settings/tokens', icon: KeyRound, label: 'Tokens' },
-];
 
 const appQuery = {
   invites: () => ({
@@ -117,102 +110,6 @@ const ErrorState = ({
       </button>
     )}
   </div>
-);
-
-const Shell = ({ children }: { readonly children: React.ReactNode }) => {
-  const [location] = useLocation();
-  return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 lg:grid lg:grid-cols-[14rem_1fr]">
-      <aside className="border-b border-slate-800 bg-slate-900/70 p-4 lg:min-h-screen lg:border-b-0 lg:border-r">
-        <Link
-          className="mb-8 flex items-center gap-2 px-2 text-sm font-bold tracking-tight text-white"
-          href="/leads"
-        >
-          <span className="grid size-7 place-items-center rounded-md bg-cyan-400 text-slate-950">
-            <PanelsTopLeft size={16} />
-          </span>
-          LeadScroll
-        </Link>
-        <nav className="grid grid-cols-2 gap-1 sm:flex sm:flex-wrap lg:grid lg:grid-cols-1">
-          {navigation.map((item) => {
-            const Icon = item.icon;
-            const active =
-              location === item.href || location.startsWith(`${item.href}/`);
-            return (
-              <Link
-                className={cn(
-                  'flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition',
-                  active
-                    ? 'bg-slate-800 text-cyan-300'
-                    : 'text-slate-400 hover:bg-slate-800/70 hover:text-slate-100',
-                )}
-                href={item.href}
-                key={item.href}
-              >
-                <Icon size={16} />
-                {item.label}
-              </Link>
-            );
-          })}
-        </nav>
-        <div className="mt-6 border-t border-slate-800 pt-4">
-          <Link
-            className={cn(
-              'flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition',
-              location === '/settings/account'
-                ? 'bg-slate-800 text-cyan-300'
-                : 'text-slate-400 hover:bg-slate-800/70 hover:text-slate-100',
-            )}
-            href="/settings/account"
-          >
-            <UserRound size={16} />
-            Account
-          </Link>
-          <button
-            className="flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-slate-400 transition hover:bg-slate-800/70 hover:text-slate-100"
-            onClick={() => {
-              void signOut();
-            }}
-            type="button"
-          >
-            <LogOut size={16} />
-            Sign out
-          </button>
-          <p className="mt-2 px-3 text-xs leading-relaxed text-slate-500">
-            Cloudflare-native CRM alpha
-            <span className="mt-1 block tabular-nums">
-              {releaseLabel(LEADSCROLL_BUILD_DATE)}
-            </span>
-          </p>
-        </div>
-      </aside>
-      <main className="min-w-0">{children}</main>
-    </div>
-  );
-};
-
-const Header = ({
-  action,
-  eyebrow,
-  title,
-}: {
-  readonly action?: React.ReactNode;
-  readonly eyebrow?: string;
-  readonly title: string;
-}) => (
-  <header className="flex flex-wrap items-end justify-between gap-4 border-b border-slate-800 px-5 py-5 sm:px-8">
-    <div>
-      {eyebrow && (
-        <p className="mb-1 text-xs font-semibold uppercase tracking-[0.16em] text-cyan-400">
-          {eyebrow}
-        </p>
-      )}
-      <h1 className="text-2xl font-semibold tracking-tight text-white">
-        {title}
-      </h1>
-    </div>
-    {action}
-  </header>
 );
 
 const TOKEN_DEFAULT_TTL_MS = 90 * 86_400_000;
@@ -298,14 +195,12 @@ const CreateTokenDialog = ({
     mode: 'onTouched',
   });
   const errors = form.formState.errors;
-  const expiration = form.watch('expiration');
-  const name = form.watch('name');
-  const neverExpires = form.watch('neverExpires');
+  const [expirationReference, setExpirationReference] = useState(Date.now);
   const tokenType = form.watch('type');
   const create = useMutation({
     mutationFn: (values: TokenFormValues) =>
       request<Token & { token: string }>('/v1/tokens', {
-        body: JSON.stringify(toCreateTokenRequest(values)),
+        body: JSON.stringify(toCreateTokenRequest(values, expirationReference)),
         method: 'POST',
       }),
     onSuccess: (created) => {
@@ -380,7 +275,7 @@ const CreateTokenDialog = ({
           </div>
         </div>
       ) : (
-        <form
+        <Form
           className="grid gap-4"
           onSubmit={form.handleSubmit((values) => {
             create.mutate(values);
@@ -393,7 +288,10 @@ const CreateTokenDialog = ({
             <input
               aria-invalid={errors.name ? true : undefined}
               placeholder="Website form intake"
-              {...form.register('name', { required: 'Enter a token name.' })}
+              {...form.register('name', {
+                validate: (value) =>
+                  Boolean(value.trim()) || 'Enter a token name.',
+              })}
             />
           </Field>
           <div className="grid gap-1">
@@ -410,35 +308,11 @@ const CreateTokenDialog = ({
                 : 'Keep it secret; it can call the integration API.'}
             </p>
           </div>
-          <div className="grid gap-1">
-            {!neverExpires && (
-              <>
-                <Field
-                  error={errors.expiration?.message}
-                  label="Expiration"
-                >
-                  <input
-                    aria-invalid={errors.expiration ? true : undefined}
-                    type="datetime-local"
-                    {...form.register('expiration', {
-                      validate: (value) =>
-                        neverExpires || wallClockIssue(value),
-                    })}
-                  />
-                </Field>
-                <p className="text-xs text-slate-500">
-                  Local time ({localTimezoneLabel(expiration)})
-                </p>
-              </>
-            )}
-            <label className="flex items-center gap-2 text-xs text-slate-400">
-              <input
-                type="checkbox"
-                {...form.register('neverExpires')}
-              />
-              Never expires
-            </label>
-          </div>
+          <TokenExpirationField
+            form={form}
+            onPresetChange={() => setExpirationReference(Date.now())}
+            referenceTime={expirationReference}
+          />
           {create.error && <ErrorState error={create.error} />}
           <div className="flex justify-end gap-2">
             <Button
@@ -449,13 +323,13 @@ const CreateTokenDialog = ({
               Cancel
             </Button>
             <Button
-              disabled={create.isPending || !name.trim()}
+              disabled={create.isPending}
               type="submit"
             >
-              Create token
+              {create.isPending ? 'Creating…' : 'Create token'}
             </Button>
           </div>
-        </form>
+        </Form>
       )}
     </Dialog>
   );
@@ -648,7 +522,6 @@ const CreateInviteDialog = ({
   });
   const errors = form.formState.errors;
   const expiration = form.watch('expiration');
-  const name = form.watch('name');
   const create = useMutation({
     mutationFn: (values: InviteFormValues) =>
       request<Invite & { token: string }>('/v1/invites', {
@@ -725,7 +598,7 @@ const CreateInviteDialog = ({
           </div>
         </div>
       ) : (
-        <form
+        <Form
           className="grid gap-4"
           onSubmit={form.handleSubmit((values) => {
             create.mutate(values);
@@ -738,7 +611,10 @@ const CreateInviteDialog = ({
             <input
               aria-invalid={errors.name ? true : undefined}
               placeholder="Weekend onboarding"
-              {...form.register('name', { required: 'Enter an invite name.' })}
+              {...form.register('name', {
+                validate: (value) =>
+                  Boolean(value.trim()) || 'Enter an invite name.',
+              })}
             />
           </Field>
           <div className="grid gap-1">
@@ -769,13 +645,13 @@ const CreateInviteDialog = ({
               Cancel
             </Button>
             <Button
-              disabled={create.isPending || !name.trim()}
+              disabled={create.isPending}
               type="submit"
             >
-              Create invite
+              {create.isPending ? 'Creating…' : 'Create invite'}
             </Button>
           </div>
-        </form>
+        </Form>
       )}
     </Dialog>
   );
@@ -1148,13 +1024,11 @@ const LoginPage = () => {
     <div className="grid min-h-screen place-items-center bg-slate-950 p-4 text-slate-100">
       <div className="w-full max-w-sm rounded-xl border border-slate-800 bg-slate-900/70 p-6">
         <div className="mb-6 flex items-center gap-2 text-sm font-bold tracking-tight text-white">
-          <span className="grid size-7 place-items-center rounded-md bg-cyan-400 text-slate-950">
-            <PanelsTopLeft size={16} />
-          </span>
+          <BrandMark />
           LeadScroll
         </div>
         {mode === 'sign-in' ? (
-          <form
+          <Form
             className="grid gap-4"
             onSubmit={submitSignIn}
           >
@@ -1186,19 +1060,25 @@ const LoginPage = () => {
               disabled={signInPending}
               type="submit"
             >
-              Sign in
+              {signInPending ? 'Signing in…' : 'Sign in'}
             </Button>
-          </form>
+          </Form>
         ) : step === 1 ? (
-          <form
+          <Form
             className="grid gap-4"
             onSubmit={handleTokenSubmit}
           >
-            <Field label="Invite token">
+            <Field
+              error={tokenForm.formState.errors.inviteToken?.message}
+              label="Invite token"
+            >
               <input
                 placeholder="Shared with you by a staff member"
                 required
-                {...tokenForm.register('inviteToken')}
+                {...tokenForm.register('inviteToken', {
+                  validate: (value) =>
+                    Boolean(value.trim()) || 'Enter an invite token.',
+                })}
               />
             </Field>
             {error && (
@@ -1213,19 +1093,25 @@ const LoginPage = () => {
               disabled={pending}
               type="submit"
             >
-              Continue
+              {pending ? 'Checking…' : 'Continue'}
             </Button>
-          </form>
+          </Form>
         ) : (
-          <form
+          <Form
             className="grid gap-4"
             onSubmit={handleDetailsSubmit}
           >
-            <Field label="Name">
+            <Field
+              error={detailsForm.formState.errors.name?.message}
+              label="Name"
+            >
               <input
                 placeholder="Ada Lovelace"
                 required
-                {...detailsForm.register('name')}
+                {...detailsForm.register('name', {
+                  validate: (value) =>
+                    Boolean(value.trim()) || 'Enter your name.',
+                })}
               />
             </Field>
             <Field label="Email">
@@ -1267,9 +1153,9 @@ const LoginPage = () => {
               disabled={pending}
               type="submit"
             >
-              Create account
+              {pending ? 'Creating…' : 'Create account'}
             </Button>
-          </form>
+          </Form>
         )}
         {mode === 'sign-in' ? (
           <button
@@ -1317,6 +1203,16 @@ const AppContent = () => {
         <Route path="/leads">
           <LeadsPage />
         </Route>
+        {tagsPreviewEnabled && (
+          <Route path="/settings/tags">
+            <TagsPage />
+          </Route>
+        )}
+        {tagsPreviewEnabled && (
+          <Route path="/preview/toasts">
+            <ToastPreview />
+          </Route>
+        )}
         <Route path="/settings/account">
           <AccountPage />
         </Route>
@@ -1339,6 +1235,8 @@ const AppContent = () => {
 
 export const App = () => (
   <AccountSessionCacheBoundary>
-    <AppContent />
+    <TagPreviewProvider>
+      <AppContent />
+    </TagPreviewProvider>
   </AccountSessionCacheBoundary>
 );
