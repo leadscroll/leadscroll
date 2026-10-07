@@ -1,34 +1,18 @@
-export type CatalogTag = Tag & { leadCount: number };
-
-export type Tag = {
-  color: TagColor;
-  createdAt: string;
-  id: string;
-  label: string;
-  name: string;
-  scopeId: null | string;
-  updatedAt: string;
-};
-
-export type TagCatalog = {
-  scopes: TagScope[];
-  tags: CatalogTag[];
-};
-
 /**
- * Tag domain types shared by the workbench. These mirror the wire contracts in
- * `src/domain/schemas.ts`: validation lives there, this module only carries the
- * decoded shapes into React.
+ * Tag domain types used by the workbench. They are aliases of the Effect
+ * Schema contract in `src/domain/schemas.ts`, so the wire contract stays the
+ * single source of truth; this module only adds UI-only helpers.
  */
-export type TagColor = 'amber' | 'blue' | 'teal' | 'violet';
+import {
+  type CatalogTagView,
+  type TagColor,
+  type TagScopeView,
+  type TagView,
+} from '@/domain/schemas';
 
-export type TagScope = {
-  color: TagColor;
-  createdAt: string;
-  id: string;
-  prefix: string;
-  updatedAt: string;
-};
+export type CatalogTag = CatalogTagView;
+export type Tag = TagView;
+export type TagScope = TagScopeView;
 
 export const tagColors: Array<{ label: string; value: TagColor }> = [
   { label: 'Sage', value: 'teal' },
@@ -79,3 +63,5 @@ export const tagsForIds = (
   ids: readonly string[],
   catalogTags: readonly Tag[],
 ): Tag[] => catalogTags.filter((tag) => ids.includes(tag.id));
+
+export { type TagCatalog, type TagColor } from '@/domain/schemas';

@@ -1756,7 +1756,8 @@ export const deleteTag = async (
   const removed = await database
     .select({ count: sql<number>`count(*)` })
     .from(leadTags)
-    .where(eq(leadTags.tagId, tagId))
+    .innerJoin(leads, eq(leads.id, leadTags.leadId))
+    .where(and(eq(leadTags.tagId, tagId), isNull(leads.deletedAt)))
     .get();
   const statements: Statement[] = [
     prepare(
