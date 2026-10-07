@@ -357,7 +357,7 @@ const TokensPage = () => {
             <Plus size={16} /> Create token
           </Button>
         }
-        eyebrow="Integrations"
+        eyebrow="Manage"
         title="Intake tokens"
       />
       <div className="p-5 sm:p-8">
@@ -679,7 +679,7 @@ const InvitesPage = () => {
             <Plus size={16} /> Create invite
           </Button>
         }
-        eyebrow="Integrations"
+        eyebrow="Manage"
         title="Invitations"
       />
       <div className="p-5 sm:p-8">
@@ -787,7 +787,7 @@ const StaffPage = () => {
   return (
     <>
       <Header
-        eyebrow="Integrations"
+        eyebrow="Manage"
         title="Staff accounts"
       />
       <div className="p-5 sm:p-8">
