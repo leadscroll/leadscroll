@@ -69,7 +69,9 @@ export const toUpdateLeadRequest = (
     values.estimatedValue.trim() === '' ? null : Number(values.estimatedValue),
   firstName: nullable(values.firstName),
   lastName: nullable(values.lastName),
-  source: values.source.trim() || undefined,
+  // Source classification is edited separately through tags. Never resend a
+  // hidden stale source value while saving visible contact fields.
+  source: undefined,
 });
 
 type LeadFormSource = Pick<LeadView, LeadFormField>;

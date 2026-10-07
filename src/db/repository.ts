@@ -1916,7 +1916,7 @@ const resolveAssignmentsByIds = async (
   assignments: TagPlan['assignments'];
   unknown: string[];
 }> => {
-  const unique = [...new Set(tagIds)];
+  const unique = [...new Set(tagIds.toReversed())].toReversed();
   if (unique.length === 0) {
     return { assignments: [], unknown: [] };
   }
@@ -2057,7 +2057,7 @@ export const bulkTag = async (
   mode: 'add' | 'remove',
 ): Promise<BulkTagOutcome> => {
   const uniqueLeads = [...new Set(leadIds)];
-  const uniqueTags = [...new Set(tagIds)];
+  const uniqueTags = [...new Set(tagIds.toReversed())].toReversed();
 
   // Fast path with a useful error; the batch guards below are the real
   // safety net if a lead/tag disappears between this read and the write.
@@ -2416,7 +2416,7 @@ export const updateLead = async (
     binds.push(input.lastName);
   }
 
-  if (input.source !== undefined) {
+  if (input.source !== undefined && input.source !== existing.source) {
     assignments.push('source = ?');
     binds.push(input.source);
   }

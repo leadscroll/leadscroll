@@ -72,7 +72,7 @@ describe('lead form values', () => {
       estimatedValue: '',
       firstName: '   ',
       lastName: ' River ',
-      source: ' ',
+      source: 'Legacy source from an earlier fetch',
     });
 
     expect(input).toEqual({

@@ -203,9 +203,9 @@ export const BulkTags = ({
         <TagPicker
           initial={[]}
           onApply={async (chosen) => {
-            await bulkTags({ ids, mode, tagIds: chosen });
+            const { affected } = await bulkTags({ ids, mode, tagIds: chosen });
             toast.success(
-              `Tags updated on ${String(ids.length)} lead${ids.length === 1 ? '' : 's'}`,
+              `Tags updated on ${String(affected)} lead${affected === 1 ? '' : 's'}`,
             );
             onApplied();
           }}

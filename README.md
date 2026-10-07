@@ -438,6 +438,11 @@ Intake (`POST /v1/intakes` and the browser route) accepts an optional
 `tags: string[]`. Unknown names are created atomically with the lead, and a
 `source:*` tag is derived from `source` unless the payload already supplies
 one. Replaying an idempotency key never creates tags or changes assignments.
+Changing the legacy `source` field via PATCH atomically replaces its `source:*`
+classification; unrelated contact edits leave tags untouched. The original received
+payload and provenance are unchanged. Historical source normalization matches
+SQLite (ASCII case folding and space trimming), preserving long or colon-bearing
+values without truncation.
 
 Consistency while paging: each page is evaluated as of its own query (no
 snapshot spans pages). Pages are disjoint windows of the keyset ordering, so

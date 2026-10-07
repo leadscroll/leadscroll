@@ -205,7 +205,7 @@ test('catalog infers scopes and enforces exclusive assignment', async () => {
     });
     // Two same-scope ids in one replacement: last in the list wins.
     const saved = await fx.api(`/v1/leads/${lead.id}/tags`, 'PUT', {
-      tagIds: [considering.id, closed.id],
+      tagIds: [closed.id, considering.id, closed.id],
     });
     expect(saved.status, JSON.stringify(saved)).toBe(200);
     expect((saved.json.data as TagJson[]).map((tag) => tag.id)).toEqual([
@@ -642,7 +642,7 @@ test('bulk add uses deterministic last-wins winners and counts distinct leads', 
     const added = await fx.api('/v1/leads/tags/bulk', 'POST', {
       ids: [first.id, second.id],
       mode: 'add',
-      tagIds: [considering.id, closed.id],
+      tagIds: [closed.id, considering.id, closed.id],
     });
     expect(added.status, JSON.stringify(added)).toBe(200);
     expect((added.json.data as { affected: number }).affected).toBe(2);
