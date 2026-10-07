@@ -45,12 +45,22 @@ export const parseTagName = (input: string): ParsedTagName => {
 };
 
 /**
- * Lossless normalization for a source classification: lowercase and trim only.
- * The value keeps its full length and any colons, matching the migration's
- * backfill so a legacy source is never truncated when mapped to `source:*`.
+ * Deterministic normalization for a source classification. It intentionally
+ * mirrors the SQLite `lower(trim(source))` used by the 0003 backfill so a
+ * legacy source maps to the same `source:*` tag before and after migration:
+ * - SQLite `trim(x)` removes only ASCII space (0x20), not tabs/newlines, so
+ *   this uses a space-only trim rather than JavaScript's Unicode `trim()`.
+ * - SQLite `lower(x)` folds ASCII A-Z only, so this uses an ASCII fold rather
+ *   than JavaScript's Unicode `toLowerCase()`.
+ * The value keeps its full length and any colons; nothing is truncated.
  */
+const SQLITE_SPACE_TRIM = /^ +| +$/gu;
+const ASCII_UPPER = /[A-Z]/gu;
+
 export const normalizeSourceTag = (source: string): string =>
-  source.trim().toLowerCase();
+  source
+    .replaceAll(SQLITE_SPACE_TRIM, '')
+    .replaceAll(ASCII_UPPER, (char) => char.toLowerCase());
 
 export const tagLabel = (name: string, prefix: null | string): string =>
   prefix ? `${prefix}:${name}` : name;
@@ -77,8 +87,15 @@ export const deriveTagSpecs = (input: {
   }
 
   const hasExplicitSource = specs.some((spec) => spec.prefix === 'source');
-  const source = input.source?.trim() ?? '';
-  if (!hasExplicitSource && source) {
+  const source = input.source;
+  if (
+    !hasExplicitSource &&
+    source !== null &&
+    source !== undefined &&
+    source.trim() !== ''
+  ) {
+    // Pass the raw value: `normalizeSourceTag` performs the exact
+    // SQLite-matching trim/lower, so this stays byte-identical to the backfill.
     specs.push({ name: normalizeSourceTag(source), prefix: 'source' });
   }
 

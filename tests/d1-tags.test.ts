@@ -620,3 +620,291 @@ test('legacy source values backfill losslessly into a source scope', async () =>
     await mf.dispose();
   }
 });
+
+test('bulk add uses deterministic last-wins winners and counts distinct leads', async () => {
+  const fx = await startFixture();
+  try {
+    const considering = await createTag(fx.api, 'fall26:considering');
+    const closed = await createTag(fx.api, 'fall26:closed');
+    const first = await createLead(fx.api, {
+      email: 'winners-1@example.test',
+      firstName: 'Winners',
+      source: 'website',
+    });
+    const second = await createLead(fx.api, {
+      email: 'winners-2@example.test',
+      firstName: 'Winners',
+      source: 'website',
+    });
+
+    // Two sibling ids in one request: the last id wins inside the scope and
+    // must not trip the exclusivity index.
+    const added = await fx.api('/v1/leads/tags/bulk', 'POST', {
+      ids: [first.id, second.id],
+      mode: 'add',
+      tagIds: [considering.id, closed.id],
+    });
+    expect(added.status, JSON.stringify(added)).toBe(200);
+    expect((added.json.data as { affected: number }).affected).toBe(2);
+
+    const firstAfter = await getLead(fx.api, first.id);
+    const scoped = firstAfter.tags.filter((tag) =>
+      tag.label.startsWith('fall26:'),
+    );
+    expect(scoped.map((tag) => tag.id)).toEqual([closed.id]);
+    expect(scoped).toHaveLength(1);
+  } finally {
+    await fx.dispose();
+  }
+});
+
+test('bulk remove reports distinct affected leads, not join rows', async () => {
+  const fx = await startFixture();
+  try {
+    const vip = await createTag(fx.api, 'vip');
+    const scholarship = await createTag(fx.api, 'scholarship');
+    const first = await createLead(fx.api, {
+      email: 'bulk-count-1@example.test',
+      firstName: 'Count',
+      source: 'website',
+    });
+    const second = await createLead(fx.api, {
+      email: 'bulk-count-2@example.test',
+      firstName: 'Count',
+      source: 'website',
+    });
+    await fx.api(`/v1/leads/${first.id}/tags`, 'PUT', {
+      tagIds: [vip.id, scholarship.id],
+    });
+    await fx.api(`/v1/leads/${second.id}/tags`, 'PUT', { tagIds: [vip.id] });
+
+    // Three join rows are removed from two leads; affected must be two.
+    const removed = await fx.api('/v1/leads/tags/bulk', 'POST', {
+      ids: [first.id, second.id],
+      mode: 'remove',
+      tagIds: [vip.id, scholarship.id],
+    });
+    expect(removed.status, JSON.stringify(removed)).toBe(200);
+    expect((removed.json.data as { affected: number }).affected).toBe(2);
+  } finally {
+    await fx.dispose();
+  }
+});
+
+test('bulk targets that disappear are rejected without partial writes', async () => {
+  const fx = await startFixture();
+  try {
+    const vip = await createTag(fx.api, 'vip');
+    const first = await createLead(fx.api, {
+      email: 'atomic-1@example.test',
+      firstName: 'Atomic',
+      source: 'website',
+    });
+    const second = await createLead(fx.api, {
+      email: 'atomic-2@example.test',
+      firstName: 'Atomic',
+      source: 'website',
+    });
+
+    // A soft-deleted lead in the selection fails the whole request.
+    await fx.api('/v1/leads/bulk-delete', 'POST', { ids: [second.id] });
+    const added = await fx.api('/v1/leads/tags/bulk', 'POST', {
+      ids: [first.id, second.id],
+      mode: 'add',
+      tagIds: [vip.id],
+    });
+    expect(added.status).toBe(422);
+    expect(added.json.code).toBe('unknown_lead');
+    const firstAfter = await getLead(fx.api, first.id);
+    expect(firstAfter.tags.some((tag) => tag.id === vip.id)).toBe(false);
+
+    // A tag deleted before the write is rejected for remove too.
+    const ghost = await createTag(fx.api, 'ghost');
+    await fx.api(`/v1/tags/${ghost.id}`, 'DELETE');
+    const removed = await fx.api('/v1/leads/tags/bulk', 'POST', {
+      ids: [first.id],
+      mode: 'remove',
+      tagIds: [ghost.id],
+    });
+    expect(removed.status).toBe(422);
+    expect(removed.json.code).toBe('unknown_tag');
+  } finally {
+    await fx.dispose();
+  }
+});
+
+test('renaming within a scope repairs a drifted lead_tags scope', async () => {
+  const fx = await startFixture();
+  try {
+    const fall = await createTag(fx.api, 'fall26:considering');
+    const other = await createTag(fx.api, 'spring27:waitlist');
+    const lead = await createLead(fx.api, {
+      email: 'drift@example.test',
+      firstName: 'Drift',
+      source: 'website',
+    });
+    await fx.api(`/v1/leads/${lead.id}/tags`, 'PUT', { tagIds: [fall.id] });
+
+    // Simulate the stale state a concurrent move can leave: the tag is still
+    // in fall26 but its join row points at the other scope.
+    await fx.db
+      .prepare(
+        'UPDATE lead_tags SET scope_id = ? WHERE lead_id = ? AND tag_id = ?',
+      )
+      .bind(other.scopeId, lead.id, fall.id)
+      .run();
+
+    const renamed = await fx.api(`/v1/tags/${fall.id}`, 'PATCH', {
+      name: 'fall26:interested',
+    });
+    expect(renamed.status, JSON.stringify(renamed)).toBe(200);
+
+    const rows = await fx.db
+      .prepare(
+        `SELECT lead_tags.scope_id AS joinScope, tags.scope_id AS tagScope
+         FROM lead_tags JOIN tags ON tags.id = lead_tags.tag_id
+         WHERE lead_tags.lead_id = ? AND lead_tags.tag_id = ?`,
+      )
+      .bind(lead.id, fall.id)
+      .all<{ joinScope: string; tagScope: string }>();
+    expect(rows.results).toHaveLength(1);
+    expect(rows.results[0]?.joinScope).toBe(rows.results[0]?.tagScope);
+    expect(rows.results[0]?.tagScope).toBe(fall.scopeId);
+  } finally {
+    await fx.dispose();
+  }
+});
+
+test('changing source reconciles the source:* classification atomically', async () => {
+  const fx = await startFixture();
+  try {
+    const lead = await createLead(fx.api, {
+      email: 'source-change@example.test',
+      firstName: 'Source',
+      source: 'website',
+    });
+    const before = await getLead(fx.api, lead.id);
+    expect(before.tags.map((tag) => tag.label)).toEqual(['source:website']);
+
+    const patched = await fx.api(`/v1/leads/${lead.id}`, 'PATCH', {
+      source: 'Referral',
+    });
+    expect(patched.status, JSON.stringify(patched)).toBe(200);
+    expect((patched.json.data as { source: string }).source).toBe('Referral');
+    const after = await getLead(fx.api, lead.id);
+    expect(
+      after.tags
+        .filter((tag) => tag.label.startsWith('source:'))
+        .map((tag) => tag.label),
+    ).toEqual(['source:referral']);
+
+    // An unrelated contact patch must not rewrite the classification, even
+    // though the normalized tag differs from the raw column value.
+    const contact = await fx.api(`/v1/leads/${lead.id}`, 'PATCH', {
+      firstName: 'Changed',
+    });
+    expect(contact.status, JSON.stringify(contact)).toBe(200);
+    const afterContact = await getLead(fx.api, lead.id);
+    expect(
+      afterContact.tags
+        .filter((tag) => tag.label.startsWith('source:'))
+        .map((tag) => tag.label),
+    ).toEqual(['source:referral']);
+
+    // Patching the same source value is also a classification no-op.
+    const same = await fx.api(`/v1/leads/${lead.id}`, 'PATCH', {
+      source: 'Referral',
+    });
+    expect(same.status, JSON.stringify(same)).toBe(200);
+    const afterSame = await getLead(fx.api, lead.id);
+    expect(
+      afterSame.tags
+        .filter((tag) => tag.label.startsWith('source:'))
+        .map((tag) => tag.label),
+    ).toEqual(['source:referral']);
+  } finally {
+    await fx.dispose();
+  }
+});
+
+test('source reconciliation preserves an explicit source tag on unrelated patches', async () => {
+  const fx = await startFixture();
+  try {
+    // Intake with an explicit source tag while the legacy column stays website.
+    const tokenResponse = await fx.api('/v1/tokens', 'POST', {
+      expiresAt: null,
+      name: 'Source precedence',
+      type: 'api',
+    });
+    const token = (tokenResponse.json.data as { token: string }).token;
+    const intake = await fx.api(
+      '/v1/intakes',
+      'POST',
+      {
+        email: 'explicit-source@example.test',
+        source: 'website',
+        tags: ['source:referral'],
+      },
+      { Authorization: `Bearer ${token}`, 'Idempotency-Key': 'source-prec-1' },
+    );
+    expect(intake.status, JSON.stringify(intake)).toBe(201);
+    const leadId = (intake.json.data as { leadId: string }).leadId;
+
+    const contact = await fx.api(`/v1/leads/${leadId}`, 'PATCH', {
+      firstName: 'Untouched classification',
+    });
+    expect(contact.status).toBe(200);
+    const after = await getLead(fx.api, leadId);
+    expect(
+      after.tags
+        .filter((tag) => tag.label.startsWith('source:'))
+        .map((tag) => tag.label),
+    ).toEqual(['source:referral']);
+  } finally {
+    await fx.dispose();
+  }
+});
+
+test('transaction-time guards abort when a target disappears', async () => {
+  const fx = await startFixture();
+  try {
+    const leadId = '01ARZ3NDEKTSV4RRFFQ69G5FB9';
+    const guard = (id: string) =>
+      fx.db
+        .prepare(
+          `INSERT INTO lead_tags (id, workspace_id, lead_id, tag_id, scope_id, created_at)
+           SELECT '0' || substr(hex(randomblob(13)), 1, 25), ?, requested.value, NULL, NULL, ?
+           FROM json_each(?) AS requested
+           WHERE NOT EXISTS (
+             SELECT 1 FROM leads
+             WHERE id = requested.value
+               AND workspace_id = ?
+               AND deleted_at IS NULL
+           )`,
+        )
+        .bind(WORKSPACE, Date.now(), JSON.stringify([id]), WORKSPACE)
+        .run();
+
+    // A missing lead makes the guard insert a NULL tag_id and abort.
+    await expect(guard(leadId)).rejects.toThrow(/NOT NULL/u);
+
+    // When the lead is active the guard is a no-op and writes nothing.
+    await fx.db
+      .prepare(
+        `INSERT INTO leads (id, workspace_id, email, first_name, last_name, source, custom_fields, created_at, updated_at)
+         VALUES (?, ?, NULL, 'Guard', 'Lead', 'website', '{}', ?, ?)`,
+      )
+      .bind(leadId, WORKSPACE, Date.now(), Date.now())
+      .run();
+    const before = await fx.db
+      .prepare('SELECT count(*) AS count FROM lead_tags')
+      .first<{ count: number }>();
+    await guard(leadId);
+    const after = await fx.db
+      .prepare('SELECT count(*) AS count FROM lead_tags')
+      .first<{ count: number }>();
+    expect(after?.count).toBe(before?.count ?? 0);
+  } finally {
+    await fx.dispose();
+  }
+});

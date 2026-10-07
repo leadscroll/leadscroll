@@ -32,9 +32,21 @@ export const createClient = createD1Client;
 export const prepare = (database: Database, sql: string): Statement =>
   database.prepare(sql);
 
+export type BatchResult = Awaited<ReturnType<Database['batch']>>;
+
+/**
+ * Runs one all-or-nothing batch and returns the per-statement D1 results. Used
+ * when a caller needs `results` (for `RETURNING`) or `meta.changes` to verify
+ * that a transaction-time guard truly applied every requested write.
+ */
+export const executeAtomicallyWithResults = async (
+  database: Database,
+  statements: Statement[],
+): Promise<BatchResult> => database.batch(statements);
+
 export const executeAtomically = async (
   database: Database,
   statements: Statement[],
 ): Promise<void> => {
-  await database.batch(statements);
+  await executeAtomicallyWithResults(database, statements);
 };

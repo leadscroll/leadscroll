@@ -96,3 +96,23 @@ describe('chip draft exclusivity', () => {
     expect(tagsForIds(['missing', 'vip'], catalog)).toEqual([catalog[2]]);
   });
 });
+
+describe('derived source normalization matches the SQL backfill', () => {
+  test('uses ASCII space-only trim and ASCII-only case folding', () => {
+    // SQLite `lower(trim(source))` trims only 0x20 and folds only A-Z.
+    expect(deriveTagSpecs({ source: ' Website_Form ' })).toEqual({
+      specs: [{ name: 'website_form', prefix: 'source' }],
+    });
+    expect(deriveTagSpecs({ source: 'CAFÉ' })).toEqual({
+      specs: [{ name: 'cafÉ', prefix: 'source' }],
+    });
+    // Tabs are not SQLite-trimmed and survive, unlike JavaScript `trim()`.
+    expect(deriveTagSpecs({ source: '  \tWebsite\t  ' })).toEqual({
+      specs: [{ name: '\twebsite\t', prefix: 'source' }],
+    });
+  });
+
+  test('does not derive a source tag from a whitespace-only value', () => {
+    expect(deriveTagSpecs({ source: '   ' })).toEqual({ specs: [] });
+  });
+});

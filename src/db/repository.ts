@@ -2,6 +2,7 @@ import {
   createClient,
   type Database,
   executeAtomically,
+  executeAtomicallyWithResults,
   prepare,
   type Statement,
 } from './driver';
@@ -29,7 +30,7 @@ import {
   type TagColor,
   type UpdateLeadRequest,
 } from '@/domain/schemas';
-import { tagLabel, type TagSpec } from '@/domain/tags';
+import { normalizeSourceTag, tagLabel, type TagSpec } from '@/domain/tags';
 import {
   and,
   asc,
@@ -1178,6 +1179,11 @@ const errorText = (error: unknown): string => {
 const isUniqueViolation = (error: unknown): boolean =>
   /UNIQUE constraint failed/iu.test(errorText(error));
 
+// A transaction-time guard deliberately inserts a NULL into a NOT NULL column
+// to abort the whole batch when a requested row disappeared concurrently.
+const isNotNullViolation = (error: unknown): boolean =>
+  /NOT NULL constraint failed/iu.test(errorText(error));
+
 const uniqueConstraintTarget = (error: unknown): null | string => {
   const match = /UNIQUE constraint failed: ([\w.]+)/iu.exec(errorText(error));
   return match?.[1]?.toLowerCase() ?? null;
@@ -1319,6 +1325,116 @@ const leadTagStatements = (
       timestamp,
     ),
   );
+
+/**
+ * Transaction-time guard: aborts the enclosing batch (NOT NULL violation) when
+ * any requested lead is missing or soft-deleted at write time. A pre-write
+ * read is only a fast path; this closes the window between that read and the
+ * batch so a bulk write can never silently skip a lead.
+ */
+const guardActiveLeadsStatement = (
+  environment: Env,
+  leadIds: readonly string[],
+  timestamp: number,
+): Statement =>
+  prepare(
+    environment.DB,
+    `INSERT INTO lead_tags (id, workspace_id, lead_id, tag_id, scope_id, created_at)
+      SELECT
+        '0' || substr(hex(randomblob(13)), 1, 25),
+        ?,
+        requested.value,
+        NULL,
+        NULL,
+        ?
+      FROM json_each(?) AS requested
+      WHERE NOT EXISTS (
+        SELECT 1 FROM leads
+        WHERE id = requested.value
+          AND workspace_id = ?
+          AND deleted_at IS NULL
+      )`,
+  ).bind(
+    DEFAULT_WORKSPACE_ID,
+    timestamp,
+    JSON.stringify(leadIds),
+    DEFAULT_WORKSPACE_ID,
+  );
+
+/**
+ * Transaction-time guard: aborts the enclosing batch when any requested tag no
+ * longer exists at write time. The NULL `lead_id` is the deliberate violating
+ * value; when every tag exists the SELECT produces no rows.
+ */
+const guardExistingTagsStatement = (
+  environment: Env,
+  tagIds: readonly string[],
+  timestamp: number,
+): Statement =>
+  prepare(
+    environment.DB,
+    `INSERT INTO lead_tags (id, workspace_id, lead_id, tag_id, scope_id, created_at)
+      SELECT
+        '0' || substr(hex(randomblob(13)), 1, 25),
+        ?,
+        NULL,
+        NULL,
+        NULL,
+        ?
+      FROM json_each(?) AS requested
+      WHERE NOT EXISTS (
+        SELECT 1 FROM tags
+        WHERE id = requested.value AND workspace_id = ?
+      )`,
+  ).bind(
+    DEFAULT_WORKSPACE_ID,
+    timestamp,
+    JSON.stringify(tagIds),
+    DEFAULT_WORKSPACE_ID,
+  );
+
+const missingActiveLeadIds = async (
+  environment: Env,
+  leadIds: readonly string[],
+): Promise<string[]> => {
+  if (leadIds.length === 0) {
+    return [];
+  }
+
+  const rows = await getDatabase(environment)
+    .select({ id: leads.id })
+    .from(leads)
+    .where(
+      and(
+        eq(leads.workspaceId, DEFAULT_WORKSPACE_ID),
+        isNull(leads.deletedAt),
+        sql`${leads.id} IN (SELECT value FROM json_each(${JSON.stringify(leadIds)}))`,
+      ),
+    );
+  const present = new Set(rows.map((row) => row.id));
+  return leadIds.filter((leadId) => !present.has(leadId));
+};
+
+const missingTagIds = async (
+  environment: Env,
+  tagIds: readonly string[],
+): Promise<string[]> => {
+  if (tagIds.length === 0) {
+    return [];
+  }
+
+  const rows = await getDatabase(environment)
+    .select({ id: tags.id })
+    .from(tags)
+    .where(
+      and(
+        eq(tags.workspaceId, DEFAULT_WORKSPACE_ID),
+        sql`${tags.id} IN (SELECT value FROM json_each(${JSON.stringify(tagIds)}))`,
+      ),
+    );
+  const present = new Set(rows.map((row) => row.id));
+  return tagIds.filter((tagId) => !present.has(tagId));
+};
 
 const tagViewSelect = {
   color: tags.color,
@@ -1608,9 +1724,7 @@ export const updateTag = async (
     }
 
     moved = targetScopeId !== current.scopeId;
-    if (moved) {
-      oldScopeId = current.scopeId;
-    }
+    oldScopeId = current.scopeId;
 
     statements.push(
       prepare(
@@ -1625,14 +1739,21 @@ export const updateTag = async (
         DEFAULT_WORKSPACE_ID,
       ),
     );
-    if (moved) {
-      statements.push(
-        prepare(
-          environment.DB,
-          'UPDATE lead_tags SET scope_id = ? WHERE tag_id = ? AND workspace_id = ?',
-        ).bind(targetScopeId, tagId, DEFAULT_WORKSPACE_ID),
-      );
-    }
+    // Always reconcile the denormalized join scope to the tag's actual scope
+    // inside the same batch. Comparing only against the read snapshot is
+    // unsound: if a concurrent move committed between the read and this batch,
+    // `moved` would be false and the tag could be written back to the snapshot
+    // scope while its joins stayed on the other scope.
+    statements.push(
+      prepare(
+        environment.DB,
+        `UPDATE lead_tags
+          SET scope_id = (
+            SELECT scope_id FROM tags WHERE id = ? AND workspace_id = ?
+          )
+          WHERE tag_id = ? AND workspace_id = ?`,
+      ).bind(tagId, DEFAULT_WORKSPACE_ID, tagId, DEFAULT_WORKSPACE_ID),
+    );
   }
 
   if (patch.color) {
@@ -1654,7 +1775,9 @@ export const updateTag = async (
   }
 
   if (moved && oldScopeId) {
-    // An inferred scope is pruned once its final tag has been moved out.
+    // An inferred scope is pruned once its final tag has moved out. The
+    // NOT EXISTS guard keeps this safe even if a concurrent writer repopulated
+    // the snapshot scope after our read.
     statements.push(
       prepare(
         environment.DB,
@@ -1901,99 +2024,186 @@ export type BulkTagOutcome =
   | { kind: 'unknown-lead'; leadIds: string[] }
   | { kind: 'unknown-tag'; tagIds: string[] };
 
+/**
+ * Translates a transaction-time guard abort into the specific missing
+ * lead/tag outcome. Any other failure is rethrown; the caller never reports a
+ * silent partial success.
+ */
+const mapBulkRaceError = async (
+  environment: Env,
+  leadIds: readonly string[],
+  tagIds: readonly string[],
+  error: unknown,
+): Promise<BulkTagOutcome> => {
+  if (isNotNullViolation(error)) {
+    const missingLeads = await missingActiveLeadIds(environment, leadIds);
+    if (missingLeads.length > 0) {
+      return { kind: 'unknown-lead', leadIds: missingLeads };
+    }
+
+    const missingTags = await missingTagIds(environment, tagIds);
+    if (missingTags.length > 0) {
+      return { kind: 'unknown-tag', tagIds: missingTags };
+    }
+  }
+
+  throw error;
+};
+
 export const bulkTag = async (
   environment: Env,
   leadIds: readonly string[],
   tagIds: readonly string[],
   mode: 'add' | 'remove',
 ): Promise<BulkTagOutcome> => {
-  const database = getDatabase(environment);
   const uniqueLeads = [...new Set(leadIds)];
   const uniqueTags = [...new Set(tagIds)];
-  const existingLeads = await database
-    .select({ id: leads.id })
-    .from(leads)
-    .where(
-      and(
-        eq(leads.workspaceId, DEFAULT_WORKSPACE_ID),
-        isNull(leads.deletedAt),
-        sql`${leads.id} IN (SELECT value FROM json_each(${JSON.stringify(uniqueLeads)}))`,
-      ),
-    );
-  const existingIds = new Set(existingLeads.map((row) => row.id));
-  const missingLeads = uniqueLeads.filter((leadId) => !existingIds.has(leadId));
+
+  // Fast path with a useful error; the batch guards below are the real
+  // safety net if a lead/tag disappears between this read and the write.
+  const missingLeads = await missingActiveLeadIds(environment, uniqueLeads);
   if (missingLeads.length > 0) {
     return { kind: 'unknown-lead', leadIds: missingLeads };
   }
 
-  if (mode === 'remove') {
-    const result = await database
-      .delete(leadTags)
-      .where(
-        and(
-          eq(leadTags.workspaceId, DEFAULT_WORKSPACE_ID),
-          sql`${leadTags.leadId} IN (SELECT value FROM json_each(${JSON.stringify(uniqueLeads)}))`,
-          sql`${leadTags.tagId} IN (SELECT value FROM json_each(${JSON.stringify(uniqueTags)}))`,
-        ),
-      )
-      .run();
-    return { affected: Number(result.meta.changes), kind: 'ok' };
-  }
-
-  const resolved = await resolveAssignmentsByIds(environment, uniqueTags);
-  if (resolved.unknown.length > 0) {
-    return { kind: 'unknown-tag', tagIds: resolved.unknown };
+  const missingTags = await missingTagIds(environment, uniqueTags);
+  if (missingTags.length > 0) {
+    return { kind: 'unknown-tag', tagIds: missingTags };
   }
 
   const timestamp = now().getTime();
-  const statements: Statement[] = [
-    prepare(
-      environment.DB,
-      `DELETE FROM lead_tags
-        WHERE workspace_id = ?
-          AND lead_id IN (SELECT value FROM json_each(?))
-          AND (
-            tag_id IN (SELECT value FROM json_each(?))
-            OR scope_id IN (
-              SELECT scope_id FROM tags
-              WHERE id IN (SELECT value FROM json_each(?))
-            )
-          )`,
-    ).bind(
-      DEFAULT_WORKSPACE_ID,
-      JSON.stringify(uniqueLeads),
-      JSON.stringify(uniqueTags),
-      JSON.stringify(uniqueTags),
-    ),
-    prepare(
-      environment.DB,
-      `INSERT INTO lead_tags (id, workspace_id, lead_id, tag_id, scope_id, created_at)
-        SELECT
-          '0' || substr(hex(randomblob(13)), 1, 25),
-          l.workspace_id,
-          l.id,
-          tag.id,
-          tag.scope_id,
-          ?
-        FROM json_each(?) AS ids
-        JOIN leads AS l
-          ON l.id = ids.value
-          AND l.workspace_id = ?
-          AND l.deleted_at IS NULL
-        CROSS JOIN json_each(?) AS tids
-        JOIN tags AS tag
-          ON tag.id = tids.value
-          AND tag.workspace_id = ?`,
-    ).bind(
-      timestamp,
-      JSON.stringify(uniqueLeads),
-      DEFAULT_WORKSPACE_ID,
-      JSON.stringify(uniqueTags),
-      DEFAULT_WORKSPACE_ID,
-    ),
-  ];
-  await executeAtomically(environment.DB, statements);
-  return { affected: uniqueLeads.length, kind: 'ok' };
+
+  if (mode === 'remove') {
+    const statements: Statement[] = [
+      guardActiveLeadsStatement(environment, uniqueLeads, timestamp),
+      guardExistingTagsStatement(environment, uniqueTags, timestamp),
+      prepare(
+        environment.DB,
+        `DELETE FROM lead_tags
+          WHERE workspace_id = ?
+            AND lead_id IN (SELECT value FROM json_each(?))
+            AND tag_id IN (SELECT value FROM json_each(?))
+          RETURNING lead_id AS leadId`,
+      ).bind(
+        DEFAULT_WORKSPACE_ID,
+        JSON.stringify(uniqueLeads),
+        JSON.stringify(uniqueTags),
+      ),
+    ];
+    try {
+      const results = await executeAtomicallyWithResults(
+        environment.DB,
+        statements,
+      );
+      const removed = (results.at(-1)?.results ?? []) as Array<{
+        leadId: string;
+      }>;
+      // `affected` is distinct leads changed, never the deleted join count.
+      return {
+        affected: new Set(removed.map((row) => row.leadId)).size,
+        kind: 'ok',
+      };
+    } catch (error) {
+      return await mapBulkRaceError(
+        environment,
+        uniqueLeads,
+        uniqueTags,
+        error,
+      );
+    }
+  }
+
+  // Retry only when a concurrent catalog move makes the resolved winners
+  // collide; a guard abort is translated below, not retried.
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const resolved = await resolveAssignmentsByIds(environment, uniqueTags);
+    if (resolved.unknown.length > 0) {
+      return { kind: 'unknown-tag', tagIds: resolved.unknown };
+    }
+
+    // Insert only the deterministic last-wins winners. Inserting the raw
+    // request would place two same-scope rows on a lead and violate the
+    // exclusivity index.
+    const winnerTagIds = resolved.assignments.map(
+      (assignment) => assignment.tagId,
+    );
+    const statements: Statement[] = [
+      guardActiveLeadsStatement(environment, uniqueLeads, timestamp),
+      guardExistingTagsStatement(environment, uniqueTags, timestamp),
+      prepare(
+        environment.DB,
+        `DELETE FROM lead_tags
+          WHERE workspace_id = ?
+            AND lead_id IN (SELECT value FROM json_each(?))
+            AND (
+              tag_id IN (SELECT value FROM json_each(?))
+              OR scope_id IN (
+                SELECT scope_id FROM tags
+                WHERE id IN (SELECT value FROM json_each(?))
+              )
+            )`,
+      ).bind(
+        DEFAULT_WORKSPACE_ID,
+        JSON.stringify(uniqueLeads),
+        JSON.stringify(winnerTagIds),
+        JSON.stringify(winnerTagIds),
+      ),
+      prepare(
+        environment.DB,
+        `INSERT INTO lead_tags (id, workspace_id, lead_id, tag_id, scope_id, created_at)
+          SELECT
+            '0' || substr(hex(randomblob(13)), 1, 25),
+            l.workspace_id,
+            l.id,
+            tag.id,
+            tag.scope_id,
+            ?
+          FROM json_each(?) AS ids
+          JOIN leads AS l
+            ON l.id = ids.value
+            AND l.workspace_id = ?
+            AND l.deleted_at IS NULL
+          CROSS JOIN json_each(?) AS tids
+          JOIN tags AS tag
+            ON tag.id = tids.value
+            AND tag.workspace_id = ?
+          RETURNING lead_id AS leadId`,
+      ).bind(
+        timestamp,
+        JSON.stringify(uniqueLeads),
+        DEFAULT_WORKSPACE_ID,
+        JSON.stringify(winnerTagIds),
+        DEFAULT_WORKSPACE_ID,
+      ),
+    ];
+    try {
+      const results = await executeAtomicallyWithResults(
+        environment.DB,
+        statements,
+      );
+      const inserted = (results.at(-1)?.results ?? []) as Array<{
+        leadId: string;
+      }>;
+      // `affected` is distinct leads changed, never the inserted join count.
+      return {
+        affected: new Set(inserted.map((row) => row.leadId)).size,
+        kind: 'ok',
+      };
+    } catch (error) {
+      if (isUniqueViolation(error) && attempt < 2) {
+        continue;
+      }
+
+      return await mapBulkRaceError(
+        environment,
+        uniqueLeads,
+        uniqueTags,
+        error,
+      );
+    }
+  }
+
+  throw new Error('The bulk tag update could not be applied after retries.');
 };
 
 export const createLeadAtomically = async (
@@ -2162,34 +2372,10 @@ export const updateLead = async (
   leadId: string,
   input: UpdateLeadRequest,
 ): Promise<LeadRecord | null> => {
-  const patch: Partial<typeof leads.$inferInsert> = { updatedAt: now() };
-  if (input.customFields !== undefined) {
-    patch.customFields = input.customFields;
-  }
-
-  if (input.email !== undefined) {
-    patch.email = input.email ? normalizeEmail(input.email) : null;
-  }
-
-  if (input.estimatedValue !== undefined) {
-    patch.estimatedValue = input.estimatedValue;
-  }
-
-  if (input.firstName !== undefined) {
-    patch.firstName = input.firstName;
-  }
-
-  if (input.lastName !== undefined) {
-    patch.lastName = input.lastName;
-  }
-
-  if (input.source !== undefined) {
-    patch.source = input.source;
-  }
-
-  const result = await getDatabase(environment)
-    .update(leads)
-    .set(patch)
+  const database = getDatabase(environment);
+  const existing = await database
+    .select({ source: leads.source })
+    .from(leads)
     .where(
       and(
         eq(leads.workspaceId, DEFAULT_WORKSPACE_ID),
@@ -2197,12 +2383,109 @@ export const updateLead = async (
         isNull(leads.deletedAt),
       ),
     )
-    .run();
-  if (result.meta.changes === 0) {
+    .get();
+  if (!existing) {
     return null;
   }
 
-  return getLead(environment, leadId);
+  const timestamp = now().getTime();
+  const assignments = ['updated_at = ?'];
+  const binds: Array<null | number | string> = [timestamp];
+  if (input.customFields !== undefined) {
+    assignments.push('custom_fields = ?');
+    binds.push(JSON.stringify(input.customFields));
+  }
+
+  if (input.email !== undefined) {
+    assignments.push('email = ?');
+    binds.push(input.email ? normalizeEmail(input.email) : null);
+  }
+
+  if (input.estimatedValue !== undefined) {
+    assignments.push('estimated_value = ?');
+    binds.push(input.estimatedValue);
+  }
+
+  if (input.firstName !== undefined) {
+    assignments.push('first_name = ?');
+    binds.push(input.firstName);
+  }
+
+  if (input.lastName !== undefined) {
+    assignments.push('last_name = ?');
+    binds.push(input.lastName);
+  }
+
+  if (input.source !== undefined) {
+    assignments.push('source = ?');
+    binds.push(input.source);
+  }
+
+  binds.push(leadId, DEFAULT_WORKSPACE_ID);
+  // Patch-specific UPDATE: fields absent from the request are left untouched,
+  // so a concurrent edit to another field is never clobbered by a stale read.
+  const updateStatement = prepare(
+    environment.DB,
+    `UPDATE leads SET ${assignments.join(', ')}
+      WHERE id = ? AND workspace_id = ? AND deleted_at IS NULL`,
+  ).bind(...binds);
+
+  const newSource = input.source;
+  if (newSource === undefined || newSource === existing.source) {
+    // No source change means no classification write: a legacy PATCH that only
+    // touches contact fields can never rewrite the lead's source:* tag.
+    const result = await updateStatement.run();
+    return (result.meta?.changes ?? 0) > 0
+      ? getLead(environment, leadId)
+      : null;
+  }
+
+  // The source actually changed: reconcile the source:* classification in the
+  // same atomic batch as the lead update. The raw intake payload, provenance
+  // and the legacy `source` column keep their truth; only the classification
+  // tag is replaced. Mapping legacy source values is lossless and matches the
+  // 0003 backfill's `lower(trim(...))` normalization.
+  const sourceSpec: TagSpec = {
+    name: normalizeSourceTag(newSource),
+    prefix: 'source',
+  };
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const plan = await resolveTagPlan(environment, [sourceSpec]);
+    const statements: Statement[] = [
+      // Aborts the batch if the lead disappeared after the read.
+      guardActiveLeadsStatement(environment, [leadId], timestamp),
+      updateStatement,
+      ...tagPlanStatements(environment, plan, timestamp),
+      prepare(
+        environment.DB,
+        `DELETE FROM lead_tags
+          WHERE lead_id = ? AND workspace_id = ?
+            AND scope_id IN (
+              SELECT id FROM tag_scopes
+              WHERE workspace_id = ? AND prefix = 'source'
+            )`,
+      ).bind(leadId, DEFAULT_WORKSPACE_ID, DEFAULT_WORKSPACE_ID),
+      ...leadTagStatements(environment, leadId, plan.assignments, timestamp),
+    ];
+    try {
+      await executeAtomically(environment.DB, statements);
+      return getLead(environment, leadId);
+    } catch (error) {
+      if (isUniqueViolation(error) && attempt < 2) {
+        continue;
+      }
+
+      if (isNotNullViolation(error)) {
+        // The lead was deleted between the read and the batch; the guard
+        // aborted the whole batch, so nothing was written.
+        return null;
+      }
+
+      throw error;
+    }
+  }
+
+  throw new Error('The lead source could not be reconciled after retries.');
 };
 
 export const softDeleteLeads = async (
