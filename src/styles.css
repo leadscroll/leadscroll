@@ -305,7 +305,7 @@ textarea { resize: vertical; }
 @media (max-width: 760px) { .record-tags-editor { flex-direction: column; } .record-tag-actions { align-self: flex-end; padding-top: 0; } }
 
 /* Compact catalog: scopes carry color, child rows carry individual actions. */
-.tag-catalog-page { padding: 16px 28px 48px; }
+.tag-catalog-page { width: 100%; max-width: 960px; margin-inline: auto; padding: 16px 28px 48px; }
 .tag-catalog-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: 0 0 16px; font-size: 11px; color: var(--text-muted); }
 .tag-catalog-toolbar .search-control { padding-left: 8px; gap: 7px; }
 .catalog-table-wrap { position: relative; border: 1px solid var(--border-subtle); border-radius: 8px; overflow-x: auto; }

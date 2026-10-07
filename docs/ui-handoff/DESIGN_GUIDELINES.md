@@ -56,8 +56,8 @@ and forced-color fallback for native selects.
 - Lead records: one bounded 960px vertical column, identity -> tags -> details,
   intake metadata/raw payload -> activity. One document scrollbar; no side feed.
 - Settings/catalogs: compact rows with one primary action, search, and overflow
-  menus for uncommon operations. Management tables fill the available width with
-  consistent page padding. Avoid an introductory card on every screen.
+  menus for uncommon operations. Use a centered 960px container for the tag catalog’s search and table,
+  matching the lead view with consistent page padding. Avoid an introductory card on every screen.
 - Dialogs: focused task, clear title, short optional explanation, aligned footer,
   constrained width/height and internal scrolling when the viewport is short.
 - Reuse Button, Field, Form, Dialog, Avatar, TagChip/TagInput and menu patterns.
