@@ -46,41 +46,47 @@ aliases are a temporary compatibility bridge for those screens, not a second
 palette for new components. A component gallery and permanent screenshot test
 harness are follow-up work once the visual direction is accepted.
 
-## Tags: interactive proposal
+## Tags: persisted catalog
 
-The `design-preview` Vite mode adds a browser-memory tag catalog. It is gated by
-both DEV and MODE; normal development and production builds do not enable it.
-The preview server supplies fictional lead IDs; reloading resets tag edits.
+The production workbench stores tags, scopes and lead assignments in D1. The
+catalog is loaded with TanStack Query; there is no browser-memory mode, fake
+lead id, or production-flag demo route.
 
 - Scopes are inferred from `prefix:value` names and always exclusive. Each scope
   owns one shared color; there is no per-scope exclusivity setting.
-- Tags have stable IDs; renaming a group changes displayed names without losing assignments.
-- Picking an exclusive tag replaces its sibling, preserving other groups and independent tags.
+- Tags have stable IDs; renaming a tag changes its displayed name without losing assignments.
+- Picking an exclusive tag replaces its sibling, preserving other scopes and independent tags.
 - Lead tags start as a read-only chip display. Clicking opens the inline chip input
   with its own Save tags and Cancel actions. Scoped swaps affect only the draft.
   Save commits and shows Tags saved; Cancel discards. Contact Save changes is separate.
   Unchanged tag saves show inline feedback; bulk changes remain staged until Apply.
-- Bulk add replaces same-prefix tags; bulk remove affects only selected tags.
-- List filters match one exact tag or any tag in a prefix. Preview filtering uses
-  the loaded fictional list; production needs server-side filtering/pagination.
-- Renaming a tag into another scope is blocked if assigned leads already have
-  another value in that scope. Catalog maintenance never silently drops assignments.
-- Deleting a tag removes its assignments after confirmation; leads remain.
+- Bulk add replaces same-scope tags; bulk remove affects only selected tags. A
+  missing lead or tag fails the whole request without a partial write.
+- List filters match one exact tag or any tag in a scope, and run on the server
+  before the keyset page is cut.
+- Renaming or moving a tag into another scope is blocked if assigned leads
+  already have another value in that scope. Catalog maintenance never silently
+  drops assignments; the database enforces one tag per scope per lead.
+- Deleting a tag removes its assignments after confirmation; leads and sibling
+  tags remain, and an inferred scope disappears with its last tag.
 
-This is a UI proposal, not a tags API. Durable storage, authorization and atomic
-exclusivity enforcement belong in a later backend implementation.
+The catalog API is the authorization boundary (staff-session routes under
+`/v1/tags` and `/v1/tag-scopes`) and the partial unique index on `lead_tags`
+is the backstop under concurrent writes.
 
-### Source and intake-token proposal
+### Source and intake tokens
 
-In the preview, `source` is an exclusive tag prefix, with website, referral,
-event and manual examples. The standalone source input/column is hidden only
-in this mode. Real API fields and source request mappers remain unchanged.
-Manual preview leads start with `source:manual`.
+`source` is an exclusive tag prefix. The standalone source input and list column
+are hidden; legacy `leads.source` values and API clients keep working, and the
+migration maps them to `source:*` losslessly. An explicit `source:*` tag in an
+intake payload takes precedence over the derived value. Manual leads record the
+server's manual default until a source tag is chosen.
 
-The intake-token route uses the normal token list and creation UI. For the current
-design, incoming payloads may supply any tags. Per-token fixed tags, allowlists,
-tag-creation restrictions and the submission simulator were removed. This is a
-provisional product assumption; ingestion/storage behavior is still future work.
+The intake-token route uses the normal token list and creation UI. Incoming
+payloads may supply any tags; unknown names are created under the same domain
+rules. Per-token fixed tags, allowlists and tag-creation restrictions are not
+part of this iteration.
+
 
 ### Chip input interaction
 
@@ -93,7 +99,7 @@ existing assignments can be removed.
 
 Keyboard: type to filter, arrows/Enter to select, Escape to dismiss, and chip
 removal via × or the component's chip keyboard navigation. The popup is anchored
-to the input and sized for mobile. Production does not enable this preview UI.
+to the input and sized for mobile.
 
 Tag colors use quiet, desaturated fills with coordinated readable text: sage,
 slate blue, lavender and taupe. There are no decorative dots or outline borders.
@@ -115,9 +121,8 @@ of the brand accent so dense lists retain their muted palette.
 Sonner notifications use status-tinted dark surfaces, clearer colored borders,
 and a soft matching outer glow. Success, error and information retain distinct icons. Notifications
 appear at bottom right, can be dismissed, and a hovered stack expands and pauses
-its timers. Actions use the warm accent treatment. The design-only route
-`/preview/toasts` demonstrates success, error, information, loading-to-success
-and undo without changing application data.
+its timers. Actions use the warm accent treatment. A toast gallery is reference
+tooling only; production toasts are triggered by real persistence outcomes.
 
 Toast close controls sit inside the upper-right corner with reserved content
 space and a 32px target. Borders and surfaces carry status tints: sage for success,
@@ -179,6 +184,7 @@ the affected lead count and removes only that tag. Empty inferred scopes disappe
 after their last tag is removed. Scope menus offer New tag and Rename scope;
 scope renaming preserves assignments and rejects existing-prefix collisions.
 
-The input currently supports a plain name or one `scope:value` separator, trims
-and normalizes case, and limits scope/value to 30/40 characters. This remains a
-browser-memory proposal; the actual intake/API migration is separate.
+The input supports a plain name or one `scope:value` separator, trims and
+normalizes case, and limits scope/value to 30/40 characters for new names. The
+server persists stable IDs and resolves or creates scopes atomically; legacy
+`source` values bypass the length bound so they are never truncated.
