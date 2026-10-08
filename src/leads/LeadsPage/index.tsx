@@ -2,18 +2,29 @@ import { CreateLeadDialog } from './CreateLeadDialog';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { Notice } from '@/components/Notice';
 import { PageHeader } from '@/components/PageHeader';
+import { Avatar } from '@/components/ui/Avatar';
 import { Button } from '@/components/ui/Button';
-import { Field } from '@/components/ui/Field';
-import { inputClass } from '@/components/ui/form';
+import { Form } from '@/components/ui/Form';
 import { leadDisplayName } from '@/domain/leadDisplay';
 import { type LeadView } from '@/domain/schemas';
 import { request, requestBody } from '@/lib/http';
+import { BulkTags } from '@/tags/LeadTags';
+import { LeadTagCell } from '@/tags/TagChips';
+import { TagFilter } from '@/tags/TagFilter';
 import {
   useInfiniteQuery,
   useMutation,
   useQueryClient,
 } from '@tanstack/react-query';
-import { Plus, Search } from 'lucide-react';
+import {
+  ArrowUpRight,
+  Inbox,
+  LayoutList,
+  Plus,
+  Search,
+  Trash2,
+  X,
+} from 'lucide-react';
 import { useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { toast } from 'sonner';
@@ -23,7 +34,9 @@ type LeadPage = { data: LeadView[]; nextCursor: null | string };
 
 export const LeadsPage = () => {
   const queryClient = useQueryClient();
+  const [tagFilter, setTagFilter] = useState('');
   const [search, setSearch] = useState('');
+  const hasFilters = Boolean(search || tagFilter);
   const searchForm = useForm<{ query: string }>({
     defaultValues: { query: '' },
     mode: 'onTouched',
@@ -41,13 +54,21 @@ export const LeadsPage = () => {
         parameters.set('query', search);
       }
 
+      // Tag filters run on the server before the keyset page is cut, so the
+      // list never filters only the rows already loaded in the browser.
+      if (tagFilter.startsWith('tag:')) {
+        parameters.set('tag', tagFilter.slice(4));
+      } else if (tagFilter.startsWith('group:')) {
+        parameters.set('tagScope', tagFilter.slice(6));
+      }
+
       if (pageParam) {
         parameters.set('cursor', pageParam);
       }
 
       return requestBody<LeadPage>(`/v1/leads?${parameters.toString()}`);
     },
-    queryKey: ['leads', search],
+    queryKey: ['leads', search, tagFilter],
   });
   const rows = leads.data?.pages.flatMap((page) => page.data) ?? [];
 
@@ -68,7 +89,7 @@ export const LeadsPage = () => {
     },
     onSuccess: () => {
       toast.success(
-        `${selected.length} ${selected.length === 1 ? 'lead' : 'leads'} deleted`,
+        `${String(selected.length)} ${selected.length === 1 ? 'lead' : 'leads'} deleted`,
       );
       setSelected([]);
       setConfirmDelete(false);
@@ -83,61 +104,116 @@ export const LeadsPage = () => {
       <PageHeader
         action={
           <Button onClick={() => setShowCreate(true)}>
-            <Plus size={16} /> Add lead
+            <Plus size={15} /> Add lead
           </Button>
         }
-        eyebrow="Work queue"
+        eyebrow="Workspace"
         title="Leads"
       />
-      <div className="p-5 sm:p-8">
-        {error ? <Notice error={error} /> : null}
-        <div className="mb-4 flex flex-wrap items-end gap-3 rounded-lg border border-slate-800 bg-slate-900/40 p-3 text-sm text-slate-400">
-          <form
-            className="flex items-end gap-2"
+      <div className="view-toolbar">
+        <div className="view-label">
+          <LayoutList size={15} />
+          <span>All leads</span>
+          {!leads.isPending && (
+            <span className="count-badge">
+              {rows.length}
+              {leads.hasNextPage ? '+' : ''}
+            </span>
+          )}
+        </div>
+        <div className="list-controls">
+          <TagFilter
+            onChange={(value) => {
+              setTagFilter(value);
+              setSelected([]);
+            }}
+            value={tagFilter}
+          />
+          <Form
+            className="search-control"
             onSubmit={searchForm.handleSubmit(({ query }) => {
               setSearch(query.trim());
               setSelected([]);
             })}
+            role="search"
           >
-            <Field label="Search">
-              <input
-                className={inputClass}
-                placeholder="Name or email"
-                {...searchForm.register('query')}
-              />
-            </Field>
-            <Button
-              tone="secondary"
+            <button
+              aria-label="Search leads"
+              className="search-submit"
               type="submit"
             >
-              <Search size={16} />
-            </Button>
-          </form>
+              <Search size={15} />
+            </button>
+            <input
+              aria-label="Search leads by name or email"
+              placeholder="Search leads…"
+              type="search"
+              {...searchForm.register('query')}
+            />
+            {search && (
+              <button
+                aria-label="Clear search"
+                className="search-submit"
+                onClick={() => {
+                  searchForm.reset({ query: '' });
+                  setSearch('');
+                  setSelected([]);
+                }}
+                type="button"
+              >
+                <X size={14} />
+              </button>
+            )}
+          </Form>
         </div>
-
-        {selected.length > 0 && (
-          <div className="mb-3 flex flex-wrap items-center gap-3 rounded-lg border border-cyan-500/30 bg-cyan-500/5 p-3 text-sm">
-            <span className="font-medium text-slate-200">
-              {selected.length} selected
-            </span>
-            <Button
-              onClick={() => setConfirmDelete(true)}
-              tone="danger"
-            >
-              Delete
-            </Button>
-          </div>
-        )}
-
-        {leads.isPending ? (
-          <p className="text-slate-400">Loading leads…</p>
-        ) : (
-          <div className="overflow-x-auto rounded-xl border border-slate-800">
-            <table className="w-full text-left text-sm">
-              <thead className="bg-slate-900 text-xs uppercase tracking-wider text-slate-400">
+      </div>
+      {error ? (
+        <div className="page-notice">
+          <Notice error={error} />
+        </div>
+      ) : null}
+      {selected.length > 0 && (
+        <div className="selection-toolbar">
+          <span>{selected.length} selected</span>
+          <BulkTags
+            ids={selected}
+            onApplied={() => setSelected([])}
+          />
+          <Button
+            onClick={() => setConfirmDelete(true)}
+            tone="danger"
+          >
+            <Trash2 size={14} /> Delete
+          </Button>
+          <Button
+            onClick={() => setSelected([])}
+            tone="ghost"
+          >
+            Clear selection
+          </Button>
+        </div>
+      )}
+      {leads.isPending ? (
+        <div
+          aria-live="polite"
+          className="empty-state"
+        >
+          <span className="loading-dot" />
+          <p>Loading leads…</p>
+        </div>
+      ) : (
+        <>
+          <div className="table-scroll">
+            <table className="leads-table">
+              <caption className="sr-only">Leads in your workspace</caption>
+              <thead>
                 <tr>
-                  <th className="w-10 px-4 py-3">
+                  <th
+                    className="checkbox-cell"
+                    scope="col"
+                  >
                     <input
+                      aria-label="Select all loaded leads"
                       checked={
                         rows.length > 0 && selected.length === rows.length
                       }
@@ -151,20 +227,32 @@ export const LeadsPage = () => {
                       type="checkbox"
                     />
                   </th>
-                  <th className="px-4 py-3">Lead</th>
-                  <th className="px-4 py-3">Source</th>
-                  <th className="px-4 py-3">Value</th>
-                  <th className="px-4 py-3">Created</th>
+                  <th scope="col">Name</th>
+                  <th scope="col">Tags</th>
+                  <th
+                    className="numeric-cell"
+                    scope="col"
+                  >
+                    Estimated value
+                  </th>
+                  <th scope="col">Created</th>
+                  <th
+                    className="row-arrow"
+                    scope="col"
+                  >
+                    <span className="sr-only">Open</span>
+                  </th>
                 </tr>
               </thead>
               <tbody>
                 {rows.map((lead) => (
                   <tr
-                    className="border-t border-slate-800"
+                    data-selected={selected.includes(lead.id) || undefined}
                     key={lead.id}
                   >
-                    <td className="px-4 py-3">
+                    <td className="checkbox-cell">
                       <input
+                        aria-label={`Select ${leadDisplayName(lead) ?? 'unnamed lead'}`}
                         checked={selected.includes(lead.id)}
                         onChange={() =>
                           setSelected((current) =>
@@ -176,60 +264,111 @@ export const LeadsPage = () => {
                         type="checkbox"
                       />
                     </td>
-                    <td className="px-4 py-3">
+                    <td>
+                      <div className="lead-identity">
+                        <Avatar name={leadDisplayName(lead) ?? '?'} />
+                        <div className="lead-name-block">
+                          <Link
+                            className="lead-name"
+                            href={`/leads/${lead.id}`}
+                          >
+                            {leadDisplayName(lead) ?? 'Unnamed lead'}
+                          </Link>
+                          {lead.email && (
+                            <span className="lead-email">{lead.email}</span>
+                          )}
+                        </div>
+                        {lead.duplicateCount > 0 && (
+                          <span
+                            className="duplicate-badge"
+                            title="Other leads share this email"
+                          >
+                            {lead.duplicateCount} duplicate
+                            {lead.duplicateCount === 1 ? '' : 's'}
+                          </span>
+                        )}
+                      </div>
+                    </td>
+                    <LeadTagCell tags={lead.tags} />
+                    <td className="numeric-cell">
+                      {lead.estimatedValue === null ? (
+                        <span className="text-muted">—</span>
+                      ) : (
+                        `$${lead.estimatedValue.toLocaleString()}`
+                      )}
+                    </td>
+                    <td className="date-cell">
+                      {new Date(lead.createdAt).toLocaleDateString(undefined, {
+                        day: 'numeric',
+                        month: 'short',
+                        year: 'numeric',
+                      })}
+                    </td>
+                    <td className="row-arrow">
                       <Link
-                        className="font-medium text-slate-100 hover:text-cyan-300"
+                        aria-label={`Open ${leadDisplayName(lead) ?? 'lead'}`}
+                        className="icon-button"
                         href={`/leads/${lead.id}`}
                       >
-                        {leadDisplayName(lead) ?? (
-                          <span className="text-slate-500">N/A</span>
-                        )}
+                        <ArrowUpRight size={15} />
                       </Link>
-                      {lead.duplicateCount > 0 && (
-                        <span
-                          className="ml-2 rounded bg-amber-500/15 px-1.5 py-0.5 text-xs text-amber-300"
-                          title="Other leads share this email"
-                        >
-                          ⧉ {lead.duplicateCount}
-                        </span>
-                      )}
-                      {lead.email && (
-                        <p className="text-xs text-slate-500">{lead.email}</p>
-                      )}
-                    </td>
-                    <td className="px-4 py-3 text-slate-400">{lead.source}</td>
-                    <td className="px-4 py-3 text-slate-400">
-                      {lead.estimatedValue === null
-                        ? '—'
-                        : `$${lead.estimatedValue.toLocaleString()}`}
-                    </td>
-                    <td className="px-4 py-3 text-slate-500">
-                      {new Date(lead.createdAt).toLocaleDateString()}
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
-            {rows.length === 0 && (
-              <p className="p-6 text-sm text-slate-400">
-                No leads yet. Add one manually or send an intake submission.
+          </div>
+          {rows.length === 0 && !leads.error && (
+            <div className="empty-state">
+              <span className="empty-icon">
+                <Inbox size={24} />
+              </span>
+              <h2>
+                {hasFilters
+                  ? 'No matching leads'
+                  : 'A place for every new opportunity'}
+              </h2>
+              <p>
+                {hasFilters
+                  ? 'Try another name, email address or tag.'
+                  : 'Add your first lead, or connect a form to start collecting inquiries.'}
               </p>
-            )}
-          </div>
-        )}
-
-        {leads.hasNextPage && (
-          <div className="mt-4">
-            <Button
-              disabled={leads.isFetchingNextPage}
-              onClick={() => leads.fetchNextPage()}
-              tone="secondary"
-            >
-              {leads.isFetchingNextPage ? 'Loading…' : 'Load more'}
-            </Button>
-          </div>
-        )}
-      </div>
+              <Button
+                onClick={() => {
+                  if (hasFilters) {
+                    searchForm.reset({ query: '' });
+                    setSearch('');
+                    setTagFilter('');
+                  } else {
+                    setShowCreate(true);
+                  }
+                }}
+                tone="secondary"
+              >
+                {hasFilters ? 'Clear filters' : 'Add your first lead'}
+              </Button>
+            </div>
+          )}
+          {rows.length > 0 && (
+            <div className="list-footer">
+              <span>
+                {rows.length} lead{rows.length === 1 ? '' : 's'}
+                {search ? ` matching “${search}”` : ''}
+                {leads.hasNextPage ? ' loaded' : ''}
+              </span>
+              {leads.hasNextPage && (
+                <Button
+                  disabled={leads.isFetchingNextPage}
+                  onClick={() => leads.fetchNextPage()}
+                  tone="secondary"
+                >
+                  {leads.isFetchingNextPage ? 'Loading…' : 'Load more'}
+                </Button>
+              )}
+            </div>
+          )}
+        </>
+      )}
       {showCreate && <CreateLeadDialog onOpenChange={setShowCreate} />}
       <ConfirmDialog
         description={`Delete ${selected.length} ${selected.length === 1 ? 'lead' : 'leads'}? This removes them from your workspace.`}

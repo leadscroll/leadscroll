@@ -54,9 +54,18 @@ const start = async () => {
     <QueryClientProvider client={queryClient}>
       <App />
       <Toaster
+        closeButton
+        duration={5_000}
         position="bottom-right"
-        richColors
         theme="dark"
+        toastOptions={{
+          classNames: {
+            actionButton: 'leadscroll-toast-action',
+            description: 'leadscroll-toast-description',
+            toast: 'leadscroll-toast',
+          },
+          closeButtonAriaLabel: 'Dismiss notification',
+        }}
       />
     </QueryClientProvider>,
   );

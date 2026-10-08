@@ -22,6 +22,13 @@
       "when": 1790826094357,
       "tag": "0002_noisy_nitro",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1791359404603,
+      "tag": "0003_classy_emma_frost",
+      "breakpoints": true
     }
   ]
 }

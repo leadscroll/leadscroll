@@ -286,9 +286,12 @@ The CRM serves a small, dependency-free SDK at `/sdk/v1.js`. Give a form a
   control, or to an ancestor such as a `<fieldset>` to mark everything inside.
   Unmarked named controls are never transmitted, and the SDK logs a console
   warning listing them.
-- `email`, `firstName`/`first_name`/`first-name`, `lastName`, and `source`
-  map to lead fields; every other marked input lands in `customFields`, and
-  repeated names (checkbox groups, multi-selects) become arrays.
+- `email`, `firstName`/`first_name`/`first-name`, `lastName`, `source`,
+  and `tags` map to lead fields; every other marked input lands in
+  `customFields`, and repeated names (checkbox groups, multi-selects) become
+  arrays. A marked `tags` control collects a de-duplicated list of
+  `scope:value`/plain names for classification; unknown names are created on
+  intake, and repeated controls or comma-separated values each contribute.
 - The endpoint origin comes from the script's own `src`, so the form can live
   on any site. No cookies or credentials are sent.
 - Attribute overrides: `data-leadscroll-source`, `data-leadscroll-success`,
@@ -389,6 +392,9 @@ by `id DESC`:
   `422 invalid_cursor`.
 - `query` is a literal substring match on first name, last name, or email
   (`%` and `_` match literally) and composes with pagination.
+- `tag` (a tag id) or `tagScope` (a scope id) filters to leads carrying that
+  exact tag or any tag in that scope, applied in the same `WHERE` clause as
+  the keyset cursor so filtered pages are cut after filtering.
 - Items carry a `duplicateCount` hint: how many other live leads share the
   normalized email, computed for the whole page in one grouped query.
 - Custom fields live in each lead's `customFields` JSON document; there is no
@@ -404,6 +410,39 @@ Unknown or soft-deleted ids return `404 not_found`.
 `POST /v1/leads/bulk-delete` soft-deletes up to 100 ids: rows stay in D1 with
 `deletedAt` set, disappear from `GET /v1/leads`, and keep their activity
 history. That is the spam workflow: select rows in the table and delete them.
+
+### Tags
+
+`prefix:value` tags share a scope and are globally exclusive per lead; plain
+tags are standalone. Staff-session routes manage the catalog and assignments:
+
+- `GET /v1/tags` returns `{ scopes, tags }`; each catalog tag reports how many
+  active leads use it.
+- `POST /v1/tags` creates a tag from a full name (`fall26:considering` or
+  `vip`). The scope is inferred or created and inherits its color; a duplicate
+  name returns `409 tag_exists`.
+- `PATCH /v1/tags/:id` renames/moves a tag and/or sets a standalone color.
+  Assignments follow the stable tag id. Moving a tag into a scope where an
+  assigned lead already has a sibling returns `409 scope_conflict` with every
+  prior assignment unchanged.
+- `DELETE /v1/tags/:id` removes the tag's joins only (leads and sibling tags
+  remain) and prunes an inferred scope once empty.
+- `PATCH /v1/tag-scopes/:id` renames a scope and/or changes its shared color;
+  prefix collisions return `409 scope_exists`.
+- `PUT /v1/leads/:id/tags` replaces a lead's assignments with `tagIds`
+  (last-in-list wins within a scope). `POST /v1/leads/tags/bulk` applies
+  `mode: add|remove` to up to 100 leads atomically; a missing lead or tag
+  fails the whole request without a partial write.
+
+Intake (`POST /v1/intakes` and the browser route) accepts an optional
+`tags: string[]`. Unknown names are created atomically with the lead, and a
+`source:*` tag is derived from `source` unless the payload already supplies
+one. Replaying an idempotency key never creates tags or changes assignments.
+Changing the legacy `source` field via PATCH atomically replaces its `source:*`
+classification; unrelated contact edits leave tags untouched. The original received
+payload and provenance are unchanged. Historical source normalization matches
+SQLite (ASCII case folding and space trimming), preserving long or colon-bearing
+values without truncation.
 
 Consistency while paging: each page is evaluated as of its own query (no
 snapshot spans pages). Pages are disjoint windows of the keyset ordering, so

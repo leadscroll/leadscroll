@@ -49,10 +49,10 @@ describe('lead form values', () => {
       estimatedValue: undefined,
       firstName: undefined,
       lastName: undefined,
-      source: 'Website',
+      source: undefined,
     });
     // The JSON body actually sent elides undefined fields.
-    expect(JSON.parse(JSON.stringify(input))).toEqual({ source: 'Website' });
+    expect(JSON.parse(JSON.stringify(input))).toEqual({});
     await expect(
       Schema.decodeUnknownPromise(CreateLeadRequestSchema, {
         onExcessProperty: 'error',
@@ -72,7 +72,7 @@ describe('lead form values', () => {
       estimatedValue: '',
       firstName: '   ',
       lastName: ' River ',
-      source: ' ',
+      source: 'Legacy source from an earlier fetch',
     });
 
     expect(input).toEqual({

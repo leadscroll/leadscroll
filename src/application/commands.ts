@@ -1,4 +1,5 @@
 import { DomainError, PersistenceError } from './errors';
+import { leadTagSpecs } from './tag-commands';
 import {
   createLead,
   createLeadActivity,
@@ -59,6 +60,11 @@ export const createIntakeCommand = (
       return storedOutcome;
     }
 
+    // Tag specs are derived only for a brand-new submission, after the
+    // fingerprint and replay check. A replay therefore never creates tags or
+    // touches assignments, and the stored fingerprint is unchanged.
+    const tagSpecs = yield* leadTagSpecs(input);
+
     return yield* persist((): Promise<IntakePersistenceOutcome> =>
       createLeadAtomically(
         environment,
@@ -67,6 +73,7 @@ export const createIntakeCommand = (
         requestHash,
         provenance,
         rawPayload,
+        tagSpecs,
       ),
     );
   });
@@ -82,7 +89,9 @@ export const createLeadCommand = (environment: Env, input: CreateLeadRequest) =>
       }
     });
 
-    return yield* persist(() => createLead(environment, input));
+    const tagSpecs = yield* leadTagSpecs(input);
+
+    return yield* persist(() => createLead(environment, input, tagSpecs));
   });
 
 export const updateLeadCommand = (

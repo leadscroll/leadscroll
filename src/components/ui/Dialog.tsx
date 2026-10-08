@@ -1,15 +1,16 @@
-import { cn } from '@/lib/styles';
 import { Dialog as BaseDialog } from '@base-ui/react/dialog';
 import { X } from 'lucide-react';
 import { type ReactNode } from 'react';
 
 export const Dialog = ({
   children,
+  description,
   onOpenChange,
   open,
   title,
 }: {
   readonly children: ReactNode;
+  readonly description?: string;
   readonly onOpenChange: (open: boolean) => void;
   readonly open: boolean;
   readonly title: string;
@@ -19,18 +20,24 @@ export const Dialog = ({
     open={open}
   >
     <BaseDialog.Portal>
-      <BaseDialog.Backdrop className="fixed inset-0 bg-slate-950/60" />
-      <BaseDialog.Popup className="fixed left-1/2 top-1/2 w-[min(32rem,calc(100vw-2rem))] -translate-x-1/2 -translate-y-1/2 rounded-xl border border-slate-700 bg-slate-900 p-5 shadow-2xl">
-        <div className="mb-4 flex items-center justify-between gap-4">
-          <BaseDialog.Title className="text-base font-semibold text-white">
-            {title}
-          </BaseDialog.Title>
-          <BaseDialog.Close
-            className={cn(
-              'rounded p-1 text-slate-400 hover:bg-slate-800 hover:text-white',
+      <BaseDialog.Backdrop className="dialog-backdrop" />
+      <BaseDialog.Popup className="dialog-popup">
+        <div className="dialog-heading">
+          <div>
+            <BaseDialog.Title className="dialog-title">
+              {title}
+            </BaseDialog.Title>
+            {description && (
+              <BaseDialog.Description className="dialog-description">
+                {description}
+              </BaseDialog.Description>
             )}
+          </div>
+          <BaseDialog.Close
+            aria-label="Close dialog"
+            className="icon-button"
           >
-            <X size={18} />
+            <X size={17} />
           </BaseDialog.Close>
         </div>
         {children}

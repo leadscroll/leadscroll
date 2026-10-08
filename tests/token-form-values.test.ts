@@ -11,11 +11,44 @@ const future = (): string =>
   toLocalInputValue(new Date(Date.now() + 90 * 24 * 60 * 60 * 1_000));
 
 describe('token form values', () => {
+  test('defaults to the 90-day preset', () => {
+    expect(emptyTokenFormValues('').expirationMode).toBe('90');
+  });
+
+  test.each([
+    ['7', '2026-10-14T12:34:00.000Z'],
+    ['30', '2026-11-06T12:34:00.000Z'],
+    ['90', '2027-01-05T12:34:00.000Z'],
+  ] as const)(
+    'maps the %s-day preset from the selected reference instant',
+    (expirationMode, expected) => {
+      const reference = Date.parse('2026-10-07T12:34:00.000Z');
+      const input = toCreateTokenRequest(
+        {
+          ...emptyTokenFormValues('invalid stale custom date'),
+          expirationMode,
+          name: 'Preset',
+        },
+        reference,
+      );
+      expect(input.expiresAt).toBe(expected);
+      expect(input).not.toHaveProperty('expirationMode');
+    },
+  );
+
+  test('Never ignores a stale custom date', () => {
+    expect(
+      toCreateTokenRequest({
+        ...emptyTokenFormValues('invalid'),
+        expirationMode: 'never',
+      }).expiresAt,
+    ).toBeNull();
+  });
   test('sends null expiresAt when Never expires is chosen', async () => {
     const input = toCreateTokenRequest({
       ...emptyTokenFormValues(future()),
+      expirationMode: 'never',
       name: '  Website form  ',
-      neverExpires: true,
     });
 
     expect(input).toEqual({
@@ -34,6 +67,7 @@ describe('token form values', () => {
     const expiration = future();
     const input = toCreateTokenRequest({
       ...emptyTokenFormValues(expiration),
+      expirationMode: 'custom',
       name: 'Website form',
     });
 
@@ -45,9 +79,10 @@ describe('token form values', () => {
     ).resolves.toEqual(input);
   });
 
-  test('omits an empty expiration so the 90-day default applies', () => {
+  test('retains omission for empty custom mapper values; the UI requires a date', () => {
     const input = toCreateTokenRequest({
       ...emptyTokenFormValues(''),
+      expirationMode: 'custom',
       name: 'Website form',
     });
 

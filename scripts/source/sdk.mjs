@@ -247,6 +247,49 @@ try {
     const { page, requests } = await start(
       browser,
       form(
+        [
+          '<input name="tags" value="campaign:spring, vip" data-leadscroll-collect>',
+          '<input name="tags" value="vip" data-leadscroll-collect>',
+          '<input name="email" value="tagged@example.test" data-leadscroll-collect>',
+        ].join(''),
+      ),
+    );
+    await submit(page);
+    assert.equal(requests.length, 1);
+    assert.deepEqual(requests[0].body, {
+      email: 'tagged@example.test',
+      source: 'website_form',
+      tags: ['campaign:spring', 'vip'],
+    });
+    await page.close();
+    pass('marked tags fields collect a de-duplicated classification list');
+  }
+
+  {
+    const longTag = 'x'.repeat(72);
+    const { page, requests } = await start(
+      browser,
+      form(
+        `<input name="tags" value="fall26:open,fall26:closed,fall26:open,${longTag}" data-leadscroll-collect>`,
+      ),
+    );
+    await submit(page);
+    assert.equal(requests.length, 1);
+    assert.deepEqual(requests[0].body.tags, [
+      'fall26:closed',
+      'fall26:open',
+      longTag,
+    ]);
+    await page.close();
+    pass(
+      'tag collection preserves final occurrence order and never truncates names',
+    );
+  }
+
+  {
+    const { page, requests } = await start(
+      browser,
+      form(
         '<input name="email" value="retry@example.test" data-leadscroll-collect>',
       ),
       (request, count) =>

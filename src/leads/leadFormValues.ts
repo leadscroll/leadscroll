@@ -21,18 +21,21 @@ export type LeadFormValues = {
   [K in LeadFormField]: string;
 };
 
-// The manual lead form collects every request field except customFields. A
-// new contract field therefore becomes a required form field (and a compile
-// error in `emptyLeadFormValues`) until it is collected or explicitly
-// excluded here, and a removed/renamed field breaks the mappers below.
-type LeadFormField = Exclude<keyof CreateLeadRequest, 'customFields'>;
+// The manual lead form collects every request field except customFields and
+// tags; tags are owned by the chip input draft, not the RHF string form. A new
+// contract field therefore becomes a required form field (and a compile error
+// in `emptyLeadFormValues`) until it is collected or explicitly excluded here,
+// and a removed/renamed field breaks the mappers below.
+type LeadFormField = Exclude<keyof CreateLeadRequest, 'customFields' | 'tags'>;
 
 export const emptyLeadFormValues: LeadFormValues = {
   email: '',
   estimatedValue: '',
   firstName: '',
   lastName: '',
-  source: 'Website',
+  // The separate source control is replaced by the source:* tag; manual
+  // creates omit source so the server records its manual default.
+  source: '',
 };
 
 const trimmedOrUndefined = (value: string): string | undefined => {
@@ -66,7 +69,9 @@ export const toUpdateLeadRequest = (
     values.estimatedValue.trim() === '' ? null : Number(values.estimatedValue),
   firstName: nullable(values.firstName),
   lastName: nullable(values.lastName),
-  source: values.source.trim() || undefined,
+  // Source classification is edited separately through tags. Never resend a
+  // hidden stale source value while saving visible contact fields.
+  source: undefined,
 });
 
 type LeadFormSource = Pick<LeadView, LeadFormField>;
