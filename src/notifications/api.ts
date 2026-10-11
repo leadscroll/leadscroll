@@ -1,108 +1,46 @@
 /**
- * Browser-side types and calls for the notification APIs. The server views are
- * the source of truth; these types mirror the redacted DTOs the API returns
- * (no credential material is ever part of them).
+ * Browser-side calls for the notification APIs. View types are derived from
+ * the authoritative Effect schemas (type-only imports, so no server module is
+ * bundled) and query keys are scoped by the signed-in user so two identities
+ * in the same SPA can never share cached settings or capabilities.
  */
 
+import {
+  type AccountCapabilities,
+  type EmailSettingsView,
+  type EmailTestView,
+  type NotificationHistoryView,
+  type NotificationPreferenceView,
+  type UpdateEmailSettingsRequest,
+} from '@/domain/schemas';
 import { request } from '@/lib/http';
 
-export type CredentialOperation = {
-  operation: 'keep' | 'remove' | 'replace';
-  value?: string;
-};
+export type UpdateEmailSettingsInput = UpdateEmailSettingsRequest;
 
-export type EmailSettingsView = {
-  canonicalOrigin: string;
-  enabled: boolean;
-  environment: {
-    hasCloudflareBinding: boolean;
-    hasEncryptionKey: boolean;
-  };
-  fromEmail: null | string;
-  fromName: null | string;
-  hasApiKey: boolean;
-  paused: null | { at: string; reasonCode: null | string; revision: number };
-  provider: 'cloudflare' | 'disabled' | 'resend';
-  readiness: {
-    availability: NotificationAvailability;
-    reasonCode: null | string;
-  };
-  revision: number;
-  test: EmailTestView | null;
-};
+export {
+  accountCapabilitiesQueryKey,
+  emailSettingsQueryKey,
+  notificationHistoryQueryKey,
+  notificationPreferenceQueryKey,
+  type SavedConfigurationTest,
+  savedConfigurationTestable,
+} from './queryKeys';
 
-export type EmailTestOutcome =
-  'accepted' | 'ambiguous' | 'configuration_error' | 'rejected' | 'sending';
-
-export type EmailTestView = {
-  at: null | string;
-  outcome: EmailTestOutcome;
-  providerMessageId: null | string;
-  reasonCode: null | string;
-  revision: number;
-};
-
-export type NotificationAvailability =
-  'configured' | 'disabled' | 'misconfigured' | 'unavailable';
-
-export type NotificationHistory = {
-  data: NotificationHistoryItem[];
-  nextCursor: null | string;
-};
-
-export type NotificationHistoryItem = {
-  createdAt: string;
-  id: string;
-  leadId: string;
-  reasonCode: null | string;
-  reasonLabel: null | string;
-  status:
-    | 'accepted'
-    | 'claimed'
-    | 'failed'
-    | 'pending'
-    | 'retry'
-    | 'sending'
-    | 'skipped'
-    | 'unknown';
-  statusLabel: string;
-};
-
-export type NotificationPreference = {
-  availability: NotificationAvailability;
-  newLeadEmail: boolean;
-  provider: NotificationProvider | null;
-};
-
-export type NotificationProvider = 'cloudflare' | 'resend';
-
-export type UpdateEmailSettingsInput = {
-  credential: CredentialOperation;
-  enabled: boolean;
-  expectedRevision: number;
-  fromEmail: null | string;
-  fromName: null | string;
-  provider: 'cloudflare' | 'disabled' | 'resend';
-};
-
-export const notificationHistoryQueryKey = (userId: string) =>
-  ['notification-history', userId] as const;
-
-export const notificationPreferenceQueryKey = (userId: string) =>
-  ['notification-preference', userId] as const;
-
-export const emailSettingsQueryKey = ['email-settings'] as const;
-
-export const accountCapabilitiesQueryKey = ['account-capabilities'] as const;
+export type {
+  EmailSettingsView,
+  EmailTestOutcome,
+  EmailTestView,
+  NotificationHistoryView,
+  NotificationPreferenceView,
+} from '@/domain/schemas';
 
 export const notificationsApi = {
-  capabilities: () =>
-    request<{ manageEmailSettings: boolean }>('/v1/account/capabilities'),
+  capabilities: () => request<AccountCapabilities>('/v1/account/capabilities'),
   getPreference: () =>
-    request<NotificationPreference>('/v1/account/notifications'),
+    request<NotificationPreferenceView>('/v1/account/notifications'),
   getSettings: () => request<EmailSettingsView>('/v1/settings/email'),
   history: (cursor?: string) =>
-    request<NotificationHistory>(
+    request<NotificationHistoryView>(
       `/v1/account/notifications/history${
         cursor === undefined ? '' : `?cursor=${encodeURIComponent(cursor)}`
       }`,
@@ -118,7 +56,7 @@ export const notificationsApi = {
       method: 'POST',
     }),
   updatePreference: (newLeadEmail: boolean) =>
-    request<NotificationPreference>('/v1/account/notifications', {
+    request<NotificationPreferenceView>('/v1/account/notifications', {
       body: JSON.stringify({ newLeadEmail }),
       method: 'PUT',
     }),

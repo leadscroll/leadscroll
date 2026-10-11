@@ -80,11 +80,15 @@ export const AppShell = ({
   const [location] = useLocation();
   const { data: session } = useSession();
   const name = session?.user.name || 'Your account';
+  const userId = session?.user.id ?? null;
   // Capability visibility is cosmetic; every settings route re-checks the
-  // server-side grant before reading or writing.
+  // server-side grant before reading or writing. The query is scoped to the
+  // signed-in user, and the entry stays hidden until that user's capability
+  // is known, so signing in as another account cannot flash the admin entry.
   const capabilities = useQuery({
+    enabled: userId !== null,
     queryFn: () => notificationsApi.capabilities(),
-    queryKey: accountCapabilitiesQueryKey,
+    queryKey: accountCapabilitiesQueryKey(userId ?? 'anonymous'),
     staleTime: 60_000,
   });
   const visibleNavigation = navigation.filter(

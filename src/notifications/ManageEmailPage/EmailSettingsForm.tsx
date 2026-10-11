@@ -3,8 +3,15 @@ import {
   type EmailSettingsView,
   type EmailTestView,
   notificationsApi,
+  savedConfigurationTestable,
 } from '../api';
 import { EmailStatusPanel } from './EmailStatusPanel';
+import {
+  type ManageEmailFormValues,
+  toFormValues,
+  toSaveVariables,
+  toUpdateRequest,
+} from './saveVariables';
 import { Button } from '@/components/ui/Button';
 import { Field } from '@/components/ui/Field';
 import { Form } from '@/components/ui/Form';
@@ -15,47 +22,12 @@ import { useEffect, useRef, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { toast } from 'sonner';
 
-type ManageEmailFormValues = {
-  apiKey: string;
-  credentialOperation: 'keep' | 'remove' | 'replace';
-  enabled: boolean;
-  fromEmail: string;
-  fromName: string;
-  provider: 'cloudflare' | 'disabled' | 'resend';
-};
-
-const toFormValues = (settings: EmailSettingsView): ManageEmailFormValues => ({
-  apiKey: '',
-  credentialOperation: settings.hasApiKey ? 'keep' : 'replace',
-  enabled: settings.enabled,
-  fromEmail: settings.fromEmail ?? '',
-  fromName: settings.fromName ?? '',
-  provider: settings.provider,
-});
-
-const buildCredential = (
-  values: ManageEmailFormValues,
-  hasApiKey: boolean,
-): { operation: 'keep' | 'remove' | 'replace'; value?: string } => {
-  if (values.provider !== 'resend') {
-    return { operation: 'keep' };
-  }
-
-  if (hasApiKey && values.credentialOperation === 'keep') {
-    return { operation: 'keep' };
-  }
-
-  if (hasApiKey && values.credentialOperation === 'remove') {
-    return { operation: 'remove' };
-  }
-
-  return { operation: 'replace', value: values.apiKey };
-};
-
 export const EmailSettingsForm = ({
   settings,
+  userId,
 }: {
   readonly settings: EmailSettingsView;
+  readonly userId: string;
 }) => {
   const queryClient = useQueryClient();
   const {
@@ -71,48 +43,60 @@ export const EmailSettingsForm = ({
   });
   const provider = watch('provider');
   const credentialOperation = watch('credentialOperation');
-  const lastRevision = useRef(settings.revision);
   const submitLock = useRef(false);
   const releaseSubmit = () => {
     submitLock.current = false;
   };
 
+  // The key lives only here, is consumed at the request boundary, and never
+  // enters React Query variables, data, or error objects.
+  const apiKeyReference = useRef('');
   const [testResult, setTestResult] = useState<EmailTestView | null>(null);
+  const [conflict, setConflict] = useState(false);
+  // The revision the draft is based on. It only advances on a successful save
+  // or an explicit reload, so a background refetch can never silently rebase a
+  // draft onto another administrator's changes.
+  const baseRevision = useRef(settings.revision);
+
+  useEffect(
+    () => () => {
+      apiKeyReference.current = '';
+    },
+    [],
+  );
 
   useEffect(() => {
-    if (settings.revision === lastRevision.current) {
+    if (isDirty) {
       return;
     }
 
-    lastRevision.current = settings.revision;
-    if (!isDirty) {
-      reset(toFormValues(settings));
-    }
+    baseRevision.current = settings.revision;
+    reset(toFormValues(settings));
   }, [isDirty, reset, settings]);
 
   const save = useMutation({
-    mutationFn: (values: ManageEmailFormValues) =>
-      notificationsApi.saveSettings({
-        credential: buildCredential(values, settings.hasApiKey),
-        enabled: values.enabled,
-        expectedRevision: settings.revision,
-        fromEmail:
-          values.fromEmail.trim() === '' ? null : values.fromEmail.trim(),
-        fromName: values.fromName.trim() === '' ? null : values.fromName.trim(),
-        provider: values.provider,
-      }),
+    mutationFn: (variables: ReturnType<typeof toSaveVariables>) => {
+      const apiKey = apiKeyReference.current;
+      apiKeyReference.current = '';
+      return notificationsApi.saveSettings(
+        toUpdateRequest(variables, apiKey, settings.hasApiKey),
+      );
+    },
     onError: (error) => {
       if (error instanceof ApiClientError && error.status === 409) {
-        void queryClient.invalidateQueries({
-          queryKey: emailSettingsQueryKey,
-        });
+        setConflict(true);
       }
+
+      void queryClient.invalidateQueries({
+        queryKey: emailSettingsQueryKey(userId),
+      });
     },
     onSuccess: (view) => {
-      queryClient.setQueryData(emailSettingsQueryKey, view);
-      lastRevision.current = view.revision;
-      reset(toFormValues(view));
+      queryClient.setQueryData(emailSettingsQueryKey(userId), view);
+      baseRevision.current = view.revision;
+      setConflict(false);
       setTestResult(null);
+      reset(toFormValues(view));
       toast.success('Email settings saved');
     },
   });
@@ -122,7 +106,9 @@ export const EmailSettingsForm = ({
       notificationsApi.sendTest(settings.revision, crypto.randomUUID()),
     onSuccess: (view) => {
       setTestResult(view);
-      void queryClient.invalidateQueries({ queryKey: emailSettingsQueryKey });
+      void queryClient.invalidateQueries({
+        queryKey: emailSettingsQueryKey(userId),
+      });
       toast.success('Test email request completed');
     },
   });
@@ -140,7 +126,7 @@ export const EmailSettingsForm = ({
 
     if (
       values.provider === 'resend' &&
-      (credentialOperation === 'replace' || !settings.hasApiKey) &&
+      (values.credentialOperation === 'replace' || !settings.hasApiKey) &&
       values.apiKey.trim() === ''
     ) {
       setError('apiKey', { message: 'Enter the Resend API key.' });
@@ -148,8 +134,9 @@ export const EmailSettingsForm = ({
     }
 
     submitLock.current = true;
+    apiKeyReference.current = values.apiKey;
     try {
-      await save.mutateAsync(values);
+      await save.mutateAsync(toSaveVariables(values, baseRevision.current));
     } catch {
       /* The mutation error is rendered below. */
     } finally {
@@ -157,8 +144,8 @@ export const EmailSettingsForm = ({
     }
   });
 
-  const testDisabled =
-    settings.readiness.availability !== 'configured' || save.isPending;
+  const testable = savedConfigurationTestable(settings);
+  const testDisabled = !testable.ok || pending;
   const showsKeyField =
     provider === 'resend' &&
     (!settings.hasApiKey || credentialOperation === 'replace');
@@ -168,6 +155,7 @@ export const EmailSettingsForm = ({
         ? 'A key is stored. Keep it, replace it, or remove it. The stored value is never shown again.'
         : 'Enter the send-only Resend API key. It is encrypted before storage and never returned to the browser.'
       : null;
+  const externalChange = settings.revision !== baseRevision.current;
 
   return (
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
@@ -198,7 +186,7 @@ export const EmailSettingsForm = ({
             <span>
               <span className="font-medium">Enable new-lead emails</span>
               <span className="mt-0.5 block text-xs text-slate-500">
-                Off creates no new notification intent; pending sends pause.
+                Off stops new alerts and pauses anything waiting to send.
               </span>
             </span>
           </label>
@@ -289,7 +277,7 @@ export const EmailSettingsForm = ({
               {showsKeyField && (
                 <Field
                   error={errors.apiKey?.message}
-                  hint="Write-only: it is never redisplayed or stored in the browser cache."
+                  hint="Write-only: it is never redisplayed, cached, or stored in the browser."
                   label="Resend API key"
                 >
                   <input
@@ -319,7 +307,31 @@ export const EmailSettingsForm = ({
             />
           </Field>
 
-          {save.error && (
+          {(conflict || externalChange) && (
+            <div
+              className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-100"
+              role="alert"
+            >
+              <p>
+                Email settings changed in another session. Saving may conflict;
+                reloading replaces your draft with the latest saved settings.
+              </p>
+              <Button
+                className="mt-2"
+                onClick={() => {
+                  baseRevision.current = settings.revision;
+                  setConflict(false);
+                  reset(toFormValues(settings));
+                }}
+                tone="secondary"
+                type="button"
+              >
+                Reload latest settings
+              </Button>
+            </div>
+          )}
+
+          {save.error && !conflict && (
             <p
               className="rounded-md border border-rose-500/30 bg-rose-500/10 p-3 text-sm text-rose-100"
               role="alert"
@@ -337,18 +349,19 @@ export const EmailSettingsForm = ({
             >
               {save.isPending ? 'Saving…' : 'Save settings'}
             </Button>
-            <span className="text-xs text-slate-500">
-              Revision {settings.revision}
-            </span>
+            {isDirty && (
+              <span className="text-xs text-slate-500">Unsaved changes</span>
+            )}
           </div>
         </div>
       </Form>
 
       <EmailStatusPanel
-        error={sendTest.error ?? save.error}
+        error={sendTest.error ?? (conflict ? null : save.error)}
         onSendTest={() => sendTest.mutate()}
         pending={sendTest.isPending}
         sendTestDisabled={testDisabled}
+        sendTestDisabledReason={testable.ok ? null : testable.message}
         settings={settings}
         testResult={testResult}
       />

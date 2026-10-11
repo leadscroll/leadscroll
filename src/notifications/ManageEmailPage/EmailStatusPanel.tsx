@@ -29,6 +29,7 @@ export const EmailStatusPanel = ({
   onSendTest,
   pending,
   sendTestDisabled,
+  sendTestDisabledReason,
   settings,
   testResult,
 }: {
@@ -36,6 +37,7 @@ export const EmailStatusPanel = ({
   readonly onSendTest: () => void;
   readonly pending: boolean;
   readonly sendTestDisabled: boolean;
+  readonly sendTestDisabledReason: null | string;
   readonly settings: EmailSettingsView;
   readonly testResult: EmailTestView | null;
 }) => {
@@ -112,11 +114,11 @@ export const EmailStatusPanel = ({
             </p>
             <p className="mt-0.5 text-xs text-slate-500">
               {currentTest === null
-                ? 'No test has been sent for the current revision. Testing is recommended, never required.'
+                ? 'No test has been sent for the current settings. Testing is recommended, never required.'
                 : `Last test ${formatTimestamp(currentTest.at)}${
                     currentTest.revision === settings.revision
                       ? ''
-                      : ' (earlier revision)'
+                      : ' (earlier settings)'
                   }`}
             </p>
           </div>
@@ -128,10 +130,64 @@ export const EmailStatusPanel = ({
             {pending ? 'Sending…' : 'Send test email'}
           </Button>
         </div>
+        {sendTestDisabledReason !== null && (
+          <p className="mt-2 text-xs text-amber-200">
+            {sendTestDisabledReason}
+          </p>
+        )}
         <p className="mt-2 text-xs text-slate-500">
           The test goes only to your own account email using the saved
           configuration. Saving or enabling never sends automatically.
         </p>
+      </div>
+
+      <div className="mt-4 rounded-lg border border-slate-800 bg-slate-950/60 p-3">
+        <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+          Scheduler
+        </h3>
+        <dl className="mt-2 grid gap-1 text-xs text-slate-400">
+          <div className="flex items-center justify-between gap-3">
+            <dt>Last tick</dt>
+            <dd className="text-slate-300">
+              {formatTimestamp(settings.dispatch.lastTickAt)}
+            </dd>
+          </div>
+          <div className="flex items-center justify-between gap-3">
+            <dt>Waiting to send</dt>
+            <dd className="text-slate-300">{settings.dispatch.pending}</dd>
+          </div>
+          <div className="flex items-center justify-between gap-3">
+            <dt>In flight</dt>
+            <dd className="text-slate-300">{settings.dispatch.inFlight}</dd>
+          </div>
+          <div className="flex items-center justify-between gap-3">
+            <dt>Outcome unknown</dt>
+            <dd
+              className={
+                settings.dispatch.unknown > 0
+                  ? 'text-amber-300'
+                  : 'text-slate-300'
+              }
+            >
+              {settings.dispatch.unknown}
+            </dd>
+          </div>
+          <div className="flex items-center justify-between gap-3">
+            <dt>Last accepted send</dt>
+            <dd className="text-slate-300">
+              {formatTimestamp(settings.dispatch.lastSuccessAt)}
+            </dd>
+          </div>
+          {settings.dispatch.configError !== null && (
+            <div className="flex items-center justify-between gap-3">
+              <dt>Scheduler error</dt>
+              <dd className="text-amber-300">
+                {settings.dispatch.configError.code} ·{' '}
+                {formatTimestamp(settings.dispatch.configError.at)}
+              </dd>
+            </div>
+          )}
+        </dl>
       </div>
 
       {error !== null && error !== undefined && (

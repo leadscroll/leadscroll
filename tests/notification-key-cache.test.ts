@@ -1,0 +1,200 @@
+import { type EmailSettingsView } from '@/domain/schemas';
+import {
+  type ManageEmailFormValues,
+  toSaveVariables,
+  toUpdateRequest,
+} from '@/notifications/ManageEmailPage/saveVariables';
+import {
+  accountCapabilitiesQueryKey,
+  emailSettingsQueryKey,
+  notificationHistoryQueryKey,
+  notificationPreferenceQueryKey,
+  savedConfigurationTestable,
+} from '@/notifications/queryKeys';
+import { type MutationCache, QueryClient } from '@tanstack/react-query';
+import { describe, expect, test } from 'vitest';
+
+/**
+ * The Resend API key must never enter React Query state. These tests exercise
+ * the real MutationCache with the production translation helpers, so a future
+ * refactor that passes form values straight into mutate() fails here rather
+ * than silently retaining plaintext.
+ */
+
+const SECRET = 're_SUPER_SECRET_key_value';
+
+const formValues = (): ManageEmailFormValues => ({
+  apiKey: SECRET,
+  credentialOperation: 'replace',
+  enabled: true,
+  fromEmail: 'notifications@example.test',
+  fromName: 'LeadScroll',
+  provider: 'resend',
+});
+
+const buildMutation = (
+  queryClient: QueryClient,
+  secretReference: { current: string },
+  onRequest: (value: string) => void,
+) =>
+  queryClient.getMutationCache().build(queryClient, {
+    gcTime: 60_000,
+    mutationFn: async (variables: ReturnType<typeof toSaveVariables>) => {
+      const apiKey = secretReference.current;
+      secretReference.current = '';
+      const request = toUpdateRequest(variables, apiKey, false);
+      onRequest(
+        request.credential.operation === 'replace'
+          ? (request.credential.value ?? '')
+          : `kept:${request.credential.operation}`,
+      );
+      return { ok: true as const };
+    },
+  });
+
+const allCacheJson = (cache: MutationCache): string =>
+  JSON.stringify(
+    cache.getAll().map((mutation) => ({
+      data: mutation.state.data,
+      error:
+        mutation.state.error instanceof Error
+          ? mutation.state.error.message
+          : mutation.state.error,
+      variables: mutation.state.variables,
+    })),
+  );
+
+describe('secret-free mutation variables', () => {
+  test('variables exclude the key while the request still sends it', () => {
+    const values = formValues();
+    const variables = toSaveVariables(values, 3);
+    expect(JSON.stringify(variables)).not.toContain(SECRET);
+    expect(variables.expectedRevision).toBe(3);
+    expect(toUpdateRequest(variables, values.apiKey, false).credential).toEqual(
+      {
+        operation: 'replace',
+        value: SECRET,
+      },
+    );
+  });
+
+  test('the key never appears in cached mutation variables after success', async () => {
+    const queryClient = new QueryClient();
+    const requests: string[] = [];
+    const secretReference = { current: SECRET };
+    const mutation = buildMutation(queryClient, secretReference, (value) => {
+      requests.push(value);
+    });
+
+    await mutation.execute(toSaveVariables(formValues(), 1));
+    expect(requests).toEqual([SECRET]);
+    expect(secretReference.current).toBe('');
+    expect(JSON.stringify(mutation.state.variables)).not.toContain(SECRET);
+    expect(allCacheJson(queryClient.getMutationCache())).not.toContain(SECRET);
+    expect(mutation.state.data).toEqual({ ok: true });
+  });
+
+  test('the key never appears in cached mutation state after an error', async () => {
+    const queryClient = new QueryClient();
+    const secretReference = { current: SECRET };
+    const mutation = queryClient.getMutationCache().build(queryClient, {
+      mutationFn: async () => {
+        secretReference.current = '';
+        throw new Error('The request could not be completed.');
+      },
+    });
+
+    await expect(
+      mutation.execute(toSaveVariables(formValues(), 1)),
+    ).rejects.toThrow('The request could not be completed.');
+    expect(JSON.stringify(mutation.state.variables)).not.toContain(SECRET);
+    expect(allCacheJson(queryClient.getMutationCache())).not.toContain(SECRET);
+  });
+
+  test('clearing the cache on unmount leaves no mutation state behind', async () => {
+    const queryClient = new QueryClient();
+    const secretReference = { current: SECRET };
+    const mutation = buildMutation(queryClient, secretReference, () => {});
+    await mutation.execute(toSaveVariables(formValues(), 1));
+    queryClient.clear();
+    expect(queryClient.getMutationCache().getAll()).toHaveLength(0);
+  });
+});
+
+describe('identity-scoped query keys', () => {
+  test('admin and preference keys differ per user', () => {
+    expect(emailSettingsQueryKey('user-a')).not.toEqual(
+      emailSettingsQueryKey('user-b'),
+    );
+    expect(accountCapabilitiesQueryKey('user-a')).not.toEqual(
+      accountCapabilitiesQueryKey('user-b'),
+    );
+    expect(notificationHistoryQueryKey('user-a')).not.toEqual(
+      notificationHistoryQueryKey('user-b'),
+    );
+    expect(notificationPreferenceQueryKey('user-a')).not.toEqual(
+      notificationPreferenceQueryKey('user-b'),
+    );
+  });
+});
+
+describe('saved configuration testing', () => {
+  const settings = (
+    overrides: Partial<EmailSettingsView>,
+  ): EmailSettingsView => ({
+    canonicalOrigin: 'https://crm.example.test',
+    dispatch: {
+      configError: null,
+      inFlight: 0,
+      lastSuccessAt: null,
+      lastTickAt: null,
+      oldestDueAt: null,
+      pending: 0,
+      unknown: 0,
+    },
+    enabled: false,
+    environment: { hasCloudflareBinding: true, hasEncryptionKey: true },
+    fromEmail: 'notifications@example.test',
+    fromName: 'LeadScroll',
+    hasApiKey: true,
+    paused: null,
+    provider: 'resend',
+    readiness: { availability: 'unavailable', reasonCode: 'paused' },
+    revision: 1,
+    test: null,
+    ...overrides,
+  });
+
+  test('a paused or notifications-off configuration can still be tested', () => {
+    expect(savedConfigurationTestable(settings({}))).toEqual({ ok: true });
+    expect(
+      savedConfigurationTestable(
+        settings({
+          enabled: true,
+          readiness: { availability: 'configured', reasonCode: null },
+        }),
+      ),
+    ).toEqual({ ok: true });
+  });
+
+  test('missing local resources block testing with a specific reason', () => {
+    expect(
+      savedConfigurationTestable(settings({ hasApiKey: false })),
+    ).toMatchObject({
+      ok: false,
+    });
+    expect(
+      savedConfigurationTestable(
+        settings({
+          environment: { hasCloudflareBinding: false, hasEncryptionKey: true },
+          provider: 'cloudflare',
+        }),
+      ),
+    ).toMatchObject({ message: expect.stringContaining('binding') });
+    expect(
+      savedConfigurationTestable(settings({ provider: 'disabled' })),
+    ).toMatchObject({
+      ok: false,
+    });
+  });
+});

@@ -419,6 +419,86 @@ describe('email settings API behavior', () => {
     ).toMatchObject({ total: 0 });
   });
 
+  test('validation failures never echo submitted credential material', async () => {
+    const fx = await startApiFixture();
+    const sentinel = `SENTINEL-${'x'.repeat(600)}`;
+
+    const tooLong = await fx.request('/v1/settings/email', {
+      body: saveBody({
+        credential: { operation: 'replace', value: sentinel },
+        enabled: true,
+        fromEmail: 'notifications@example.test',
+        provider: 'resend',
+      }),
+      method: 'PUT',
+    });
+    expect(tooLong.status).toBe(422);
+    expect(JSON.stringify(tooLong.json)).not.toContain('SENTINEL');
+    expect(tooLong.headers.get('cache-control')).toBe('no-store');
+
+    const wrongType = await fx.request('/v1/settings/email', {
+      body: JSON.stringify({
+        credential: {
+          operation: 'replace',
+          value: { secret: 'SENTINEL-object' },
+        },
+        enabled: true,
+        expectedRevision: 0,
+        fromEmail: 'notifications@example.test',
+        fromName: null,
+        provider: 'resend',
+      }),
+      method: 'PUT',
+    });
+    expect(wrongType.status).toBe(422);
+    expect(JSON.stringify(wrongType.json)).not.toContain('SENTINEL');
+    expect(wrongType.headers.get('cache-control')).toBe('no-store');
+
+    const badOperation = await fx.request('/v1/settings/email', {
+      body: JSON.stringify({
+        credential: { operation: 'overwrite', value: 'SENTINEL-operation' },
+        enabled: true,
+        expectedRevision: 0,
+        fromEmail: 'notifications@example.test',
+        fromName: null,
+        provider: 'resend',
+      }),
+      method: 'PUT',
+    });
+    expect(badOperation.status).toBe(422);
+    expect(JSON.stringify(badOperation.json)).not.toContain('SENTINEL');
+
+    const malformed = await fx.request('/v1/settings/email', {
+      body: '{"credential":{"operation":"replace","value":"SENTINEL-malformed"',
+      method: 'PUT',
+    });
+    expect(malformed.status).toBe(422);
+    expect(JSON.stringify(malformed.json)).not.toContain('SENTINEL');
+
+    expect(
+      await fx.db
+        .prepare('SELECT COUNT(*) AS total FROM email_credentials')
+        .first(),
+    ).toMatchObject({ total: 0 });
+  });
+
+  test('the settings view includes redacted scheduler health', async () => {
+    const fx = await startApiFixture();
+    const view = await fx.request('/v1/settings/email');
+    expect(view.status).toBe(200);
+    expect(view.json.data).toMatchObject({
+      dispatch: {
+        configError: null,
+        inFlight: 0,
+        lastSuccessAt: null,
+        lastTickAt: null,
+        oldestDueAt: null,
+        pending: 0,
+        unknown: 0,
+      },
+    });
+  });
+
   test('forged permission or provider override fields are ignored by the schema', async () => {
     const fx = await startApiFixture();
     const response = await fx.request('/v1/settings/email', {

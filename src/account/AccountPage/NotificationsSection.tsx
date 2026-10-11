@@ -2,7 +2,9 @@ import { Notice } from '@/components/Notice';
 import { Button } from '@/components/ui/Button';
 import {
   type NotificationAvailability,
-  type NotificationHistory,
+  type NotificationHistoryView,
+} from '@/domain/schemas';
+import {
   notificationHistoryQueryKey,
   notificationPreferenceQueryKey,
   notificationsApi,
@@ -48,9 +50,9 @@ export const NotificationsSection = ({
     queryKey: notificationPreferenceQueryKey(userId),
   });
   const history = useInfiniteQuery<
-    NotificationHistory,
+    NotificationHistoryView,
     Error,
-    InfiniteData<NotificationHistory>,
+    InfiniteData<NotificationHistoryView>,
     readonly unknown[],
     string | undefined
   >({

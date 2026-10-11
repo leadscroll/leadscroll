@@ -104,7 +104,7 @@ const errorResponse = (
   code: string,
   message: string,
   details?: unknown,
-) =>
+): Response =>
   Response.json(
     { code, details, message },
     {
@@ -203,7 +203,7 @@ const rejectUntrustedStaffWrite = (
 const run = async <A>(
   request: Request,
   effect: Effect.Effect<A, DomainError | PersistenceError>,
-) => {
+): Promise<{ data: A } | { error: Response }> => {
   try {
     const outcome = await Effect.runPromise(Effect.either(effect));
     if (Either.isRight(outcome)) {
@@ -277,6 +277,41 @@ const parse = async <A, I>(
       }),
     } as const;
   }
+};
+
+/**
+ * Validation for inputs that can carry secrets (provider credentials, test
+ * request ids). Decoder failures are never echoed: an Effect message can
+ * embed the rejected value. Responses are also no-store so a validation
+ * failure is not cached.
+ */
+const redactedParse = async <A, I>(
+  schema: Schema.Schema<A, I, never>,
+  value: unknown,
+) => {
+  try {
+    return { data: await decode(schema, value) } as const;
+  } catch {
+    return {
+      error: Response.json(
+        { code: 'validation_error', message: 'The request is invalid.' },
+        { headers: { 'Cache-Control': 'no-store' }, status: 422 },
+      ),
+    } as const;
+  }
+};
+
+/**
+ * Copies a response with `Cache-Control: no-store` for settings surfaces.
+ */
+const withNoStore = (response: Response): Response => {
+  const headers = new Headers(response.headers);
+  headers.set('Cache-Control', 'no-store');
+  return new Response(response.body, {
+    headers,
+    status: response.status,
+    statusText: response.statusText,
+  });
 };
 
 type AuthForRequest = (request: Request) => Auth;
@@ -573,19 +608,16 @@ const createAppWithAuth = (environment: Env, getAuth: AuthForRequest) => {
       // Contract spike: Elysia's Standard Schema path yields `code: 'VALIDATION'`
       // errors. Normalize them to the same `{ code, details, message }` envelope
       // the manual `parse()` helper returns, so clients see one error shape.
+      // Decoder messages are never returned: some schemas accept free-form
+      // values (custom fields, notes) that a message could echo.
       .onError(({ code, error }) => {
         if (error instanceof Response) {
           return error;
         }
 
-        if (code === 'VALIDATION') {
-          return errorResponse(
-            422,
-            'validation_error',
-            'The request is invalid.',
-            {
-              issue: error.message,
-            },
+        if (code === 'VALIDATION' || code === 'PARSE') {
+          return withNoStore(
+            errorResponse(422, 'validation_error', 'The request is invalid.'),
           );
         }
 
@@ -1192,7 +1224,7 @@ const createAppWithAuth = (environment: Env, getAuth: AuthForRequest) => {
       .get('/v1/settings/email', async ({ adminUserId, request }) => {
         const admin = await requireEmailAdministrator(environment, adminUserId);
         if ('error' in admin) {
-          return admin.error;
+          return withNoStore(admin.error);
         }
 
         const view = await getEmailSettingsView(
@@ -1207,10 +1239,13 @@ const createAppWithAuth = (environment: Env, getAuth: AuthForRequest) => {
       .put('/v1/settings/email', async ({ adminUserId, body, request }) => {
         const admin = await requireEmailAdministrator(environment, adminUserId);
         if ('error' in admin) {
-          return admin.error;
+          return withNoStore(admin.error);
         }
 
-        const parsed = await parse(UpdateEmailSettingsRequestSchema, body);
+        const parsed = await redactedParse(
+          UpdateEmailSettingsRequestSchema,
+          body,
+        );
         if ('error' in parsed) {
           return parsed.error;
         }
@@ -1229,7 +1264,7 @@ const createAppWithAuth = (environment: Env, getAuth: AuthForRequest) => {
           }),
         );
         if ('error' in result) {
-          return result.error;
+          return withNoStore(result.error);
         }
 
         return Response.json(
@@ -1245,10 +1280,10 @@ const createAppWithAuth = (environment: Env, getAuth: AuthForRequest) => {
             adminUserId,
           );
           if ('error' in admin) {
-            return admin.error;
+            return withNoStore(admin.error);
           }
 
-          const parsed = await parse(SendEmailTestRequestSchema, body);
+          const parsed = await redactedParse(SendEmailTestRequestSchema, body);
           if ('error' in parsed) {
             return parsed.error;
           }
@@ -1264,7 +1299,7 @@ const createAppWithAuth = (environment: Env, getAuth: AuthForRequest) => {
             }),
           );
           if ('error' in result) {
-            return result.error;
+            return withNoStore(result.error);
           }
 
           return Response.json(
