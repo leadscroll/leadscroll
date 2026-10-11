@@ -447,6 +447,9 @@ export const UpdateEmailSettingsRequestSchema = Schema.Struct({
   description:
     'Saves installation email settings. Never sends a test automatically and never accepts a client-chosen origin or provider base URL.',
 });
+export type EmailCredentialOperation = Schema.Schema.Type<
+  typeof EmailCredentialOperationSchema
+>;
 export type UpdateEmailSettingsRequest = Schema.Schema.Type<
   typeof UpdateEmailSettingsRequestSchema
 >;
@@ -460,4 +463,121 @@ export const SendEmailTestRequestSchema = Schema.Struct({
 });
 export type SendEmailTestRequest = Schema.Schema.Type<
   typeof SendEmailTestRequestSchema
+>;
+
+// Notification response contracts. The SPA derives its types from these
+// schemas; the server command views are typed by the same aliases, so the two
+// sides cannot drift without a type error.
+export const EmailTestOutcomeSchema = Schema.Literal(
+  'accepted',
+  'ambiguous',
+  'configuration_error',
+  'rejected',
+  'sending',
+);
+export const EmailTestViewSchema = Schema.Struct({
+  at: Schema.NullOr(Schema.String),
+  outcome: EmailTestOutcomeSchema,
+  providerMessageId: Schema.NullOr(Schema.String),
+  reasonCode: Schema.NullOr(Schema.String),
+  revision: Schema.Number.pipe(Schema.int(), Schema.nonNegative()),
+});
+export type EmailTestOutcome = Schema.Schema.Type<
+  typeof EmailTestOutcomeSchema
+>;
+export type EmailTestView = Schema.Schema.Type<typeof EmailTestViewSchema>;
+
+export const EmailDispatchHealthSchema = Schema.Struct({
+  configError: Schema.NullOr(
+    Schema.Struct({
+      at: Schema.String,
+      code: Schema.String,
+      revision: Schema.NullOr(Schema.Number),
+    }),
+  ),
+  inFlight: Schema.Number.pipe(Schema.int(), Schema.nonNegative()),
+  lastSuccessAt: Schema.NullOr(Schema.String),
+  lastTickAt: Schema.NullOr(Schema.String),
+  oldestDueAt: Schema.NullOr(Schema.String),
+  pending: Schema.Number.pipe(Schema.int(), Schema.nonNegative()),
+  unknown: Schema.Number.pipe(Schema.int(), Schema.nonNegative()),
+});
+export type EmailDispatchHealth = Schema.Schema.Type<
+  typeof EmailDispatchHealthSchema
+>;
+
+export const EmailSettingsViewSchema = Schema.Struct({
+  canonicalOrigin: Schema.String,
+  dispatch: EmailDispatchHealthSchema,
+  enabled: Schema.Boolean,
+  environment: Schema.Struct({
+    hasCloudflareBinding: Schema.Boolean,
+    hasEncryptionKey: Schema.Boolean,
+  }),
+  fromEmail: Schema.NullOr(Schema.String),
+  fromName: Schema.NullOr(Schema.String),
+  hasApiKey: Schema.Boolean,
+  paused: Schema.NullOr(
+    Schema.Struct({
+      at: Schema.String,
+      reasonCode: Schema.NullOr(Schema.String),
+      revision: Schema.Number,
+    }),
+  ),
+  provider: EmailSettingsProviderSchema,
+  readiness: Schema.Struct({
+    availability: NotificationAvailabilitySchema,
+    reasonCode: Schema.NullOr(Schema.String),
+  }),
+  revision: Schema.Number.pipe(Schema.int(), Schema.nonNegative()),
+  test: Schema.NullOr(EmailTestViewSchema),
+});
+export type EmailSettingsView = Schema.Schema.Type<
+  typeof EmailSettingsViewSchema
+>;
+
+export const NotificationPreferenceViewSchema = Schema.Struct({
+  availability: NotificationAvailabilitySchema,
+  newLeadEmail: Schema.Boolean,
+  provider: Schema.NullOr(Schema.Literal('cloudflare', 'resend')),
+});
+export type NotificationPreferenceView = Schema.Schema.Type<
+  typeof NotificationPreferenceViewSchema
+>;
+
+export const NotificationHistoryViewItemSchema = Schema.Struct({
+  createdAt: Schema.String,
+  id: Schema.String,
+  leadId: Schema.String,
+  reasonCode: Schema.NullOr(Schema.String),
+  reasonLabel: Schema.NullOr(Schema.String),
+  status: Schema.Literal(
+    'accepted',
+    'claimed',
+    'failed',
+    'pending',
+    'retry',
+    'sending',
+    'skipped',
+    'unknown',
+  ),
+  statusLabel: Schema.String,
+});
+export type NotificationHistoryViewItem = Schema.Schema.Type<
+  typeof NotificationHistoryViewItemSchema
+>;
+
+export const NotificationHistoryViewSchema = Schema.Struct({
+  data: Schema.Array(NotificationHistoryViewItemSchema),
+  nextCursor: Schema.NullOr(Schema.String),
+});
+export type NotificationHistoryView = Schema.Schema.Type<
+  typeof NotificationHistoryViewSchema
+>;
+
+export const AccountCapabilitiesSchema = Schema.Struct({
+  manageEmailSettings: Schema.Boolean,
+});
+export type AccountCapabilities = Schema.Schema.Type<
+  typeof AccountCapabilitiesSchema
 >;

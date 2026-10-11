@@ -56,7 +56,6 @@ import {
   isNotNull,
   isNull,
   lt,
-  lte,
   or,
   sql,
 } from 'drizzle-orm';
@@ -2784,6 +2783,42 @@ export const getEmailCredential = async (
   return row ?? null;
 };
 
+export type EmailSettingsSnapshot = {
+  credential: EmailCredentialRecord | null;
+  settings: EmailSettingsRecord | null;
+};
+
+/**
+ * Reads the settings row and the Resend credential in one D1 batch (a single
+ * transaction), so a concurrent save cannot produce a settings revision
+ * paired with a credential from a different revision. Every delivery attempt
+ * takes its sender configuration from this coherent snapshot.
+ */
+export const getEmailSettingsSnapshot = async (
+  environment: Env,
+): Promise<EmailSettingsSnapshot> => {
+  const database = getDatabase(environment);
+  const [settingsRows, credentialRows] = await database.batch([
+    database
+      .select()
+      .from(emailSettings)
+      .where(eq(emailSettings.workspaceId, DEFAULT_WORKSPACE_ID)),
+    database
+      .select()
+      .from(emailCredentials)
+      .where(
+        and(
+          eq(emailCredentials.workspaceId, DEFAULT_WORKSPACE_ID),
+          eq(emailCredentials.provider, 'resend'),
+        ),
+      ),
+  ]);
+  return {
+    credential: credentialRows[0] ?? null,
+    settings: settingsRows[0] ?? null,
+  };
+};
+
 export type EmailCredentialChange =
   | { envelope: EncryptedCredential; operation: 'replace' }
   | { operation: 'keep' }
@@ -3139,6 +3174,30 @@ export const getNotificationTestAttempt = async (
   return row ?? null;
 };
 
+/**
+ * Resolves a test attempt only for the actor that created it. Another
+ * administrator's request id is treated as unknown by the caller, so an id
+ * can never be used to replay or inspect someone else's message.
+ */
+export const getOwnedNotificationTestAttempt = async (
+  environment: Env,
+  requestId: string,
+  userId: string,
+): Promise<NotificationTestAttemptRecord | null> => {
+  const row = await getDatabase(environment)
+    .select()
+    .from(notificationTestAttempts)
+    .where(
+      and(
+        eq(notificationTestAttempts.workspaceId, DEFAULT_WORKSPACE_ID),
+        eq(notificationTestAttempts.id, requestId),
+        eq(notificationTestAttempts.userId, userId),
+      ),
+    )
+    .get();
+  return row ?? null;
+};
+
 export const getLatestNotificationTestAttempt = async (
   environment: Env,
 ): Promise<NotificationTestAttemptRecord | null> => {
@@ -3232,15 +3291,19 @@ export const freezeNotificationTestAttempt = async (
     now: Date;
     provider: NotificationProvider;
     requestId: string;
+    userId: string;
   },
 ): Promise<boolean> => {
   const result = await prepare(
     environment.DB,
     `UPDATE notification_test_attempts
       SET status = 'sending', reason_code = NULL, completed_at = NULL,
-          provider = ?, config_revision = ?, delivery_key = ?,
-          frozen_envelope_json = ?, updated_at = ?
-      WHERE id = ? AND workspace_id = ?
+          provider = COALESCE(provider, ?),
+          config_revision = COALESCE(config_revision, ?),
+          delivery_key = COALESCE(delivery_key, ?),
+          frozen_envelope_json = COALESCE(frozen_envelope_json, ?),
+          updated_at = ?
+      WHERE id = ? AND workspace_id = ? AND user_id = ?
         AND ((status = 'sending' AND provider IS NULL)
           OR status IN ('ambiguous', 'rejected'))`,
   )
@@ -3252,6 +3315,7 @@ export const freezeNotificationTestAttempt = async (
       input.now.getTime(),
       input.requestId,
       DEFAULT_WORKSPACE_ID,
+      input.userId,
     )
     .run();
   return (result.meta?.changes ?? 0) > 0;
@@ -3265,6 +3329,7 @@ export const completeNotificationTestAttempt = async (
     reasonCode: null | string;
     requestId: string;
     status: NotificationTestStatus;
+    userId: string;
   },
 ): Promise<void> => {
   await prepare(
@@ -3272,7 +3337,7 @@ export const completeNotificationTestAttempt = async (
     `UPDATE notification_test_attempts
       SET status = ?, reason_code = ?, provider_message_id = ?,
           completed_at = ?, updated_at = ?
-      WHERE id = ? AND workspace_id = ?`,
+      WHERE id = ? AND workspace_id = ? AND user_id = ?`,
   )
     .bind(
       input.status,
@@ -3282,6 +3347,7 @@ export const completeNotificationTestAttempt = async (
       input.completedAt.getTime(),
       input.requestId,
       DEFAULT_WORKSPACE_ID,
+      input.userId,
     )
     .run();
 };
@@ -3363,8 +3429,10 @@ export const getNotificationEligibility = async (
 export const recoverExpiredNotificationLeases = async (
   environment: Env,
   timestamp: Date,
+  limit: number,
 ): Promise<number> => {
   const database = getDatabase(environment);
+  const nowMs = timestamp.getTime();
   const results = await database.batch([
     database
       .update(notificationOutbox)
@@ -3375,11 +3443,13 @@ export const recoverExpiredNotificationLeases = async (
         updatedAt: timestamp,
       })
       .where(
-        and(
-          eq(notificationOutbox.status, 'claimed'),
-          isNotNull(notificationOutbox.leaseExpiresAt),
-          lte(notificationOutbox.leaseExpiresAt, timestamp),
-        ),
+        sql`${notificationOutbox.id} IN (
+          SELECT id FROM notification_outbox
+          WHERE status = 'claimed'
+            AND lease_expires_at IS NOT NULL
+            AND lease_expires_at <= ${nowMs}
+          ORDER BY lease_expires_at ASC, id ASC
+          LIMIT ${limit})`,
       ),
     database
       .update(notificationOutbox)
@@ -3389,17 +3459,20 @@ export const recoverExpiredNotificationLeases = async (
         nextAttemptAt: timestamp,
         reasonCode: 'ambiguous_lease',
         status: 'retry',
+        uncertainAt: sql`COALESCE(${notificationOutbox.uncertainAt}, ${nowMs})`,
         updatedAt: timestamp,
       })
       .where(
-        and(
-          eq(notificationOutbox.status, 'sending'),
-          isNotNull(notificationOutbox.leaseExpiresAt),
-          lte(notificationOutbox.leaseExpiresAt, timestamp),
-          eq(notificationOutbox.provider, 'resend'),
-          isNotNull(notificationOutbox.idempotencyDeadline),
-          gt(notificationOutbox.idempotencyDeadline, timestamp),
-        ),
+        sql`${notificationOutbox.id} IN (
+          SELECT id FROM notification_outbox
+          WHERE status = 'sending'
+            AND lease_expires_at IS NOT NULL
+            AND lease_expires_at <= ${nowMs}
+            AND provider = 'resend'
+            AND idempotency_deadline IS NOT NULL
+            AND idempotency_deadline > ${nowMs}
+          ORDER BY lease_expires_at ASC, id ASC
+          LIMIT ${limit})`,
       ),
     database
       .update(notificationOutbox)
@@ -3408,14 +3481,17 @@ export const recoverExpiredNotificationLeases = async (
         leaseToken: null,
         reasonCode: 'lease_expired',
         status: 'unknown',
+        uncertainAt: sql`COALESCE(${notificationOutbox.uncertainAt}, ${nowMs})`,
         updatedAt: timestamp,
       })
       .where(
-        and(
-          eq(notificationOutbox.status, 'sending'),
-          isNotNull(notificationOutbox.leaseExpiresAt),
-          lte(notificationOutbox.leaseExpiresAt, timestamp),
-        ),
+        sql`${notificationOutbox.id} IN (
+          SELECT id FROM notification_outbox
+          WHERE status = 'sending'
+            AND lease_expires_at IS NOT NULL
+            AND lease_expires_at <= ${nowMs}
+          ORDER BY lease_expires_at ASC, id ASC
+          LIMIT ${limit})`,
       ),
   ]);
   return results.reduce(
@@ -3434,44 +3510,47 @@ export const expireStaleNotificationIntents = async (
   environment: Env,
   cutoff: Date,
   timestamp: Date,
+  limit: number,
 ): Promise<number> => {
   const database = getDatabase(environment);
+  const cutoffMs = cutoff.getTime();
   const results = await database.batch([
     database
       .update(notificationOutbox)
       .set({ reasonCode: 'expired', status: 'skipped', updatedAt: timestamp })
       .where(
-        and(
-          eq(notificationOutbox.status, 'pending'),
-          lte(notificationOutbox.createdAt, cutoff),
-        ),
+        sql`${notificationOutbox.id} IN (
+          SELECT id FROM notification_outbox
+          WHERE status = 'pending' AND created_at <= ${cutoffMs}
+          ORDER BY created_at ASC, id ASC
+          LIMIT ${limit})`,
       ),
     database
       .update(notificationOutbox)
       .set({
         reasonCode: 'expired_ambiguous',
         status: 'unknown',
+        uncertainAt: sql`COALESCE(${notificationOutbox.uncertainAt}, ${timestamp.getTime()})`,
         updatedAt: timestamp,
       })
       .where(
-        and(
-          eq(notificationOutbox.status, 'retry'),
-          lte(notificationOutbox.createdAt, cutoff),
-          sql`${notificationOutbox.reasonCode} IN ('ambiguous', 'ambiguous_lease')`,
-        ),
+        sql`${notificationOutbox.id} IN (
+          SELECT id FROM notification_outbox
+          WHERE status = 'retry' AND created_at <= ${cutoffMs}
+            AND uncertain_at IS NOT NULL
+          ORDER BY created_at ASC, id ASC
+          LIMIT ${limit})`,
       ),
     database
       .update(notificationOutbox)
       .set({ reasonCode: 'expired', status: 'skipped', updatedAt: timestamp })
       .where(
-        and(
-          eq(notificationOutbox.status, 'retry'),
-          lte(notificationOutbox.createdAt, cutoff),
-          or(
-            isNull(notificationOutbox.reasonCode),
-            sql`${notificationOutbox.reasonCode} NOT IN ('ambiguous', 'ambiguous_lease')`,
-          ),
-        ),
+        sql`${notificationOutbox.id} IN (
+          SELECT id FROM notification_outbox
+          WHERE status = 'retry' AND created_at <= ${cutoffMs}
+            AND uncertain_at IS NULL
+          ORDER BY created_at ASC, id ASC
+          LIMIT ${limit})`,
       ),
   ]);
   return results.reduce(
@@ -3535,6 +3614,7 @@ type RawNotificationOutboxRow = {
   recipient_user_id: null | string;
   status: NotificationStatus;
   template_version: number;
+  uncertain_at: null | number;
   updated_at: number;
   workspace_id: string;
 };
@@ -3570,6 +3650,7 @@ const mapRawNotificationOutbox = (
   recipientUserId: row.recipient_user_id,
   status: row.status,
   templateVersion: row.template_version,
+  uncertainAt: row.uncertain_at === null ? null : new Date(row.uncertain_at),
   updatedAt: new Date(row.updated_at),
   workspaceId: row.workspace_id,
 });
@@ -3617,14 +3698,22 @@ export const freezeNotificationAttempt = async (
     deliveryKey: string;
     envelopeJson: string;
     idempotencyDeadline: Date | null;
+    leadId: string;
     leaseMs: number;
     leaseToken: string;
     outboxId: string;
     payloadHash: string;
     provider: NotificationProvider;
+    recipientUserId: null | string;
     timestamp: Date;
+    writeToken: null | string;
   },
 ): Promise<boolean> => {
+  // The write token (or, for legacy NULL tokens, the revision) pins the
+  // configuration snapshot that produced this sender/credential. Eligibility
+  // and lease expiry are re-verified in the same transaction as the freeze, so
+  // a disable, opt-out, delete, or recovery between the read and this point
+  // prevents the external call.
   const result = await prepare(
     environment.DB,
     `UPDATE notification_outbox SET
@@ -3639,7 +3728,23 @@ export const freezeNotificationAttempt = async (
         idempotency_deadline = COALESCE(idempotency_deadline, ?),
         lease_expires_at = ?,
         updated_at = ?
-      WHERE id = ? AND lease_token = ? AND status = 'claimed'`,
+      WHERE id = ? AND lease_token = ? AND status = 'claimed'
+        AND lease_expires_at > ?
+        AND EXISTS (
+          SELECT 1 FROM email_settings s
+          WHERE s.workspace_id = ?
+            AND s.enabled = 1
+            AND (s.paused_revision IS NULL OR s.paused_revision <> s.revision)
+            AND (s.write_token = ?
+              OR (s.write_token IS NULL AND s.revision = ?)))
+        AND EXISTS (
+          SELECT 1 FROM user u
+          JOIN notification_preferences p
+            ON p.workspace_id = ? AND p.user_id = u.id
+          WHERE u.id = ? AND u.disabled_at IS NULL AND p.new_lead_email = 1)
+        AND EXISTS (
+          SELECT 1 FROM leads l
+          WHERE l.id = ? AND l.deleted_at IS NULL)`,
   )
     .bind(
       input.provider,
@@ -3653,6 +3758,13 @@ export const freezeNotificationAttempt = async (
       input.timestamp.getTime(),
       input.outboxId,
       input.leaseToken,
+      input.timestamp.getTime(),
+      DEFAULT_WORKSPACE_ID,
+      input.writeToken,
+      input.configRevision,
+      DEFAULT_WORKSPACE_ID,
+      input.recipientUserId,
+      input.leadId,
     )
     .run();
   return (result.meta?.changes ?? 0) > 0;
@@ -3664,6 +3776,12 @@ export type NotificationCompletion = {
   providerMessageId?: null | string;
   reasonCode: null | string;
   status: NotificationStatus;
+  /**
+   * Marks an unresolved acceptance outcome. Once set it is never cleared, so
+   * a later definite rejection or suppression cannot erase the possibility
+   * that an earlier attempt was accepted.
+   */
+  uncertain?: boolean;
 };
 
 /**
@@ -3692,6 +3810,11 @@ export const completeNotificationAttempt = async (
       ...(input.completion.providerMessageId === undefined
         ? {}
         : { providerMessageId: input.completion.providerMessageId }),
+      ...(input.completion.uncertain === true
+        ? {
+            uncertainAt: sql`COALESCE(${notificationOutbox.uncertainAt}, ${input.timestamp.getTime()})`,
+          }
+        : {}),
       leaseExpiresAt: null,
       leaseToken: null,
       reasonCode: input.completion.reasonCode,
@@ -3798,4 +3921,53 @@ export const getNotificationDispatchState = async (
     .where(eq(notificationDispatchState.workspaceId, DEFAULT_WORKSPACE_ID))
     .get();
   return row ?? null;
+};
+
+export type NotificationDispatchHealth = {
+  dispatch: NotificationDispatchStateRecord | null;
+  inFlight: number;
+  oldestDueAt: Date | null;
+  pending: number;
+  unknown: number;
+};
+
+/**
+ * Bounded, redacted operational status for the authorized settings view and
+ * operators: scheduler tick/error state plus due and unresolved counts. It
+ * never carries recipient addresses, lead data, or provider messages.
+ */
+export const getNotificationDispatchHealth = async (
+  environment: Env,
+): Promise<NotificationDispatchHealth> => {
+  const [dispatch, counts] = await Promise.all([
+    getNotificationDispatchState(environment),
+    prepare(
+      environment.DB,
+      `SELECT
+        (SELECT COUNT(*) FROM notification_outbox
+          WHERE status IN ('pending', 'retry')) AS pending,
+        (SELECT COUNT(*) FROM notification_outbox
+          WHERE status IN ('claimed', 'sending')) AS in_flight,
+        (SELECT COUNT(*) FROM notification_outbox
+          WHERE status = 'unknown') AS unknown_count,
+        (SELECT MIN(next_attempt_at) FROM notification_outbox
+          WHERE status IN ('pending', 'retry')) AS oldest_due_at`,
+    ).first<{
+      in_flight: number;
+      oldest_due_at: null | number;
+      pending: number;
+      unknown_count: number;
+    }>(),
+  ]);
+
+  return {
+    dispatch,
+    inFlight: Number(counts?.in_flight ?? 0),
+    oldestDueAt:
+      counts?.oldest_due_at === null || counts?.oldest_due_at === undefined
+        ? null
+        : new Date(counts.oldest_due_at),
+    pending: Number(counts?.pending ?? 0),
+    unknown: Number(counts?.unknown_count ?? 0),
+  };
 };

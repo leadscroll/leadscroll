@@ -350,6 +350,10 @@ export const notificationOutbox = sqliteTable(
       .notNull()
       .default('pending'),
     templateVersion: integer('template_version').notNull().default(1),
+    // Set once when any attempt produced an unresolved acceptance outcome.
+    // Never cleared: a later definite rejection or suppression must not erase
+    // the possibility that an earlier attempt was accepted.
+    uncertainAt: timestampMs('uncertain_at'),
     updatedAt: timestampMs('updated_at').notNull(),
     workspaceId: text('workspace_id')
       .notNull()
@@ -370,6 +374,8 @@ export const notificationOutbox = sqliteTable(
     ),
     // Lease recovery scan (claimed/sending rows whose lease expired).
     index('notification_outbox_lease_idx').on(table.leaseExpiresAt),
+    // Bounded retention cleanup scan over resolved terminal rows.
+    index('notification_outbox_cleanup_idx').on(table.status, table.updatedAt),
     // Per-recipient self-service history, newest first.
     index('notification_outbox_history_idx').on(
       table.workspaceId,

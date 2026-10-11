@@ -6,18 +6,23 @@ import {
 import {
   getEmailSettingsView,
   loadEmailSettingsState,
+  NOTIFICATION_EVENT_TTL_MS,
+  RESEND_IDEMPOTENCY_SAFETY_MS,
   sendTestEmailCommand,
   updateEmailSettingsCommand,
 } from '@/application/notification-commands';
 import {
   getEmailCredential,
   getEmailSettings,
+  getNotificationTestAttempt,
   grantEmailSettingsPermission,
   hasAnyEmailSettingsPermission,
   hasEmailSettingsPermission,
+  recordEmailSettingsConfigError,
   saveEmailSettings,
 } from '@/db/repository';
 import { decryptCredential } from '@/notifications/credential-crypto';
+import { serializeEnvelope } from '@/notifications/email';
 import { type FetchLike } from '@/notifications/providers/resend';
 import { Effect, Either } from 'effect';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
@@ -63,8 +68,8 @@ const acceptedFetch =
   async () =>
     Response.json({ id: messageId });
 
-const failingFetch = (): FetchLike => async () => {
-  throw new Error('transport down');
+const transportFailure = (): FetchLike => async () => {
+  throw new Error('timeout');
 };
 
 describe('installation email settings persistence', () => {
@@ -496,7 +501,7 @@ describe('administrator test email command', () => {
 
     const late = await run(
       sendTestEmailCommand(fixture.env, testInput('test-req-3'), {
-        fetchImplementation: failingFetch(),
+        fetchImplementation: transportFailure(),
         now: () => new Date(t0 + 25 * 60 * 60 * 1_000),
       }),
     );
@@ -576,5 +581,323 @@ describe('manageEmailSettings capability', () => {
       false,
     );
     expect(await fixture.count('email_settings_permissions')).toBe(1);
+  });
+});
+
+describe('test attempt identity and replay safety', () => {
+  const testInput = (requestId: string, expectedRevision = 1) => ({
+    actorEmail: 'admin@example.test',
+    actorUserId: ADMIN_ID,
+    canonicalOrigin: SETTINGS_ORIGIN,
+    expectedRevision,
+    requestId,
+  });
+
+  const configuredResend = async () => {
+    await fixture.enableProvider({ provider: 'resend' });
+    await fixture.insertCredential('re_original_key');
+  };
+
+  const ambiguousAttempt = async (
+    requestId: string,
+    at: number,
+    expectedRevision = 1,
+  ) => {
+    const outcome = await run(
+      sendTestEmailCommand(
+        fixture.env,
+        testInput(requestId, expectedRevision),
+        {
+          fetchImplementation: transportFailure(),
+          now: () => new Date(at),
+        },
+      ),
+    );
+    expect(Either.isRight(outcome)).toBe(true);
+    if (Either.isRight(outcome)) {
+      expect(outcome.right.outcome).toBe('ambiguous');
+    }
+  };
+
+  test('a provider change after an ambiguous attempt makes the old id a conflict with no new send', async () => {
+    await configuredResend();
+    await ambiguousAttempt('identity-provider', Date.now());
+    const before = await getNotificationTestAttempt(
+      fixture.env,
+      'identity-provider',
+    );
+
+    // Switch to Cloudflare and complete its local prerequisites.
+    fixture.setEmailBinding({
+      send: async () => ({ messageId: 'cf-never' }),
+    });
+    await fixture.enableProvider({ provider: 'cloudflare', revision: 2 });
+    const fetchCalls: string[] = [];
+    const fetchMock: FetchLike = async () => {
+      fetchCalls.push('called');
+      return Response.json({ id: 're-must-not-send' });
+    };
+
+    const outcome = await run(
+      sendTestEmailCommand(fixture.env, testInput('identity-provider', 2), {
+        fetchImplementation: fetchMock,
+      }),
+    );
+    expect(Either.isLeft(outcome)).toBe(true);
+    if (Either.isLeft(outcome)) {
+      expect(outcome.left).toMatchObject({ code: 'test_request_conflict' });
+    }
+
+    expect(fetchCalls).toHaveLength(0);
+    const after = await getNotificationTestAttempt(
+      fixture.env,
+      'identity-provider',
+    );
+    expect(after?.provider).toBe(before?.provider);
+    expect(after?.configRevision).toBe(before?.configRevision);
+    expect(after?.deliveryKey).toBe(before?.deliveryKey);
+  });
+
+  test('a replaced key or changed sender makes the old id a conflict with no new send', async () => {
+    await configuredResend();
+    await ambiguousAttempt('identity-key', Date.now());
+
+    const { encryptCredential } =
+      await import('@/notifications/credential-crypto');
+    const envelope = await encryptCredential(TEST_ENCRYPTION_KEY, {
+      provider: 'resend',
+      value: 're_replaced',
+      workspaceId: WORKSPACE,
+    });
+    const replaced = await saveEmailSettings(
+      fixture.env,
+      saveInput(1, {
+        credentialChange: { envelope, operation: 'replace' },
+        provider: 'resend',
+      }),
+    );
+    expect(replaced.kind).toBe('saved');
+    const fetchCalls: string[] = [];
+    const fetchMock: FetchLike = async () => {
+      fetchCalls.push('called');
+      return Response.json({ id: 're-must-not-send' });
+    };
+
+    const afterKey = await run(
+      sendTestEmailCommand(fixture.env, testInput('identity-key', 2), {
+        fetchImplementation: fetchMock,
+      }),
+    );
+    expect(Either.isLeft(afterKey)).toBe(true);
+    if (Either.isLeft(afterKey)) {
+      expect(afterKey.left).toMatchObject({ code: 'test_request_conflict' });
+    }
+
+    // Sender change on another ambiguous attempt (revision is now 2; step
+    // past the one-per-minute test limit).
+    await ambiguousAttempt('identity-sender', Date.now() + 61_000, 2);
+    const senderChanged = await saveEmailSettings(
+      fixture.env,
+      saveInput(2, {
+        credentialChange: { operation: 'keep' },
+        fromEmail: 'changed@example.test',
+        provider: 'resend',
+      }),
+    );
+    expect(senderChanged.kind).toBe('saved');
+    const afterSender = await run(
+      sendTestEmailCommand(fixture.env, testInput('identity-sender', 3), {
+        fetchImplementation: fetchMock,
+      }),
+    );
+    expect(Either.isLeft(afterSender)).toBe(true);
+    if (Either.isLeft(afterSender)) {
+      expect(afterSender.left).toMatchObject({ code: 'test_request_conflict' });
+    }
+
+    expect(fetchCalls).toHaveLength(0);
+  });
+
+  test('a replay reuses the stored envelope and key even if the payload is edited', async () => {
+    await configuredResend();
+    const t0 = Date.now();
+    await ambiguousAttempt('identity-frozen', t0);
+    const stored = await getNotificationTestAttempt(
+      fixture.env,
+      'identity-frozen',
+    );
+    expect(stored?.frozenEnvelopeJson).not.toBeNull();
+    const tampered = serializeEnvelope({
+      from: { email: 'stored@example.test', name: 'Stored' },
+      html: '<p>stored body</p>',
+      subject: 'Stored subject',
+      text: 'stored body',
+      to: 'admin@example.test',
+    });
+    await fixture.db
+      .prepare(
+        'UPDATE notification_test_attempts SET frozen_envelope_json = ? WHERE id = ?',
+      )
+      .bind(tampered, 'identity-frozen')
+      .run();
+
+    const bodies: string[] = [];
+    const keys: string[] = [];
+    const fetchMock: FetchLike = async (_url, init) => {
+      bodies.push(String(init?.body));
+      keys.push(
+        String((init?.headers as Record<string, string>)['Idempotency-Key']),
+      );
+      return Response.json({ id: 're-frozen' });
+    };
+
+    const outcome = await run(
+      sendTestEmailCommand(fixture.env, testInput('identity-frozen'), {
+        fetchImplementation: fetchMock,
+        now: () => new Date(t0 + 60_000),
+      }),
+    );
+    expect(Either.isRight(outcome)).toBe(true);
+    expect(bodies).toHaveLength(1);
+    expect(JSON.parse(bodies[0] ?? '{}')).toMatchObject({
+      html: '<p>stored body</p>',
+      subject: 'Stored subject',
+    });
+    expect(keys[0]).toBe(
+      stored?.deliveryKey ?? 'leadscroll-email-test:identity-frozen',
+    );
+  });
+
+  test('another actor request id is a conflict that never sends or leaks', async () => {
+    await configuredResend();
+    await fixture.user({
+      email: 'someone-else@example.test',
+      id: 'someone-else',
+    });
+    const now = Date.now();
+    await fixture.db
+      .prepare(
+        `INSERT INTO notification_test_attempts (
+          id, workspace_id, user_id, config_revision, provider, status,
+          delivery_key, frozen_envelope_json, created_at, updated_at
+        ) VALUES (?, ?, 'someone-else', 1, 'resend', 'ambiguous', ?, ?, ?, ?)`,
+      )
+      .bind(
+        'foreign-request',
+        WORKSPACE,
+        'leadscroll-email-test:foreign-request',
+        serializeEnvelope({
+          from: { email: 'notifications@example.test' },
+          html: '<p>foreign</p>',
+          subject: 'Foreign',
+          text: 'foreign',
+          to: 'someone-else@example.test',
+        }),
+        now,
+        now,
+      )
+      .run();
+
+    const fetchCalls: string[] = [];
+    const fetchMock: FetchLike = async () => {
+      fetchCalls.push('called');
+      return Response.json({ id: 're-must-not-send' });
+    };
+
+    const outcome = await run(
+      sendTestEmailCommand(fixture.env, testInput('foreign-request'), {
+        fetchImplementation: fetchMock,
+      }),
+    );
+    expect(Either.isLeft(outcome)).toBe(true);
+    if (Either.isLeft(outcome)) {
+      expect(outcome.left).toMatchObject({ code: 'test_request_conflict' });
+    }
+
+    expect(fetchCalls).toHaveLength(0);
+    const foreign = await getNotificationTestAttempt(
+      fixture.env,
+      'foreign-request',
+    );
+    expect(foreign?.status).toBe('ambiguous');
+    expect(foreign?.providerMessageId).toBeNull();
+  });
+
+  test('the fixed replay deadline is enforced at the exact boundary', async () => {
+    await configuredResend();
+    const t0 = Date.now();
+    await ambiguousAttempt('deadline-exact', t0);
+    const attempt = await getNotificationTestAttempt(
+      fixture.env,
+      'deadline-exact',
+    );
+    const deadline =
+      (attempt?.createdAt.getTime() ?? t0) +
+      NOTIFICATION_EVENT_TTL_MS -
+      RESEND_IDEMPOTENCY_SAFETY_MS;
+    const fetchCalls: string[] = [];
+    const fetchMock: FetchLike = async () => {
+      fetchCalls.push('called');
+      return Response.json({ id: 're-late' });
+    };
+
+    const late = await run(
+      sendTestEmailCommand(fixture.env, testInput('deadline-exact'), {
+        fetchImplementation: fetchMock,
+        now: () => new Date(deadline),
+      }),
+    );
+    expect(Either.isRight(late)).toBe(true);
+    if (Either.isRight(late)) {
+      expect(late.right.outcome).toBe('ambiguous');
+    }
+
+    expect(fetchCalls).toHaveLength(0);
+  });
+
+  test('a paused or disabled installation can still run an explicit test', async () => {
+    await configuredResend();
+    const t0 = Date.now();
+    // Notifications off: a configuration test must not require live alerts.
+    const disabledSettings = await saveEmailSettings(
+      fixture.env,
+      saveInput(1, {
+        credentialChange: { operation: 'keep' },
+        enabled: false,
+        provider: 'resend',
+      }),
+    );
+    expect(disabledSettings.kind).toBe('saved');
+    const fetchMock = vi.fn<FetchLike>(acceptedFetch('re-disabled-ok'));
+    const disabledTest = await run(
+      sendTestEmailCommand(fixture.env, testInput('paused-off', 2), {
+        fetchImplementation: fetchMock,
+        now: () => new Date(t0),
+      }),
+    );
+    expect(Either.isRight(disabledTest)).toBe(true);
+    expect((await getEmailSettings(fixture.env))?.enabled).toBe(false);
+
+    // Paused revision from a config failure: a successful test clears it.
+    await recordEmailSettingsConfigError(fixture.env, {
+      now: new Date(t0),
+      reasonCode: 'missing_api_key',
+      revision: 2,
+    });
+    expect((await loadEmailSettingsState(fixture.env)).availability).toBe(
+      'unavailable',
+    );
+    const recovered = await run(
+      sendTestEmailCommand(fixture.env, testInput('paused-recover', 2), {
+        fetchImplementation: acceptedFetch('re-paused-ok'),
+        now: () => new Date(t0 + 61_000),
+      }),
+    );
+    expect(Either.isRight(recovered)).toBe(true);
+    if (Either.isRight(recovered)) {
+      expect(recovered.right.outcome).toBe('accepted');
+    }
+
+    expect((await getEmailSettings(fixture.env))?.pausedRevision).toBeNull();
   });
 });

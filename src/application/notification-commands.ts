@@ -8,6 +8,7 @@
  * provider-specific wire behavior.
  */
 
+import { logNotificationDispatchOutcome } from '@/api/logging';
 import { DomainError, PersistenceError } from '@/application/errors';
 import {
   claimNextNotification,
@@ -17,16 +18,20 @@ import {
   completeNotificationTestAttempt,
   type EmailCredentialRecord,
   type EmailSettingsRecord,
+  type EmailSettingsSnapshot,
   type Env,
   expireStaleNotificationIntents,
   freezeNotificationAttempt,
   freezeNotificationTestAttempt,
   getEmailCredential,
-  getEmailSettings,
+  getEmailSettingsSnapshot,
   getLatestNotificationTestAttempt,
+  getNotificationDispatchHealth,
   getNotificationEligibility,
+  getNotificationOutboxRow,
   getNotificationPreference,
   getNotificationTestAttempt,
+  getOwnedNotificationTestAttempt,
   listNotificationHistory,
   type NotificationCompletion,
   type NotificationHistoryPage,
@@ -45,6 +50,12 @@ import {
 } from '@/db/repository';
 import { type NotificationStatus } from '@/db/schema';
 import { decodeKeysetCursor, type Keyset } from '@/domain/pagination';
+import {
+  type EmailSettingsView,
+  type EmailTestView,
+  type NotificationHistoryView,
+  type NotificationPreferenceView,
+} from '@/domain/schemas';
 import {
   CredentialCryptoError,
   decryptCredential,
@@ -86,11 +97,6 @@ export const DISPATCH_BATCH_LIMIT = 1;
 export const DISPATCH_TIME_BUDGET_MS = 20_000;
 
 const RETRY_BACKOFF_SECONDS = [60, 300, 900, 3_600, 21_600] as const;
-
-const RECIPIENT_REJECTION_REASONS = new Set([
-  'E_RECIPIENT_NOT_ALLOWED',
-  'E_RECIPIENT_SUPPRESSED',
-]);
 
 const RETRYABLE_TEST_REASONS = new Set([
   'concurrent_idempotent_requests',
@@ -153,14 +159,16 @@ const configuredReadiness = (
 };
 
 /**
- * Local, no-network readiness. `configured` means the saved selection has the
- * resources it needs as far as this deployment can tell; it is never evidence
- * of remote entitlement or an accepted test message.
+ * Derives local readiness from one coherent settings/credential snapshot.
+ * `configured` means the saved selection has the resources it needs as far as
+ * this deployment can tell; it is never evidence of remote entitlement or an
+ * accepted test message.
  */
-export const loadEmailSettingsState = async (
+const stateFromSnapshot = (
   environment: Env,
-): Promise<EmailSettingsState> => {
-  const settings = await getEmailSettings(environment);
+  snapshot: EmailSettingsSnapshot,
+): EmailSettingsState => {
+  const { credential, settings } = snapshot;
   const hasCloudflareBinding = environment.EMAIL !== undefined;
   const hasEncryptionKey = hasConfiguredEncryptionKey(environment);
 
@@ -178,15 +186,12 @@ export const loadEmailSettingsState = async (
     };
   }
 
-  const credential =
-    settings.provider === 'resend'
-      ? await getEmailCredential(environment, 'resend')
-      : null;
+  const selectedCredential = settings.provider === 'resend' ? credential : null;
   const paused =
     settings.pausedRevision !== null &&
     settings.pausedRevision === settings.revision;
   const readinessReason = configuredReadiness(
-    { credential, hasCloudflareBinding, hasEncryptionKey },
+    { credential: selectedCredential, hasCloudflareBinding, hasEncryptionKey },
     settings,
   );
 
@@ -203,10 +208,10 @@ export const loadEmailSettingsState = async (
 
   return {
     availability,
-    credential,
+    credential: selectedCredential,
     hasCloudflareBinding,
     hasEncryptionKey,
-    hasResendCredential: credential !== null,
+    hasResendCredential: selectedCredential !== null,
     paused,
     provider: settings.provider,
     readinessReason: paused
@@ -214,6 +219,68 @@ export const loadEmailSettingsState = async (
       : readinessReason,
     settings,
   };
+};
+
+export const loadEmailSettingsState = async (
+  environment: Env,
+): Promise<EmailSettingsState> =>
+  stateFromSnapshot(environment, await getEmailSettingsSnapshot(environment));
+
+export type SavedConfigurationTest =
+  { code: string; message: string; ok: false } | { ok: true };
+
+/**
+ * Whether the *saved* provider configuration can produce a test message.
+ * Notification delivery being paused or switched off does not block an
+ * explicit test: testing is how a paused revision recovers, and configuration
+ * checks must not force live alerts on.
+ */
+export const savedConfigurationTestable = (
+  state: EmailSettingsState,
+): SavedConfigurationTest => {
+  const settings = state.settings;
+  if (settings === null || settings.provider === 'disabled') {
+    return {
+      code: 'email_disabled',
+      message: 'Choose a provider before sending a test.',
+      ok: false,
+    };
+  }
+
+  if (settings.fromEmail === null || settings.fromEmail.trim().length === 0) {
+    return {
+      code: 'email_misconfigured',
+      message: 'Set the sender address before sending a test.',
+      ok: false,
+    };
+  }
+
+  if (settings.provider === 'cloudflare' && !state.hasCloudflareBinding) {
+    return {
+      code: 'email_misconfigured',
+      message:
+        'The Cloudflare EMAIL binding is not present in this deployment.',
+      ok: false,
+    };
+  }
+
+  if (settings.provider === 'resend' && !state.hasResendCredential) {
+    return {
+      code: 'email_misconfigured',
+      message: 'Add the Resend API key before sending a test.',
+      ok: false,
+    };
+  }
+
+  if (settings.provider === 'resend' && !state.hasEncryptionKey) {
+    return {
+      code: 'email_misconfigured',
+      message: 'The credential encryption key is not configured.',
+      ok: false,
+    };
+  }
+
+  return { ok: true };
 };
 
 // --- Provider factory --------------------------------------------------------
@@ -276,12 +343,6 @@ export const createSenderFromState = async (
 };
 
 // --- Self-service preference and history -------------------------------------
-
-export type NotificationPreferenceView = {
-  availability: NotificationAvailability;
-  newLeadEmail: boolean;
-  provider: EmailProvider | null;
-};
 
 export const getNotificationPreferenceView = async (
   environment: Env,
@@ -358,21 +419,6 @@ export const notificationReasonLabel = (
     ? null
     : (REASON_LABELS[reasonCode] ?? 'Delivery needs attention.');
 
-export type NotificationHistoryView = {
-  data: NotificationHistoryViewItem[];
-  nextCursor: null | string;
-};
-
-export type NotificationHistoryViewItem = {
-  createdAt: string;
-  id: string;
-  leadId: string;
-  reasonCode: null | string;
-  reasonLabel: null | string;
-  status: NotificationStatus;
-  statusLabel: string;
-};
-
 const historyView = (
   page: NotificationHistoryPage,
 ): NotificationHistoryView => ({
@@ -416,35 +462,6 @@ export const listNotificationHistoryCommand = (
 
 // --- Administrator settings view ---------------------------------------------
 
-export type EmailSettingsView = {
-  canonicalOrigin: string;
-  enabled: boolean;
-  environment: {
-    hasCloudflareBinding: boolean;
-    hasEncryptionKey: boolean;
-  };
-  fromEmail: null | string;
-  fromName: null | string;
-  hasApiKey: boolean;
-  paused: null | { at: string; reasonCode: null | string; revision: number };
-  provider: 'cloudflare' | 'disabled' | 'resend';
-  readiness: {
-    availability: NotificationAvailability;
-    reasonCode: null | string;
-  };
-  revision: number;
-  test: EmailTestView | null;
-};
-
-export type EmailTestView = {
-  at: null | string;
-  outcome:
-    'accepted' | 'ambiguous' | 'configuration_error' | 'rejected' | 'sending';
-  providerMessageId: null | string;
-  reasonCode: null | string;
-  revision: number;
-};
-
 const testView = (
   attempt: NotificationTestAttemptRecord | null,
 ): EmailTestView | null =>
@@ -458,13 +475,35 @@ const testView = (
         revision: attempt.configRevision,
       };
 
+const dispatchHealthView = (
+  health: Awaited<ReturnType<typeof getNotificationDispatchHealth>>,
+): EmailSettingsView['dispatch'] => ({
+  configError:
+    health.dispatch === null || health.dispatch.configErrorCode === null
+      ? null
+      : {
+          at: (
+            health.dispatch.configErrorAt ?? health.dispatch.updatedAt
+          ).toISOString(),
+          code: health.dispatch.configErrorCode,
+          revision: health.dispatch.configErrorRevision,
+        },
+  inFlight: health.inFlight,
+  lastSuccessAt: health.dispatch?.lastSuccessAt?.toISOString() ?? null,
+  lastTickAt: health.dispatch?.lastTickAt?.toISOString() ?? null,
+  oldestDueAt: health.oldestDueAt?.toISOString() ?? null,
+  pending: health.pending,
+  unknown: health.unknown,
+});
+
 export const getEmailSettingsView = async (
   environment: Env,
   canonicalOriginFallback: string,
 ): Promise<EmailSettingsView> => {
-  const [state, latestTest] = await Promise.all([
-    loadEmailSettingsState(environment),
+  const [health, latestTest, state] = await Promise.all([
+    getNotificationDispatchHealth(environment),
     getLatestNotificationTestAttempt(environment),
+    loadEmailSettingsState(environment),
   ]);
   const settings = state.settings;
   const pausedAt = settings?.pausedAt ?? settings?.updatedAt;
@@ -482,6 +521,7 @@ export const getEmailSettingsView = async (
 
   return {
     canonicalOrigin: settings?.canonicalOrigin ?? canonicalOriginFallback,
+    dispatch: dispatchHealthView(health),
     enabled: settings?.enabled ?? false,
     environment: {
       hasCloudflareBinding: state.hasCloudflareBinding,
@@ -685,11 +725,106 @@ export type SendTestEmailInput = {
   requestId: string;
 };
 
+/**
+ * Bounded work per tick for lease recovery, expiry, and retention cleanup.
+ */
+export const MAINTENANCE_BATCH_LIMIT = 100;
+
+/**
+ * Failed provider reasons that evidence a persistent installation
+ * configuration problem. Anything else (recipient, payload, idempotency, or
+ * an unrecognized provider failure) ends that one item without pausing the
+ * whole installation.
+ */
+const CONFIGURATION_FAILURE_REASONS = new Set([
+  'cloudflare_binding_missing',
+  'decrypt_failed',
+  'E_SENDER_DOMAIN_NOT_AVAILABLE',
+  'E_SENDER_NOT_VERIFIED',
+  'encryption_key_invalid',
+  'encryption_key_missing',
+  'invalid_api_key',
+  'invalid_permission',
+  'missing_api_key',
+  'provider_unavailable',
+  'resend_api_key_missing',
+  'restricted_api_key',
+  'suspended_api_key',
+]);
+
+const testAttemptDeadlineAt = (createdAt: Date): Date =>
+  new Date(
+    createdAt.getTime() +
+      NOTIFICATION_EVENT_TTL_MS -
+      RESEND_IDEMPOTENCY_SAFETY_MS,
+  );
+
+/**
+ * Compares a stored test attempt with the saved configuration and the caller.
+ * A non-null result means the request id can no longer be replayed: reusing it
+ * must not rebuild the message with a different provider, account, sender, or
+ * recipient.
+ */
+const testAttemptConflict = (
+  attempt: NotificationTestAttemptRecord,
+  state: EmailSettingsState,
+  input: SendTestEmailInput,
+): null | string => {
+  if (attempt.userId !== input.actorUserId) {
+    return 'owner';
+  }
+
+  if (attempt.provider === null) {
+    // A concurrent reservation has not frozen its identity yet; the caller
+    // reports the durable in-progress state instead of replaying it.
+    return null;
+  }
+
+  const settings = state.settings;
+  if (settings === null) {
+    return 'configuration';
+  }
+
+  if (attempt.configRevision !== settings.revision) {
+    return 'revision';
+  }
+
+  if (attempt.provider !== settings.provider) {
+    return 'provider';
+  }
+
+  if (attempt.deliveryKey !== testDeliveryKeyFor(input.requestId)) {
+    return 'key';
+  }
+
+  const envelope =
+    attempt.frozenEnvelopeJson === null
+      ? null
+      : parseEnvelope(attempt.frozenEnvelopeJson);
+  if (envelope === null) {
+    return 'payload';
+  }
+
+  if (
+    envelope.to.trim().toLowerCase() !== input.actorEmail.trim().toLowerCase()
+  ) {
+    return 'recipient';
+  }
+
+  return null;
+};
+
 const canReplayTest = (
   attempt: NotificationTestAttemptRecord,
+  state: EmailSettingsState,
+  input: SendTestEmailInput,
   now: Date,
 ): boolean => {
-  if (attempt.provider !== 'resend' || attempt.status === 'accepted') {
+  if (
+    attempt.provider !== 'resend' ||
+    attempt.status === 'accepted' ||
+    state.settings === null
+  ) {
     return false;
   }
 
@@ -698,15 +833,11 @@ const canReplayTest = (
     (attempt.status === 'rejected' &&
       attempt.reasonCode !== null &&
       RETRYABLE_TEST_REASONS.has(attempt.reasonCode));
-  if (!retryable) {
+  if (!retryable || testAttemptConflict(attempt, state, input) !== null) {
     return false;
   }
 
-  const deadline =
-    attempt.createdAt.getTime() +
-    NOTIFICATION_EVENT_TTL_MS -
-    RESEND_IDEMPOTENCY_SAFETY_MS;
-  return now.getTime() < deadline;
+  return now.getTime() < testAttemptDeadlineAt(attempt.createdAt).getTime();
 };
 
 const finishStoredTest = (
@@ -735,9 +866,8 @@ const completionForTestResult = (
     return { pause: false, reasonCode: result.reason, status: 'ambiguous' };
   }
 
-  const recipientOnly = RECIPIENT_REJECTION_REASONS.has(result.reason);
   return {
-    pause: !result.retryable && !recipientOnly,
+    pause: CONFIGURATION_FAILURE_REASONS.has(result.reason),
     reasonCode: result.reason,
     status: 'rejected',
   };
@@ -760,6 +890,7 @@ const completeTest = async (
     reasonCode: completion.reasonCode,
     requestId: input.requestId,
     status: completion.status,
+    userId: input.actorUserId,
   });
   await recordEmailSettingsAudit(environment, {
     action: 'test_email',
@@ -815,21 +946,14 @@ const reserveTest = (
     return reservation;
   });
 
-const sendAndRecordTest = async (
-  environment: Env,
-  state: EmailSettingsState,
+const buildTestEnvelope = (
+  settings: EmailSettingsRecord,
   input: SendTestEmailInput,
-  overrides: SenderOverrides,
-  now: Date,
-): Promise<EmailTestView> => {
-  const settings = state.settings;
-  if (settings === null) {
-    throw new Error('The email settings disappeared during a test.');
-  }
-
-  const origin = settings.canonicalOrigin ?? input.canonicalOrigin;
-  const rendered = renderTestEmail({ origin });
-  const envelope: EmailEnvelope = {
+): EmailEnvelope => {
+  const rendered = renderTestEmail({
+    origin: settings.canonicalOrigin ?? input.canonicalOrigin,
+  });
+  return {
     from: {
       email: settings.fromEmail ?? '',
       ...(settings.fromName === null ? {} : { name: settings.fromName }),
@@ -837,33 +961,57 @@ const sendAndRecordTest = async (
     html: rendered.html,
     subject: rendered.subject,
     text: rendered.text,
-    to: input.actorEmail,
+    to: input.actorEmail.trim().toLowerCase(),
   };
+};
+
+const reReadTest = async (
+  environment: Env,
+  input: SendTestEmailInput,
+): Promise<EmailTestView> => {
+  const current = await getOwnedNotificationTestAttempt(
+    environment,
+    input.requestId,
+    input.actorUserId,
+  );
+  if (current === null) {
+    throw new Error('The test attempt disappeared.');
+  }
+
+  return finishStoredTest(current);
+};
+
+/**
+ * Sends one explicit administrator test. On a replayable attempt the stored
+ * envelope and key are reused byte for byte; a changed provider, account,
+ * sender, recipient, or template revision is a conflict, never a new send.
+ */
+const sendAndRecordTest = async (
+  environment: Env,
+  state: EmailSettingsState,
+  input: SendTestEmailInput,
+  overrides: SenderOverrides,
+  now: Date,
+  existing: NotificationTestAttemptRecord | null,
+): Promise<EmailTestView> => {
+  const settings = state.settings;
+  if (settings === null) {
+    throw new Error('The email settings disappeared during a test.');
+  }
+
   const provider = settings.provider === 'disabled' ? null : settings.provider;
   if (provider === null) {
     throw new Error('No provider is selected.');
   }
 
-  const frozen = await freezeNotificationTestAttempt(environment, {
-    configRevision: settings.revision,
-    deliveryKey: testDeliveryKeyFor(input.requestId),
-    envelopeJson: serializeEnvelope(envelope),
-    now,
-    provider,
-    requestId: input.requestId,
-  });
-  if (!frozen) {
-    const current = await getNotificationTestAttempt(
-      environment,
-      input.requestId,
-    );
-    if (current === null) {
-      throw new Error('The test attempt disappeared.');
-    }
+  const storedJson = existing?.frozenEnvelopeJson ?? null;
+  const storedEnvelope = storedJson === null ? null : parseEnvelope(storedJson);
+  const envelope = storedEnvelope ?? buildTestEnvelope(settings, input);
+  const deliveryKey =
+    existing?.deliveryKey ?? testDeliveryKeyFor(input.requestId);
 
-    return finishStoredTest(current);
-  }
-
+  // Build the sender from the coherent snapshot before the freeze boundary, so
+  // the external call can never use a credential saved after the freeze.
   let sender: EmailSender;
   try {
     sender = await createSenderFromState(environment, state, overrides);
@@ -872,24 +1020,31 @@ const sendAndRecordTest = async (
       reasonCode: 'provider_unavailable',
       status: 'configuration_error',
     });
-    const current = await getNotificationTestAttempt(
-      environment,
-      input.requestId,
-    );
-    if (current === null) {
-      throw new Error('The test attempt disappeared.');
-    }
+    return reReadTest(environment, input);
+  }
 
-    return finishStoredTest(current);
+  const frozen = await freezeNotificationTestAttempt(environment, {
+    configRevision: existing?.configRevision ?? settings.revision,
+    deliveryKey,
+    envelopeJson: serializeEnvelope(envelope),
+    now,
+    provider: existing?.provider ?? provider,
+    requestId: input.requestId,
+    userId: input.actorUserId,
+  });
+  if (!frozen) {
+    return reReadTest(environment, input);
   }
 
   let result: SendResult;
   try {
-    result = await sender.send(envelope, {
-      deliveryKey: testDeliveryKeyFor(input.requestId),
-    });
+    result = await sender.send(envelope, { deliveryKey });
   } catch {
-    result = { kind: 'ambiguous', provider, reason: 'unexpected' };
+    result = {
+      kind: 'ambiguous',
+      provider: existing?.provider ?? provider,
+      reason: 'unexpected',
+    };
   }
 
   const completion = completionForTestResult(result);
@@ -909,12 +1064,7 @@ const sendAndRecordTest = async (
     await clearEmailSettingsPause(environment, settings.revision, now);
   }
 
-  const latest = await getNotificationTestAttempt(environment, input.requestId);
-  if (latest === null) {
-    throw new Error('The test attempt disappeared.');
-  }
-
-  return finishStoredTest(latest);
+  return reReadTest(environment, input);
 };
 
 export const sendTestEmailCommand = (
@@ -924,7 +1074,10 @@ export const sendTestEmailCommand = (
 ) =>
   Effect.gen(function* () {
     const now = overrides.now?.() ?? new Date();
-    const settings = yield* persist(() => getEmailSettings(environment));
+    const snapshot = yield* persist(() =>
+      getEmailSettingsSnapshot(environment),
+    );
+    const settings = snapshot.settings;
     if (settings === null || settings.revision !== input.expectedRevision) {
       return yield* Effect.fail(
         domainError(
@@ -934,42 +1087,66 @@ export const sendTestEmailCommand = (
       );
     }
 
-    const state = yield* persist(() => loadEmailSettingsState(environment));
-    if (state.availability === 'disabled') {
-      return yield* Effect.fail(
-        domainError(
-          'email_disabled',
-          'Choose a provider and enable email before sending a test.',
-        ),
-      );
-    }
-
-    if (state.availability === 'misconfigured') {
-      return yield* Effect.fail(
-        domainError(
-          'email_misconfigured',
-          'Complete the saved provider configuration before sending a test.',
-        ),
-      );
+    const state = stateFromSnapshot(environment, snapshot);
+    const testable = savedConfigurationTestable(state);
+    if (!testable.ok) {
+      return yield* Effect.fail(domainError(testable.code, testable.message));
     }
 
     const existing = yield* persist(() =>
-      getNotificationTestAttempt(environment, input.requestId),
+      getOwnedNotificationTestAttempt(
+        environment,
+        input.requestId,
+        input.actorUserId,
+      ),
     );
     if (existing === null) {
+      const foreign = yield* persist(() =>
+        getNotificationTestAttempt(environment, input.requestId),
+      );
+      if (foreign !== null) {
+        return yield* Effect.fail(
+          domainError(
+            'test_request_conflict',
+            'This test request id is already in use. Start a new test.',
+          ),
+        );
+      }
+
       yield* reserveTest(environment, settings, input, now);
-    } else if (!canReplayTest(existing, now)) {
-      return finishStoredTest(existing);
+    } else {
+      if (testAttemptConflict(existing, state, input) !== null) {
+        return yield* Effect.fail(
+          domainError(
+            'test_request_conflict',
+            'This test request belongs to an earlier configuration. Start a new test.',
+          ),
+        );
+      }
+
+      if (!canReplayTest(existing, state, input, now)) {
+        return finishStoredTest(existing);
+      }
     }
 
     return yield* persist(() =>
-      sendAndRecordTest(environment, state, input, overrides, now),
+      sendAndRecordTest(environment, state, input, overrides, now, existing),
     );
   });
 
 // --- Delivery state machine --------------------------------------------------
 
 export type ProcessNotificationOptions = SenderOverrides & {
+  /**
+   * Deterministic test seam: runs after the coherent snapshot and terminal
+   * checks, immediately before the freeze boundary. Production never sets it.
+   */
+  beforeFreeze?: () => Promise<void>;
+  /**
+   * Deterministic test seam: replaces the durable acknowledgement transition
+   * so an acknowledgement failure can be exercised without a database fault.
+   */
+  complete?: typeof completeNotificationAttempt;
   now?: () => Date;
   random?: () => number;
   randomToken?: () => string;
@@ -977,17 +1154,22 @@ export type ProcessNotificationOptions = SenderOverrides & {
 };
 
 export type ProcessNotificationOutcome =
-  | { kind: 'accepted'; messageId: null | string; outboxId: string }
-  | { kind: 'disabled'; reasonCode: string }
-  | { kind: 'failed'; outboxId: string; reasonCode: string }
-  | { kind: 'idle' }
-  | { kind: 'misconfigured'; reasonCode: string }
-  | { kind: 'paused'; reasonCode: string }
-  | { kind: 'retry'; nextAttemptAt: Date; outboxId: string }
-  | { kind: 'skipped'; outboxId: string; reasonCode: string }
-  | { kind: 'unknown'; outboxId: string; reasonCode: string };
+  | {
+      attempt?: number;
+      kind: 'accepted';
+      messageId: null | string;
+      outboxId: string;
+    }
+  | { attempt?: number; kind: 'disabled'; reasonCode: string }
+  | { attempt?: number; kind: 'failed'; outboxId: string; reasonCode: string }
+  | { attempt?: number; kind: 'idle' }
+  | { attempt?: number; kind: 'misconfigured'; reasonCode: string }
+  | { attempt?: number; kind: 'paused'; reasonCode: string }
+  | { attempt?: number; kind: 'retry'; nextAttemptAt: Date; outboxId: string }
+  | { attempt?: number; kind: 'skipped'; outboxId: string; reasonCode: string }
+  | { attempt?: number; kind: 'unknown'; outboxId: string; reasonCode: string };
 
-type Finish = (completion: NotificationCompletion) => Promise<void>;
+type Finish = (completion: NotificationCompletion) => Promise<boolean>;
 
 const randomToken = (): string =>
   Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) =>
@@ -1004,7 +1186,17 @@ const backoffMs = (attempt: number, random: () => number): number => {
 };
 
 const ambiguityReason = (reasonCode: null | string): boolean =>
-  reasonCode === 'ambiguous' || reasonCode === 'ambiguous_lease';
+  reasonCode === 'ambiguous' ||
+  reasonCode === 'ambiguous_lease' ||
+  reasonCode === 'idempotency_deadline_passed';
+
+/**
+ * True once any attempt left acceptance unresolved. Never cleared.
+ */
+const unresolvedAcceptance = (row: {
+  reasonCode: null | string;
+  uncertainAt: Date | null;
+}): boolean => row.uncertainAt !== null || ambiguityReason(row.reasonCode);
 
 const ackWithRetry = async (
   acknowledge: () => Promise<boolean>,
@@ -1082,10 +1274,20 @@ type EarlyCompletion = {
   outcome: ProcessNotificationOutcome;
 };
 
+const retryDeadlinePassed = (
+  row: NotificationOutboxRecord,
+  now: Date,
+): boolean =>
+  row.attemptCount > 0 &&
+  row.provider === 'resend' &&
+  row.idempotencyDeadline !== null &&
+  now.getTime() >= row.idempotencyDeadline.getTime();
+
 /**
  * Terminal rechecks that run after the claim: recipient eligibility, event
- * age, configuration pinning, and attempt exhaustion. Every branch returns an
- * honest, reason-coded completion; none of them contacts a provider.
+ * age, configuration pinning, retry deadline, and attempt exhaustion. Any
+ * earlier unresolved acceptance outcome stays `unknown`; suppression stops
+ * retries without claiming the message was never sent.
  */
 const earlyCompletion = async (
   environment: Env,
@@ -1093,12 +1295,31 @@ const earlyCompletion = async (
   settings: EmailSettingsRecord,
   now: Date,
 ): Promise<EarlyCompletion | null> => {
+  const unresolved = unresolvedAcceptance(row);
   const eligibility = await getNotificationEligibility(environment, row);
   const verdict = eligibilityVerdict(row, eligibility);
   if (verdict !== null) {
+    if (unresolved) {
+      const reasonCode = `ambiguous_${verdict.reasonCode}`;
+      return {
+        completion: {
+          reasonCode,
+          status: 'unknown',
+          uncertain: true,
+        },
+        outcome: {
+          attempt: row.attemptCount,
+          kind: 'unknown',
+          outboxId: row.id,
+          reasonCode,
+        },
+      };
+    }
+
     return {
       completion: { reasonCode: verdict.reasonCode, status: verdict.status },
       outcome: {
+        attempt: row.attemptCount,
         kind: 'skipped',
         outboxId: row.id,
         reasonCode: verdict.reasonCode,
@@ -1107,16 +1328,19 @@ const earlyCompletion = async (
   }
 
   if (now.getTime() - row.createdAt.getTime() >= NOTIFICATION_EVENT_TTL_MS) {
-    const ambiguous = row.attemptCount > 0 && ambiguityReason(row.reasonCode);
     return {
-      completion: {
-        reasonCode: ambiguous ? 'expired_ambiguous' : 'expired',
-        status: ambiguous ? 'unknown' : 'skipped',
-      },
+      completion: unresolved
+        ? {
+            reasonCode: 'expired_ambiguous',
+            status: 'unknown',
+            uncertain: true,
+          }
+        : { reasonCode: 'expired', status: 'skipped' },
       outcome: {
-        kind: ambiguous ? 'unknown' : 'skipped',
+        attempt: row.attemptCount,
+        kind: unresolved ? 'unknown' : 'skipped',
         outboxId: row.id,
-        reasonCode: ambiguous ? 'expired_ambiguous' : 'expired',
+        reasonCode: unresolved ? 'expired_ambiguous' : 'expired',
       },
     };
   }
@@ -1127,8 +1351,13 @@ const earlyCompletion = async (
     row.configRevision !== settings.revision
   ) {
     return {
-      completion: { reasonCode: 'config_changed', status: 'unknown' },
+      completion: {
+        reasonCode: 'config_changed',
+        status: 'unknown',
+        ...(unresolved ? { uncertain: true } : {}),
+      },
       outcome: {
+        attempt: row.attemptCount,
         kind: 'unknown',
         outboxId: row.id,
         reasonCode: 'config_changed',
@@ -1136,17 +1365,36 @@ const earlyCompletion = async (
     };
   }
 
-  if (row.attemptCount >= NOTIFICATION_MAX_ATTEMPTS) {
-    const ambiguous = ambiguityReason(row.reasonCode);
+  if (retryDeadlinePassed(row, now)) {
     return {
       completion: {
-        reasonCode: ambiguous ? 'ambiguous_exhausted' : 'retry_exhausted',
-        status: ambiguous ? 'unknown' : 'failed',
+        reasonCode: 'idempotency_deadline_passed',
+        status: 'unknown',
+        ...(unresolved ? { uncertain: true } : {}),
       },
       outcome: {
-        kind: ambiguous ? 'unknown' : 'failed',
+        attempt: row.attemptCount,
+        kind: 'unknown',
         outboxId: row.id,
-        reasonCode: ambiguous ? 'ambiguous_exhausted' : 'retry_exhausted',
+        reasonCode: 'idempotency_deadline_passed',
+      },
+    };
+  }
+
+  if (row.attemptCount >= NOTIFICATION_MAX_ATTEMPTS) {
+    return {
+      completion: unresolved
+        ? {
+            reasonCode: 'ambiguous_exhausted',
+            status: 'unknown',
+            uncertain: true,
+          }
+        : { reasonCode: 'retry_exhausted', status: 'failed' },
+      outcome: {
+        attempt: row.attemptCount,
+        kind: unresolved ? 'unknown' : 'failed',
+        outboxId: row.id,
+        reasonCode: unresolved ? 'ambiguous_exhausted' : 'retry_exhausted',
       },
     };
   }
@@ -1155,6 +1403,8 @@ const earlyCompletion = async (
 };
 
 type PreparedAttempt =
+  | { attempt: number; kind: 'frozen_payload_invalid' }
+  | { attempt: number; kind: 'provider_missing' }
   | {
       deliveryKey: string;
       envelope: EmailEnvelope;
@@ -1162,9 +1412,7 @@ type PreparedAttempt =
       kind: 'ready';
       payloadHash: string;
       provider: EmailProvider;
-    }
-  | { kind: 'frozen_payload_invalid' }
-  | { kind: 'provider_missing' };
+    };
 
 /**
  * Rebuilds the exact frozen attempt. Retries never re-render the envelope or
@@ -1178,7 +1426,7 @@ const prepareAttempt = async (
 ): Promise<PreparedAttempt> => {
   const provider = row.provider ?? settings.provider;
   if (provider === 'disabled') {
-    return { kind: 'provider_missing' };
+    return { attempt: row.attemptCount, kind: 'provider_missing' };
   }
 
   let envelope: EmailEnvelope;
@@ -1200,7 +1448,7 @@ const prepareAttempt = async (
   } else {
     const parsed = parseEnvelope(row.frozenEnvelopeJson);
     if (parsed === null) {
-      return { kind: 'frozen_payload_invalid' };
+      return { attempt: row.attemptCount, kind: 'frozen_payload_invalid' };
     }
 
     envelope = parsed;
@@ -1239,18 +1487,31 @@ const recordSendResult = async (
   finish: Finish,
   options: ProcessNotificationOptions,
 ): Promise<ProcessNotificationOutcome> => {
+  const attempt = row.attemptCount + 1;
   if (result.kind === 'accepted') {
-    await finish({
+    const acknowledged = await finish({
       acceptedAt: now,
       providerMessageId: result.messageId ?? null,
       reasonCode: null,
       status: 'accepted',
     });
-    await recordNotificationDispatchSuccess(environment, now);
+    if (acknowledged) {
+      await recordNotificationDispatchSuccess(environment, now);
+      return {
+        attempt,
+        kind: 'accepted',
+        messageId: result.messageId ?? null,
+        outboxId: row.id,
+      };
+    }
+
+    // The provider accepted the message but the durable acceptance row was
+    // not written. Report an unresolved outcome instead of claiming success.
     return {
-      kind: 'accepted',
-      messageId: result.messageId ?? null,
+      attempt,
+      kind: 'unknown',
       outboxId: row.id,
+      reasonCode: 'ack_failed',
     };
   }
 
@@ -1260,22 +1521,35 @@ const recordSendResult = async (
       prepared.idempotencyDeadline !== null &&
       now.getTime() < prepared.idempotencyDeadline.getTime();
     if (retryableResend) {
-      await finish({ reasonCode: 'ambiguous', status: 'retry' });
+      await finish({
+        reasonCode: 'ambiguous',
+        status: 'retry',
+        uncertain: true,
+      });
       return {
+        attempt,
         kind: 'retry',
         nextAttemptAt: new Date(now.getTime() + 60_000),
         outboxId: row.id,
       };
     }
 
-    await finish({ reasonCode: result.reason, status: 'unknown' });
-    return { kind: 'unknown', outboxId: row.id, reasonCode: result.reason };
+    await finish({
+      reasonCode: result.reason,
+      status: 'unknown',
+      uncertain: true,
+    });
+    return {
+      attempt,
+      kind: 'unknown',
+      outboxId: row.id,
+      reasonCode: result.reason,
+    };
   }
 
-  // Definite rejection. Recipient-specific failures terminate this one row;
-  // a persistent provider-configuration failure also pauses the revision.
-  const recipientOnly = RECIPIENT_REJECTION_REASONS.has(result.reason);
-  const nextAttempt = row.attemptCount + 1;
+  // Definite rejection. Recipient/request failures end this one row; only an
+  // evidenced persistent configuration failure pauses the revision.
+  const nextAttempt = attempt;
   const exhausted = nextAttempt >= NOTIFICATION_MAX_ATTEMPTS;
   if (result.retryable && !exhausted) {
     const retryAfterMs = (result.retryAfterSeconds ?? 0) * 1_000;
@@ -1289,12 +1563,26 @@ const recordSendResult = async (
       reasonCode: result.reason,
       status: 'retry',
     });
-    return { kind: 'retry', nextAttemptAt, outboxId: row.id };
+    return { attempt, kind: 'retry', nextAttemptAt, outboxId: row.id };
+  }
+
+  if (unresolvedAcceptance(row)) {
+    await finish({
+      reasonCode: 'unresolved_after_rejection',
+      status: 'unknown',
+      uncertain: true,
+    });
+    return {
+      attempt,
+      kind: 'unknown',
+      outboxId: row.id,
+      reasonCode: 'unresolved_after_rejection',
+    };
   }
 
   const reasonCode = exhausted ? 'retry_exhausted' : result.reason;
   await finish({ reasonCode, status: 'failed' });
-  if (!result.retryable && !recipientOnly) {
+  if (CONFIGURATION_FAILURE_REASONS.has(result.reason)) {
     await recordEmailSettingsConfigError(environment, {
       now,
       reasonCode: result.reason,
@@ -1302,80 +1590,64 @@ const recordSendResult = async (
     });
   }
 
-  return { kind: 'failed', outboxId: row.id, reasonCode };
-};
-
-type SendAttempt =
-  | { kind: 'failure'; outcome: ProcessNotificationOutcome }
-  | { kind: 'sent'; result: SendResult };
-
-const sendPreparedAttempt = async (
-  environment: Env,
-  state: EmailSettingsState,
-  settings: EmailSettingsRecord,
-  row: NotificationOutboxRecord,
-  prepared: Extract<PreparedAttempt, { kind: 'ready' }>,
-  options: ProcessNotificationOptions,
-  finish: Finish,
-  now: Date,
-): Promise<SendAttempt> => {
-  let sender: EmailSender;
-  try {
-    sender = await createSenderFromState(environment, state, options);
-  } catch (error) {
-    const reasonCode =
-      error instanceof CredentialCryptoError
-        ? error.code
-        : 'provider_unavailable';
-    await finish({ reasonCode, status: 'retry' });
-    await recordEmailSettingsConfigError(environment, {
-      now,
-      reasonCode,
-      revision: settings.revision,
-    });
-    return {
-      kind: 'failure',
-      outcome: { kind: 'misconfigured', reasonCode },
-    };
-  }
-
-  await renewNotificationLease(environment, {
-    leaseMs: NOTIFICATION_LEASE_MS,
-    leaseToken: row.leaseToken ?? '',
-    outboxId: row.id,
-    timestamp: now,
-  });
-
-  try {
-    return {
-      kind: 'sent',
-      result: await sender.send(prepared.envelope, {
-        deliveryKey: prepared.deliveryKey,
-      }),
-    };
-  } catch {
-    return {
-      kind: 'sent',
-      result: {
-        kind: 'ambiguous',
-        provider: prepared.provider,
-        reason: 'unexpected_error',
-      },
-    };
-  }
+  return { attempt, kind: 'failed', outboxId: row.id, reasonCode };
 };
 
 /**
- * Processes at most one due notification. The order is deliberate: local
- * readiness, durable claim, terminal rechecks, freeze, send, fenced
- * acknowledgement. The external call is never part of the intake transaction
- * and a stale lease holder cannot overwrite its successor.
+ * Re-checks the freshly persisted state after a failed freeze. Returning null
+ * means no safe terminal outcome can be derived here; the row stays claimed
+ * and lease recovery re-queues it, which is safer than guessing.
  */
-export const processNextNotification = async (
+const sendBoundaryRecheck = async (
+  environment: Env,
+  row: NotificationOutboxRecord,
+  state: EmailSettingsState,
+  now: Date,
+): Promise<EarlyCompletion | null> => {
+  const unresolved = unresolvedAcceptance(row);
+  if (state.availability === 'disabled') {
+    return {
+      completion: { reasonCode: 'disabled', status: 'skipped' },
+      outcome: {
+        attempt: row.attemptCount,
+        kind: 'skipped',
+        outboxId: row.id,
+        reasonCode: 'disabled',
+      },
+    };
+  }
+
+  if (state.availability !== 'configured') {
+    const reasonCode = state.readinessReason ?? 'misconfigured';
+    return {
+      completion: {
+        reasonCode,
+        status: 'unknown',
+        ...(unresolved ? { uncertain: true } : {}),
+      },
+      outcome: {
+        attempt: row.attemptCount,
+        kind: 'unknown',
+        outboxId: row.id,
+        reasonCode,
+      },
+    };
+  }
+
+  const settings = state.settings;
+  if (settings === null) {
+    return null;
+  }
+
+  return earlyCompletion(environment, row, settings, now);
+};
+
+const processNextNotificationInner = async (
   environment: Env,
   options: ProcessNotificationOptions = {},
 ): Promise<ProcessNotificationOutcome> => {
-  const now = options.now?.() ?? new Date();
+  const currentTime = (): Date => new Date(options.now?.() ?? Date.now());
+  let now = currentTime();
   const state = await loadEmailSettingsState(environment);
   const gated = await availabilityOutcome(environment, state, now);
   if (gated !== null) {
@@ -1398,16 +1670,16 @@ export const processNextNotification = async (
     return { kind: 'idle' };
   }
 
-  const finish: Finish = async (completion) => {
-    await ackWithRetry(() =>
-      completeNotificationAttempt(environment, {
+  const complete = options.complete ?? completeNotificationAttempt;
+  const finish: Finish = (completion) =>
+    ackWithRetry(() =>
+      complete(environment, {
         completion,
         leaseToken,
         outboxId: row.id,
-        timestamp: now,
+        timestamp: currentTime(),
       }),
     );
-  };
 
   const early = await earlyCompletion(environment, row, settings, now);
   if (early !== null) {
@@ -1417,8 +1689,13 @@ export const processNextNotification = async (
 
   const prepared = await prepareAttempt(row, settings, now);
   if (prepared.kind === 'provider_missing') {
-    await finish({ reasonCode: 'provider_unavailable', status: 'unknown' });
+    await finish({
+      reasonCode: 'provider_unavailable',
+      status: 'unknown',
+      ...(unresolvedAcceptance(row) ? { uncertain: true } : {}),
+    });
     return {
+      attempt: prepared.attempt,
       kind: 'unknown',
       outboxId: row.id,
       reasonCode: 'provider_unavailable',
@@ -1428,9 +1705,50 @@ export const processNextNotification = async (
   if (prepared.kind === 'frozen_payload_invalid') {
     await finish({ reasonCode: 'frozen_payload_invalid', status: 'failed' });
     return {
+      attempt: prepared.attempt,
       kind: 'failed',
       outboxId: row.id,
       reasonCode: 'frozen_payload_invalid',
+    };
+  }
+
+  await options.beforeFreeze?.();
+
+  // The sender is built from the coherent snapshot before the freeze, so the
+  // external call cannot adopt a credential saved after the boundary.
+  let sender: EmailSender;
+  try {
+    sender = await createSenderFromState(environment, state, options);
+  } catch (error) {
+    const reasonCode =
+      error instanceof CredentialCryptoError
+        ? error.code
+        : 'provider_unavailable';
+    await finish({ reasonCode, status: 'retry' });
+    await recordEmailSettingsConfigError(environment, {
+      now,
+      reasonCode,
+      revision: settings.revision,
+    });
+    return {
+      attempt: row.attemptCount,
+      kind: 'misconfigured',
+      reasonCode,
+    };
+  }
+
+  now = currentTime();
+  if (retryDeadlinePassed(row, now)) {
+    await finish({
+      reasonCode: 'idempotency_deadline_passed',
+      status: 'unknown',
+      ...(unresolvedAcceptance(row) ? { uncertain: true } : {}),
+    });
+    return {
+      attempt: row.attemptCount,
+      kind: 'unknown',
+      outboxId: row.id,
+      reasonCode: 'idempotency_deadline_passed',
     };
   }
 
@@ -1439,29 +1757,64 @@ export const processNextNotification = async (
     deliveryKey: prepared.deliveryKey,
     envelopeJson: serializeEnvelope(prepared.envelope),
     idempotencyDeadline: prepared.idempotencyDeadline,
+    leadId: row.leadId,
     leaseMs: NOTIFICATION_LEASE_MS,
     leaseToken,
     outboxId: row.id,
     payloadHash: prepared.payloadHash,
     provider: prepared.provider,
+    recipientUserId: row.recipientUserId,
     timestamp: now,
+    writeToken: settings.writeToken,
   });
   if (!frozen) {
-    return { kind: 'idle' };
+    const currentRow = await getNotificationOutboxRow(environment, row.id);
+    if (
+      currentRow === null ||
+      currentRow.status !== 'claimed' ||
+      currentRow.leaseToken !== leaseToken
+    ) {
+      return { attempt: row.attemptCount, kind: 'idle' };
+    }
+
+    const latestState = await loadEmailSettingsState(environment);
+    const recheck = await sendBoundaryRecheck(
+      environment,
+      currentRow,
+      latestState,
+      currentTime(),
+    );
+    if (recheck !== null) {
+      await finish(recheck.completion);
+      return recheck.outcome;
+    }
+
+    return { attempt: row.attemptCount, kind: 'idle' };
   }
 
-  const send = await sendPreparedAttempt(
-    environment,
-    state,
-    settings,
-    row,
-    prepared,
-    options,
-    finish,
-    now,
-  );
-  if (send.kind === 'failure') {
-    return send.outcome;
+  const renewed = await renewNotificationLease(environment, {
+    leaseMs: NOTIFICATION_LEASE_MS,
+    leaseToken,
+    outboxId: row.id,
+    timestamp: now,
+  });
+  if (!renewed) {
+    // The lease was lost or recovered; a successor owns the row now and this
+    // invocation must not start an external call.
+    return { attempt: row.attemptCount, kind: 'idle' };
+  }
+
+  let result: SendResult;
+  try {
+    result = await sender.send(prepared.envelope, {
+      deliveryKey: prepared.deliveryKey,
+    });
+  } catch {
+    result = {
+      kind: 'ambiguous',
+      provider: prepared.provider,
+      reason: 'unexpected_error',
+    };
   }
 
   return recordSendResult(
@@ -1470,10 +1823,25 @@ export const processNextNotification = async (
     settings,
     prepared,
     now,
-    send.result,
+    result,
     finish,
     options,
   );
+};
+
+/**
+ * Processes at most one due notification and emits one bounded structured
+ * outcome line (opaque ids, outcome, attempt, allowlisted reason). The
+ * external call is never part of the intake transaction and a stale lease
+ * holder cannot overwrite its successor.
+ */
+export const processNextNotification = async (
+  environment: Env,
+  options: ProcessNotificationOptions = {},
+): Promise<ProcessNotificationOutcome> => {
+  const outcome = await processNextNotificationInner(environment, options);
+  logNotificationDispatchOutcome(outcome);
+  return outcome;
 };
 
 // --- Bounded scheduled dispatch ---------------------------------------------
@@ -1485,10 +1853,12 @@ export type NotificationDispatchResult = {
 };
 
 /**
- * One bounded scheduling unit: record the tick, recover expired leases and
- * stale events, then process at most `batchLimit` due notifications while
- * leaving time for acknowledgement. The default of one message per tick keeps
- * CPU headroom on Workers Free.
+ * One bounded scheduling unit: record the tick, recover a bounded number of
+ * expired leases and stale events, clean up a bounded number of terminal
+ * rows, then process at most `batchLimit` due notifications while leaving
+ * time for acknowledgement. The default of one message per tick keeps CPU
+ * headroom on Workers Free; the maintenance statements still run every tick,
+ * including while email is disabled.
  */
 export const runNotificationDispatch = async (
   environment: Env,
@@ -1497,21 +1867,26 @@ export const runNotificationDispatch = async (
     timeBudgetMs?: number;
   } = {},
 ): Promise<NotificationDispatchResult> => {
-  const now = options.now?.() ?? new Date();
+  const now = new Date(options.now?.() ?? Date.now());
   const startedAt = Date.now();
   const budget = options.timeBudgetMs ?? DISPATCH_TIME_BUDGET_MS;
   const limit = options.batchLimit ?? DISPATCH_BATCH_LIMIT;
   await recordNotificationDispatchTick(environment, now);
-  await recoverExpiredNotificationLeases(environment, now);
+  await recoverExpiredNotificationLeases(
+    environment,
+    now,
+    MAINTENANCE_BATCH_LIMIT,
+  );
   await expireStaleNotificationIntents(
     environment,
     new Date(now.getTime() - NOTIFICATION_EVENT_TTL_MS),
     now,
+    MAINTENANCE_BATCH_LIMIT,
   );
   await cleanupResolvedNotificationRows(
     environment,
     new Date(now.getTime() - NOTIFICATION_RETENTION_MS),
-    100,
+    MAINTENANCE_BATCH_LIMIT,
   );
 
   const outcomes: ProcessNotificationOutcome[] = [];

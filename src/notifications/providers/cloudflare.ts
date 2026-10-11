@@ -52,7 +52,12 @@ const errorCode = (error: unknown): string | undefined => {
   }
 
   const code = (error as { code?: unknown }).code;
-  return typeof code === 'string' && code.length > 0 ? code : undefined;
+  // Only recognizable Cloudflare error identifiers are allowed through; an
+  // arbitrary provider string is replaced by a fixed reason so it can never
+  // reach D1, a UI label, or a log line.
+  return typeof code === 'string' && /^E_[A-Z_]{1,40}$/u.test(code)
+    ? code
+    : undefined;
 };
 
 /**

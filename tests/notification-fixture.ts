@@ -221,15 +221,26 @@ export const startNotificationFixture = async (
           value,
           workspaceId: DEFAULT_WORKSPACE_ID,
         });
-        await insert('email_credentials', {
-          ciphertext: envelope.ciphertext,
-          key_version: envelope.keyVersion,
-          nonce: envelope.nonce,
-          provider: 'resend',
-          updated_at: now(),
-          updated_by_user_id: null,
-          workspace_id: DEFAULT_WORKSPACE_ID,
-        });
+        await database
+          .prepare(
+            `INSERT INTO email_credentials (
+              workspace_id, provider, ciphertext, nonce, key_version,
+              updated_at, updated_by_user_id
+            ) VALUES (?, 'resend', ?, ?, ?, ?, NULL)
+            ON CONFLICT(workspace_id, provider) DO UPDATE SET
+              ciphertext = excluded.ciphertext,
+              nonce = excluded.nonce,
+              key_version = excluded.key_version,
+              updated_at = excluded.updated_at`,
+          )
+          .bind(
+            DEFAULT_WORKSPACE_ID,
+            envelope.ciphertext,
+            envelope.nonce,
+            envelope.keyVersion,
+            now(),
+          )
+          .run();
       },
       insertOutbox: async (input) => {
         const { leadId, ...overrides } = input;
@@ -289,15 +300,19 @@ export const startNotificationFixture = async (
           .bind(id)
           .first()) ?? undefined,
       seedLead: async (leadId, email = 'lead@example.test') => {
-        await insert('leads', {
-          created_at: now(),
-          custom_fields: '{}',
-          email,
-          id: leadId,
-          source: 'Test',
-          updated_at: now(),
-          workspace_id: DEFAULT_WORKSPACE_ID,
-        });
+        await database
+          .prepare(
+            `INSERT INTO leads (
+              id, workspace_id, source, custom_fields, email, created_at,
+              updated_at, deleted_at
+            ) VALUES (?, ?, 'Test', '{}', ?, ?, ?, NULL)
+            ON CONFLICT(id) DO UPDATE SET
+              email = excluded.email,
+              updated_at = excluded.updated_at,
+              deleted_at = NULL`,
+          )
+          .bind(leadId, DEFAULT_WORKSPACE_ID, email, now(), now())
+          .run();
       },
       setEmailBinding: (binding) => {
         environment.EMAIL = binding;
@@ -306,15 +321,27 @@ export const startNotificationFixture = async (
         environment.EMAIL_SETTINGS_ENCRYPTION_KEY = value;
       },
       user: async (input) => {
-        await insert('user', {
-          created_at: now(),
-          disabled_at: input.disabled ? now() : null,
-          email: input.email,
-          email_verified: 0,
-          id: input.id,
-          name: input.email,
-          updated_at: now(),
-        });
+        await database
+          .prepare(
+            `INSERT INTO user (
+              id, name, email, email_verified, created_at, updated_at,
+              disabled_at
+            ) VALUES (?, ?, ?, 0, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+              email = excluded.email,
+              name = excluded.name,
+              updated_at = excluded.updated_at,
+              disabled_at = excluded.disabled_at`,
+          )
+          .bind(
+            input.id,
+            input.email,
+            input.email,
+            now(),
+            now(),
+            input.disabled ? now() : null,
+          )
+          .run();
         return input.id;
       },
     };

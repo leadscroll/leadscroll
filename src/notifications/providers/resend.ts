@@ -38,17 +38,45 @@ const readRetryAfterSeconds = (response: Response): number | undefined => {
   return Number.isFinite(seconds) && seconds > 0 ? seconds : undefined;
 };
 
+const RESEND_ERROR_NAMES = new Set([
+  'application_error',
+  'concurrent_idempotent_requests',
+  'daily_quota_exceeded',
+  'email_above_quota',
+  'invalid_attachment',
+  'invalid_idempotency_key',
+  'invalid_idempotent_request',
+  'invalid_parameter',
+  'invalid_permission',
+  'method_not_allowed',
+  'missing_api_key',
+  'missing_required_field',
+  'missing_required_parameter',
+  'monthly_quota_exceeded',
+  'not_found',
+  'rate_limit_exceeded',
+  'resource_locked',
+  'restricted_api_key',
+  'service_unavailable',
+  'suspended_api_key',
+  'validation_error',
+]);
+
+/**
+ * Extracts only a documented Resend error name. Unknown or unexpected values
+ * collapse to `provider_error`, so an arbitrary provider string can never
+ * reach D1, a UI label, or a log line.
+ */
 const parseResendErrorCode = async (response: Response): Promise<string> => {
   try {
     const payload = (await response.json()) as unknown;
     if (typeof payload === 'object' && payload !== null) {
       const record = payload as Record<string, unknown>;
-      if (typeof record.name === 'string' && record.name.length > 0) {
+      if (
+        typeof record.name === 'string' &&
+        RESEND_ERROR_NAMES.has(record.name)
+      ) {
         return record.name;
-      }
-
-      if (typeof record.message === 'string' && record.message.length > 0) {
-        return 'provider_error';
       }
     }
   } catch {
@@ -106,7 +134,7 @@ const classifyResendResponse = async (
     return {
       kind: 'rejected',
       provider: 'resend',
-      reason: code === 'provider_error' ? 'quota_or_rate_limited' : code,
+      reason: code,
       retryable: true,
       ...(retryAfterSeconds === undefined ? {} : { retryAfterSeconds }),
     };
@@ -125,7 +153,7 @@ const classifyResendResponse = async (
     return {
       kind: 'rejected',
       provider: 'resend',
-      reason: code === 'provider_error' ? 'idempotency_conflict' : code,
+      reason: code === 'provider_error' ? 'provider_error' : code,
       retryable: false,
     };
   }

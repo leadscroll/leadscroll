@@ -181,6 +181,34 @@ describe('Resend email adapter', () => {
     }
   });
 
+  test('unexpected provider error text collapses to a safe reason', async () => {
+    const unknownName = vi.fn<FetchLike>(async () =>
+      jsonResponse(
+        { message: 'SENTINEL secret body text', name: 'SENTINEL secret name' },
+        422,
+      ),
+    );
+    await expect(
+      senderWith(unknownName).send(envelope, { deliveryKey: 'k' }),
+    ).resolves.toEqual({
+      kind: 'rejected',
+      provider: 'resend',
+      reason: 'http_422',
+      retryable: false,
+    });
+
+    const plainMessage = vi.fn<FetchLike>(async () =>
+      jsonResponse({ message: 'SENTINEL in a message only' }, 500),
+    );
+    await expect(
+      senderWith(plainMessage).send(envelope, { deliveryKey: 'k' }),
+    ).resolves.toEqual({
+      kind: 'ambiguous',
+      provider: 'resend',
+      reason: 'http_500',
+    });
+  });
+
   test('formats the from header only when a display name exists', () => {
     expect(formatResendFrom({ email: 'a@b.c', name: 'Name' })).toBe(
       'Name <a@b.c>',
