@@ -553,6 +553,73 @@ describe('administrator test email command', () => {
     expect(foreign?.providerMessageId).toBeNull();
   });
 
+  test('two actors racing the same request id never receive the other actor data', async () => {
+    await configuredResend();
+    await fixture.user({
+      email: 'other-admin@example.test',
+      id: 'other-admin',
+    });
+    const fetchMock = vi.fn<FetchLike>(acceptedFetch('re-race'));
+    const base = Date.now();
+    const inputFor = (
+      actorEmail: string,
+      actorUserId: string,
+      requestId: string,
+    ) => ({
+      actorEmail,
+      actorUserId,
+      canonicalOrigin: SETTINGS_ORIGIN,
+      expectedRevision: 1,
+      requestId,
+    });
+
+    for (let index = 0; index < 5; index += 1) {
+      const requestId = `race-request-${index}`;
+      const at = base + index * 61_000;
+      const [first, second] = await Promise.all([
+        run(
+          sendTestEmailCommand(
+            fixture.env,
+            inputFor('admin@example.test', ADMIN_ID, requestId),
+            { fetchImplementation: fetchMock, now: () => new Date(at) },
+          ),
+        ),
+        run(
+          sendTestEmailCommand(
+            fixture.env,
+            inputFor('other-admin@example.test', 'other-admin', requestId),
+            { fetchImplementation: fetchMock, now: () => new Date(at) },
+          ),
+        ),
+      ]);
+
+      const accepted: number[] = [];
+      const conflicts: string[] = [];
+      for (const outcome of [first, second]) {
+        if (Either.isRight(outcome) && outcome.right.outcome === 'accepted') {
+          accepted.push(1);
+        }
+
+        if (Either.isLeft(outcome)) {
+          const left = outcome.left as { code?: string };
+          if (left.code === 'test_request_conflict') {
+            conflicts.push(left.code);
+          }
+        }
+      }
+
+      // Exactly one actor wins the request id and the other gets a conflict;
+      // a concurrent duplicate reservation must never return the winner's row.
+      expect(accepted).toHaveLength(1);
+      expect(conflicts).toHaveLength(1);
+      expect(
+        await fixture.count('notification_test_attempts'),
+      ).toBeGreaterThanOrEqual(index + 1);
+    }
+
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+  });
+
   test('a notifications-off installation can still run an explicit test', async () => {
     await configuredResend();
     const t0 = Date.now();

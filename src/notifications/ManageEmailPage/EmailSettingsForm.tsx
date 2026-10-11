@@ -186,8 +186,8 @@ export const EmailSettingsForm = ({
             <span>
               <span className="font-medium">Enable new-lead emails</span>
               <span className="mt-0.5 block text-xs text-slate-500">
-                Off stops new alert emails. No new delivery starts while it is
-                off.
+                Off stops new alert emails for future leads. An alert for a lead
+                created just before you save may still finish sending.
               </span>
             </span>
           </label>

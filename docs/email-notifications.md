@@ -113,12 +113,21 @@ The subscriber never fans out without limit:
 
 - At most 4 provider calls run at once.
 - The whole subscriber run is bounded by a 20-second budget below the Worker
-  `waitUntil` lifetime.
+  `waitUntil` lifetime. The budget clock starts when the event reaches the
+  subscriber, so configuration, lead, and recipient reads and credential
+  decryption consume it. Those D1 and WebCrypto operations cannot be canceled;
+  if preparation stalls, the budget can be exhausted before the first send, and
+  the per-send check then reports the remaining recipients as skipped rather
+  than launching work.
 - Each call gets the smaller of a 10-second provider timeout and the remaining
-  budget. Resend requests are aborted on timeout; the Cloudflare binding cannot
-  be canceled, so a timeout there is recorded as unknown.
-- If the budget runs out, the remaining recipients are reported as skipped with
-  `budget_exhausted`; they are not silently dropped and they are not retried.
+  budget. Resend requests are aborted on timeout. The Cloudflare binding cannot
+  be canceled: a timeout is recorded as unknown, and no further recipients are
+  launched for that event (an already-running call may still finish and its
+  outcome is unknown).
+- Recipients that were not attempted because the budget ran out are reported as
+  skipped with `budget_exhausted`; recipients not launched after a Cloudflare
+  timeout are included in the skipped count with reason `cloudflare_timeout`.
+  They are not silently dropped and they are not retried.
 
 ## Observability
 
@@ -159,10 +168,15 @@ and the root configuration ship without it.
 
 ## Rollback
 
-Disable sending in **Manage → Email** first: no new sends start. Reverting
-Worker code is safe with additive migrations in place; do not roll the schema
-back destructively. Provider API keys can be revoked at the provider even
-though old D1 backups may retain ciphertext.
+Disabling sending stops future lead events from starting new sends, but a
+subscriber snapshot that was already running may still finish its in-flight
+sends; the change is not retroactive and does not cancel work. The schema is
+forward-only: migration `0006_thin_deathbird.sql` drops tables and columns the
+previous outbox-based code needs, so a code rollback requires a Worker version
+compatible with the current schema or restoring the database from a backup
+taken before `0006`. Do not roll the schema back destructively. Provider API
+keys can be revoked at the provider even though old D1 backups may retain
+ciphertext.
 
 ## Limits and untested assumptions
 

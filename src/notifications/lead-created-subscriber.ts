@@ -9,10 +9,18 @@
  *
  * Work is bounded by a small concurrency limit and a background budget below
  * the Worker runtime window; each provider call gets the smaller of its own
- * timeout and the remaining budget. If the budget runs out, the remaining
- * recipients are reported as skipped rather than silently dropped. There is no
- * retry, replay, or durable delivery state: an interrupted or rejected send is
- * lost, and a timeout is reported as unknown and left alone.
+ * timeout and the remaining budget. The budget clock starts when the event
+ * reaches the subscriber, so configuration, lead, and recipient reads and
+ * credential decryption all consume it. Those reads are D1/WebCrypto work that
+ * cannot be canceled; a stalled preparation phase therefore exhausts the
+ * budget before any send, and the first per-send check reports the remaining
+ * recipients as skipped instead of launching work. If the budget runs out, the
+ * remaining recipients are reported as skipped rather than silently dropped.
+ * A Cloudflare timeout stops new sends for that event (already-running native
+ * binding calls cannot be canceled and may still finish); the unsent
+ * recipients are counted in the skipped total. There is no retry, replay, or
+ * durable delivery state: an interrupted or rejected send is lost, and a
+ * timeout is reported as unknown and left alone.
  */
 
 import { logNotificationEventOutcome } from '@/api/logging';
@@ -57,6 +65,7 @@ export type LeadCreatedSubscriberOverrides = SenderOverrides & {
   budgetMs?: number;
   concurrency?: number;
   now?: () => Date;
+  providerTimeoutMs?: number;
 };
 
 const buildLeadEnvelope = (
@@ -83,6 +92,10 @@ export const createLeadCreatedEmailSubscriber = (
 ): LeadCreatedSubscriber => {
   const now = overrides.now ?? (() => new Date());
   return async (environment: Env, event: LeadCreatedEvent) => {
+    // The overall budget starts here, before configuration/lead/recipient
+    // reads and credential decryption, so preparation cannot extend it.
+    const budgetMs = overrides.budgetMs ?? NOTIFICATION_BUDGET_MS;
+    const startedAt = now().getTime();
     const state = await loadEmailSettingsState(environment);
     const settings = state.settings;
     if (
@@ -161,8 +174,7 @@ export const createLeadCreatedEmailSubscriber = (
       return;
     }
 
-    const deadline =
-      now().getTime() + (overrides.budgetMs ?? NOTIFICATION_BUDGET_MS);
+    const deadline = startedAt + budgetMs;
     const concurrency = Math.max(
       1,
       Math.min(
@@ -175,11 +187,23 @@ export const createLeadCreatedEmailSubscriber = (
     let failed = 0;
     let skipped = 0;
     let lastReason: null | string = null;
+    // A native Cloudflare timeout leaves the binding call running and cannot
+    // be canceled, so stop launching new recipients for this event; the
+    // already-running calls finish and the remaining recipients are counted.
+    const stop = { cloudflareTimedOut: false };
+    let unsent = 0;
+    const providerTimeoutMs =
+      overrides.providerTimeoutMs ?? NOTIFICATION_PROVIDER_TIMEOUT_MS;
 
     const sendTo = async (recipient: {
       email: string;
       userId: string;
     }): Promise<void> => {
+      if (stop.cloudflareTimedOut) {
+        unsent += 1;
+        return;
+      }
+
       const remaining = deadline - now().getTime();
       if (remaining <= 0) {
         skipped += 1;
@@ -197,10 +221,7 @@ export const createLeadCreatedEmailSubscriber = (
       try {
         result = await sender.send(envelope, {
           deliveryKey: leadDeliveryKey(event.leadId, recipient.userId),
-          timeoutMs: Math.max(
-            1,
-            Math.min(NOTIFICATION_PROVIDER_TIMEOUT_MS, remaining),
-          ),
+          timeoutMs: Math.max(1, Math.min(providerTimeoutMs, remaining)),
         });
       } catch {
         result = {
@@ -215,6 +236,12 @@ export const createLeadCreatedEmailSubscriber = (
       } else {
         failed += 1;
         lastReason = result.reason;
+        if (sender.provider === 'cloudflare' && result.reason === 'timeout') {
+          // Shared by lanes in one single-threaded subscriber run; the rule's
+          // stale-read warning does not apply to this flag across awaits.
+          // eslint-disable-next-line require-atomic-updates
+          stop.cloudflareTimedOut = true;
+        }
       }
     };
 
@@ -232,16 +259,18 @@ export const createLeadCreatedEmailSubscriber = (
       }),
     );
 
+    const skippedTotal = skipped + unsent;
     logNotificationEventOutcome({
       accepted,
       eventKind: 'lead.created',
       failed,
       leadId: event.leadId,
-      outcome: failed > 0 ? 'failed' : skipped > 0 ? 'skipped' : 'delivered',
+      outcome:
+        failed > 0 ? 'failed' : skippedTotal > 0 ? 'skipped' : 'delivered',
       provider: sender.provider,
-      reasonCode: lastReason,
+      reasonCode: stop.cloudflareTimedOut ? 'cloudflare_timeout' : lastReason,
       recipients: recipients.length,
-      skipped,
+      skipped: skippedTotal,
     });
   };
 };

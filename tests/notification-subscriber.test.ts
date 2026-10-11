@@ -14,6 +14,7 @@ import {
   NOTIFICATION_BUDGET_MS,
   NOTIFICATION_PROVIDER_TIMEOUT_MS,
 } from '@/notifications/lead-created-subscriber';
+import { createCloudflareEmailSender } from '@/notifications/providers/cloudflare';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 const LEAD_ID = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
@@ -321,7 +322,75 @@ describe('lead.created email subscriber', () => {
     const outcome = logLines(errorSpy).find(
       (line) => line.outcome === 'failed',
     );
-    expect(outcome).toMatchObject({ reason: 'timeout' });
+    expect(outcome).toMatchObject({ reason: 'cloudflare_timeout', skipped: 0 });
+  });
+
+  test('preparation time consumes the budget before the first send', async () => {
+    await enableCloudflare();
+    await seedRecipient('staff-1', 'staff-1@example.test');
+    await fixture.seedLead(LEAD_ID);
+    const { sender, sent } = recordingSender();
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const base = Date.now();
+    let clockCalls = 0;
+
+    await createLeadCreatedEmailSubscriber({
+      budgetMs: 5_000,
+      // The first call records the entry time; every later call simulates a
+      // preparation phase that consumed far more than the budget.
+      now: () => new Date(clockCalls++ === 0 ? base : base + 60_000),
+      sender,
+    })(fixture.env, { actorUserId: null, leadId: LEAD_ID });
+
+    expect(sent).toHaveLength(0);
+    const outcomes = logLines(logSpy).filter(
+      (line) => line.outcome === 'skipped',
+    );
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0]).toMatchObject({
+      reason: 'budget_exhausted',
+      recipients: 1,
+      skipped: 1,
+    });
+  });
+
+  test('a Cloudflare timeout stops launching new recipients for the event', async () => {
+    await enableCloudflare();
+    for (let index = 0; index < 6; index += 1) {
+      await seedRecipient(`staff-${index}`, `staff-${index}@example.test`);
+    }
+
+    await fixture.seedLead(LEAD_ID);
+    const send = vi.fn(() => new Promise<{ messageId: string }>(() => {}));
+    const sender = createCloudflareEmailSender({
+      send,
+    } as unknown as NonNullable<Env['EMAIL']>);
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await createLeadCreatedEmailSubscriber({
+      budgetMs: 10_000,
+      concurrency: 4,
+      providerTimeoutMs: 20,
+      sender,
+    })(fixture.env, { actorUserId: null, leadId: LEAD_ID });
+
+    // One lane per concurrency slot, and no replacement launches after the
+    // first timeout because the native binding call cannot be canceled.
+    expect(send).toHaveBeenCalledTimes(4);
+    await new Promise((resolve) => {
+      setTimeout(resolve, 100);
+    });
+    expect(send).toHaveBeenCalledTimes(4);
+
+    const outcomes = logLines(errorSpy);
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0]).toMatchObject({
+      failed: 4,
+      outcome: 'failed',
+      reason: 'cloudflare_timeout',
+      recipients: 6,
+      skipped: 2,
+    });
   });
 
   test('outcome logging carries counts and never addresses or payloads', async () => {

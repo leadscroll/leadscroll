@@ -89,10 +89,10 @@ const parseResendErrorCode = async (response: Response): Promise<string> => {
 
 /**
  * Maps a definitive HTTP rejection onto the normalized contract.
- * `409 concurrent_idempotent_requests` is safe to retry with the same key;
+ * `409 concurrent_idempotent_requests` is a transient rejection;
  * `409 invalid_idempotent_request` means the key was reused with a different
- * payload and is terminal. 5xx responses are ambiguous: they are retried only
- * inside the idempotency window, never with a new key.
+ * payload and is terminal. 5xx responses are ambiguous: the best-effort
+ * caller reports the unknown outcome and does not retry.
  */
 const classifyResendResponse = async (
   response: Response,

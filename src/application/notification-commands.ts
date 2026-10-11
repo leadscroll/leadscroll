@@ -20,6 +20,7 @@ import {
   getLatestNotificationTestAttempt,
   getNotificationPreference,
   getNotificationTestAttempt,
+  getOwnedNotificationTestAttempt,
   type NotificationTestAttemptRecord,
   recordEmailSettingsAudit,
   reserveNotificationTestAttempt,
@@ -629,22 +630,34 @@ const recordTestCompletion = (
 const readOwnedTest = async (
   environment: Env,
   input: SendTestEmailInput,
-  fallbackRevision: number,
-): Promise<EmailTestView> => {
-  const current = await getNotificationTestAttempt(
+): Promise<EmailTestView | null> => {
+  const current = await getOwnedNotificationTestAttempt(
     environment,
     input.requestId,
+    input.actorUserId,
   );
-  return (
-    testView(current) ?? {
-      at: new Date().toISOString(),
-      outcome: 'configuration_error',
-      providerMessageId: null,
-      reasonCode: 'unexpected_error',
-      revision: fallbackRevision,
-    }
-  );
+  return current === null ? null : testViewForAttempt(current);
 };
+
+/**
+ * Reads the caller's own stored attempt or fails with the same conflict code
+ * used for a foreign request id. This closes the duplicate-reservation race:
+ * a concurrent winner's row is never returned to a different actor.
+ */
+const readOwnedTestOrFail = (environment: Env, input: SendTestEmailInput) =>
+  Effect.gen(function* () {
+    const view = yield* persist(() => readOwnedTest(environment, input));
+    if (view === null) {
+      return yield* Effect.fail(
+        domainError(
+          'test_request_conflict',
+          'This test request belongs to another account. Start a new test.',
+        ),
+      );
+    }
+
+    return view;
+  });
 
 /**
  * Sends one explicit administrator test to the caller's own account email
@@ -736,11 +749,9 @@ export const sendTestEmailCommand = (
     }
 
     if (reservation === 'duplicate') {
-      // A concurrent request with the same id won the reservation. Report its
-      // stored state honestly instead of sending a second message.
-      return yield* persist(() =>
-        readOwnedTest(environment, input, settings.revision),
-      );
+      // A concurrent request with the same id won the reservation. Only the
+      // owner may see the stored result; another actor gets a conflict.
+      return yield* readOwnedTestOrFail(environment, input);
     }
 
     const senderEither = yield* Effect.either(
@@ -752,9 +763,7 @@ export const sendTestEmailCommand = (
         reasonCode,
         status: 'configuration_error',
       });
-      return yield* persist(() =>
-        readOwnedTest(environment, input, settings.revision),
-      );
+      return yield* readOwnedTestOrFail(environment, input);
     }
 
     const sender = senderEither.right;
@@ -781,7 +790,5 @@ export const sendTestEmailCommand = (
       reasonCode: completion.reasonCode,
       status: completion.status,
     });
-    return yield* persist(() =>
-      readOwnedTest(environment, input, settings.revision),
-    );
+    return yield* readOwnedTestOrFail(environment, input);
   });

@@ -60,10 +60,10 @@ export const EmailStatusPanel = ({
         )}
         {availability === 'configured' && (
           <p className="mt-1">
-            Local configuration checks passed. Alerts are sent best-effort while
-            the Worker request that created the lead is alive; there is no retry
-            or delivery history. A test email confirms the provider accepts
-            messages; local checks cannot prove remote readiness.
+            Local configuration checks passed. Alerts are sent best-effort and
+            failed or interrupted sends are not retried; there is no delivery
+            history. A test email confirms the provider accepts messages; local
+            checks cannot prove remote readiness.
           </p>
         )}
       </div>
