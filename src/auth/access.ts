@@ -29,6 +29,13 @@ export const requireSessionIdentity = async (
       environment,
       environment.DEV_ADMIN_EMAIL.toLowerCase(),
     );
+    // The bypass may run without a durable account (existing local/test
+    // fixtures); when an account does exist, it obeys the same disabled rule
+    // as a real session.
+    if (bypassAccount !== undefined && bypassAccount.disabledAt !== null) {
+      throw new UnauthorizedError();
+    }
+
     return {
       email: environment.DEV_ADMIN_EMAIL,
       session: null,

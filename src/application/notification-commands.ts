@@ -533,33 +533,6 @@ const boundedFromName = (value: null | string): null | string => {
   return trimmed;
 };
 
-const requireProviderResources = async (
-  environment: Env,
-  provider: 'cloudflare' | 'disabled' | 'resend',
-  credentialOperation: UpdateEmailSettingsInput['credential'],
-): Promise<void> => {
-  if (provider === 'disabled') {
-    return;
-  }
-
-  if (provider === 'cloudflare' && environment.EMAIL === undefined) {
-    throw domainError(
-      'cloudflare_binding_missing',
-      'The Cloudflare EMAIL binding is not present in this deployment. Ask the installation owner to add it, or select Resend.',
-    );
-  }
-
-  if (provider === 'resend' && credentialOperation.operation === 'keep') {
-    const credential = await getEmailCredential(environment, 'resend');
-    if (credential === null) {
-      throw domainError(
-        'resend_api_key_missing',
-        'Enter a Resend API key to select Resend.',
-      );
-    }
-  }
-};
-
 const normalizedFromEmail = (fromEmail: null | string): null | string => {
   if (fromEmail === null || fromEmail.trim().length === 0) {
     return null;
@@ -683,9 +656,6 @@ export const updateEmailSettingsCommand = (
       return yield* viewAfterSave(environment, input, replaced);
     }
 
-    yield* persist(() =>
-      requireProviderResources(environment, input.provider, input.credential),
-    );
     const saved = yield* persist(() =>
       saveEmailSettings(environment, {
         actorUserId: input.actorUserId,
@@ -850,13 +820,13 @@ const sendAndRecordTest = async (
   state: EmailSettingsState,
   input: SendTestEmailInput,
   overrides: SenderOverrides,
+  now: Date,
 ): Promise<EmailTestView> => {
   const settings = state.settings;
   if (settings === null) {
     throw new Error('The email settings disappeared during a test.');
   }
 
-  const now = new Date();
   const origin = settings.canonicalOrigin ?? input.canonicalOrigin;
   const rendered = renderTestEmail({ origin });
   const envelope: EmailEnvelope = {
@@ -993,7 +963,7 @@ export const sendTestEmailCommand = (
     }
 
     return yield* persist(() =>
-      sendAndRecordTest(environment, state, input, overrides),
+      sendAndRecordTest(environment, state, input, overrides, now),
     );
   });
 
