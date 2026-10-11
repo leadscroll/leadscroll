@@ -40,8 +40,8 @@ both authentication secrets across upgrades.
    **Manage → Email**. Cloudflare Email Sending needs no key; the base CRM
    needs only the two authentication secrets.
 
-The template's `wrangler.jsonc` declares the native `EMAIL` binding and a
-one-minute Cron trigger.
+The template's `wrangler.jsonc` declares the native `EMAIL` binding; it is
+invoked only when Cloudflare is the saved provider.
 
 If an upgrade leaves the installation without an email settings administrator
 (for example the original owner account was removed), grant the permission to
@@ -50,9 +50,10 @@ one explicit enabled account from this repository:
 ```sh
 pnpm run notifications:grant-admin -- <user-id> --remote
 ``` Both are inert until an administrator enables email in
-**Manage → Email**; the Cron tick is a no-op while disabled. Keep all secret
-names across upgrades. See [email notifications][docs] in the upstream repository
-for provider setup, optional test emails, and delivery semantics.
+**Manage → Email**; best-effort alerts are then sent on the Worker request that
+created the lead. Keep all secret names across upgrades. See [email
+notifications][docs] in the upstream repository for provider setup, optional
+test emails, and best-effort delivery semantics.
 
 [docs]: https://github.com/leadscroll/leadscroll/blob/main/docs/email-notifications.md
 

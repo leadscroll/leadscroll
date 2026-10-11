@@ -196,8 +196,10 @@ Manage → Email; personal opt-in lives under Account → Notifications. Both
 Cloudflare Email Sending (Workers Paid, sender domain onboarded) and Resend
 (send-only API key, verified domain) are supported; the saved provider is
 authoritative and is never inferred from a binding. Intake never depends on the
-email provider: notification work is recorded atomically with the lead and sent
-by a bounded one-per-minute Cron dispatcher.
+email provider: after the lead commits, the shared service publishes a small
+typed `lead.created` event and a bounded subscriber sends best-effort on the
+Worker's `ctx.waitUntil`. There is no outbox, Cron, retry engine, or delivery
+history; a queue can be added at the event boundary later.
 
 The optional `EMAIL_SETTINGS_ENCRYPTION_KEY` secret encrypts UI-entered Resend
 keys. It is required only when storing a Resend key through the UI and is not
@@ -205,8 +207,7 @@ needed for Cloudflare. The base CRM still requires only
 `BETTER_AUTH_SECRET` and `SETUP_TOKEN`.
 
 See [email notifications](docs/email-notifications.md) for provider setup,
-the optional test email, delivery states, unknown-outcome reconciliation,
-retention, rollback, and operator recovery.
+the optional test email, best-effort limits, rollback, and operator recovery.
 
 ### Optional auth URL override
 

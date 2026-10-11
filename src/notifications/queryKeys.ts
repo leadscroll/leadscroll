@@ -6,9 +6,6 @@
 
 import { type EmailSettingsView } from '@/domain/schemas';
 
-export const notificationHistoryQueryKey = (userId: string) =>
-  ['notification-history', userId] as const;
-
 export const notificationPreferenceQueryKey = (userId: string) =>
   ['notification-preference', userId] as const;
 
@@ -22,10 +19,9 @@ export type SavedConfigurationTest =
   { message: string; ok: false } | { ok: true };
 
 /**
- * Whether the saved provider configuration can produce a test message.
- * Paused delivery and the notifications switch being off do not block an
- * explicit test: testing is how a paused revision recovers, and testing must
- * never require enabling live alerts.
+ * Whether the saved provider configuration can produce a test message. The
+ * installation enable switch being off does not block an explicit test:
+ * testing is how setup is confirmed without turning live alerts on.
  */
 export const savedConfigurationTestable = (
   settings: EmailSettingsView,

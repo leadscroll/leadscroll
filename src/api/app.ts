@@ -1,4 +1,5 @@
 import { logRequest } from './logging';
+import { requestWaitUntil } from '@/api/execution-context';
 import { mapIntakeBodyError, parseIntakeBody } from '@/api/intake-parser';
 import {
   listAccountSessionsCommand,
@@ -16,7 +17,6 @@ import { type DomainError, type PersistenceError } from '@/application/errors';
 import {
   getEmailSettingsView,
   getNotificationPreferenceView,
-  listNotificationHistoryCommand,
   sendTestEmailCommand,
   updateEmailSettingsCommand,
   updateNotificationPreferenceCommand,
@@ -84,7 +84,6 @@ import {
   HealthSchema,
   IntakeRequestSchema,
   ListLeadsQuerySchema,
-  ListNotificationHistoryQuerySchema,
   SendEmailTestRequestSchema,
   SetLeadTagsRequestSchema,
   SetStaffDisabledRequestSchema,
@@ -95,6 +94,12 @@ import {
   UpdateTagScopeRequestSchema,
   ValidateInviteRequestSchema,
 } from '@/domain/schemas';
+import {
+  createLeadCreatedPublisher,
+  type LeadCreatedPublisher,
+  type LeadCreatedSubscriber,
+} from '@/notifications/events';
+import { createLeadCreatedEmailSubscriber } from '@/notifications/lead-created-subscriber';
 import { Effect, Either, Schema } from 'effect';
 import { Elysia } from 'elysia';
 import { CloudflareAdapter } from 'elysia/adapter/cloudflare-worker';
@@ -425,7 +430,33 @@ const withPublicCors = (
   });
 };
 
-const createAppWithAuth = (environment: Env, getAuth: AuthForRequest) => {
+const createAppWithAuth = (
+  environment: Env,
+  getAuth: AuthForRequest,
+  options: CreateAppOptions = {},
+) => {
+  // Subscribers are registered once at composition time; every request builds
+  // only a small scoped publisher around the runtime execution context.
+  const subscribers: readonly LeadCreatedSubscriber[] =
+    options.notificationSubscribers ?? [createLeadCreatedEmailSubscriber()];
+  const eventsFor = (request: Request): LeadCreatedPublisher =>
+    createLeadCreatedPublisher({
+      environment,
+      subscribers,
+      waitUntil: (promise) => {
+        const waitUntil = requestWaitUntil(request);
+        if (waitUntil === null) {
+          // Never silently drop the event: the publisher catches this and
+          // logs a scheduling_failed line while the lead stays committed.
+          throw new Error(
+            'No Worker execution context is registered for this request.',
+          );
+        }
+
+        waitUntil(promise);
+      },
+    });
+
   const accountEndpoints = createAccountAuthEndpoints(getAuth, environment);
   const publicIntake = new Elysia({ name: 'public-intake' })
     .options(
@@ -481,6 +512,7 @@ const createAppWithAuth = (environment: Env, getAuth: AuthForRequest) => {
               tokenId: tokenRecord.id,
             },
             body,
+            eventsFor(request),
           ),
         );
         if ('error' in result) {
@@ -683,6 +715,7 @@ const createAppWithAuth = (environment: Env, getAuth: AuthForRequest) => {
                 tokenId: tokenRecord.id,
               },
               body,
+              eventsFor(request),
             ),
           );
           if ('error' in result) {
@@ -820,7 +853,12 @@ const createAppWithAuth = (environment: Env, getAuth: AuthForRequest) => {
         async ({ adminUserId, body, request }) => {
           const result = await run(
             request,
-            createLeadCommand(environment, body, adminUserId),
+            createLeadCommand(
+              environment,
+              body,
+              adminUserId,
+              eventsFor(request),
+            ),
           );
           return 'error' in result
             ? result.error
@@ -1142,9 +1180,9 @@ const createAppWithAuth = (environment: Env, getAuth: AuthForRequest) => {
             : { data: { revoked: result.data } };
         },
       )
-      // Self-service notification preference and own-recipient history. The
-      // session user id is authoritative; no path, body, or cursor field can
-      // address another staff member's rows.
+      // Self-service notification preference. The session user id is
+      // authoritative; no path or body field can address another staff
+      // member's row.
       .get('/v1/account/capabilities', async ({ adminUserId }) => {
         // Cosmetic only: the settings routes re-check the server capability.
         // This lets the sidebar hide the Manage -> Email entry from ordinary
@@ -1198,36 +1236,6 @@ const createAppWithAuth = (environment: Env, getAuth: AuthForRequest) => {
               parsed.data.newLeadEmail,
             ),
           );
-          return 'error' in result ? result.error : { data: result.data };
-        },
-      )
-      .get(
-        '/v1/account/notifications/history',
-        async ({ adminUserId, query, request }) => {
-          if (adminUserId === null) {
-            return errorResponse(
-              401,
-              'unauthorized',
-              'A real session is required.',
-            );
-          }
-
-          const parsed = await parse(ListNotificationHistoryQuerySchema, query);
-          if ('error' in parsed) {
-            return parsed.error;
-          }
-
-          const result = await run(
-            request,
-            listNotificationHistoryCommand(
-              environment,
-              adminUserId,
-              parsed.data.cursor ?? null,
-              parsed.data.limit ?? LIST_LIMIT_DEFAULT,
-            ),
-          );
-          // Envelope the view once so the SPA request helper unwraps it to the
-          // same `{ data, nextCursor }` shape the command returned.
           return 'error' in result ? result.error : { data: result.data };
         },
       )
@@ -1323,5 +1331,18 @@ const createAppWithAuth = (environment: Env, getAuth: AuthForRequest) => {
   );
 };
 
-export const createApp = (environment: Env) =>
-  createAppWithAuth(environment, (request) => createAuth(environment, request));
+export type CreateAppOptions = {
+  /**
+   * Fixed subscriber list for best-effort notification events. Production
+   * omits this and gets the real email subscriber; tests may pass recording
+   * subscribers.
+   */
+  notificationSubscribers?: readonly LeadCreatedSubscriber[];
+};
+
+export const createApp = (environment: Env, options: CreateAppOptions = {}) =>
+  createAppWithAuth(
+    environment,
+    (request) => createAuth(environment, request),
+    options,
+  );

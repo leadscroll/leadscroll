@@ -384,7 +384,6 @@ export const NotificationAvailabilitySchema = Schema.Literal(
   'configured',
   'disabled',
   'misconfigured',
-  'unavailable',
 );
 export type NotificationAvailability = Schema.Schema.Type<
   typeof NotificationAvailabilitySchema
@@ -398,20 +397,6 @@ export const UpdateNotificationPreferenceRequestSchema = Schema.Struct({
 });
 export type UpdateNotificationPreferenceRequest = Schema.Schema.Type<
   typeof UpdateNotificationPreferenceRequestSchema
->;
-
-export const ListNotificationHistoryQuerySchema = Schema.Struct({
-  cursor: Schema.optional(NonEmptyStringSchema),
-  limit: Schema.optional(
-    Schema.NumberFromString.pipe(
-      Schema.int(),
-      Schema.greaterThanOrEqualTo(1),
-      Schema.lessThanOrEqualTo(100),
-    ),
-  ),
-});
-export type ListNotificationHistoryQuery = Schema.Schema.Type<
-  typeof ListNotificationHistoryQuerySchema
 >;
 
 // Installation email settings. `expectedRevision` is a server-generated
@@ -487,28 +472,8 @@ export type EmailTestOutcome = Schema.Schema.Type<
 >;
 export type EmailTestView = Schema.Schema.Type<typeof EmailTestViewSchema>;
 
-export const EmailDispatchHealthSchema = Schema.Struct({
-  configError: Schema.NullOr(
-    Schema.Struct({
-      at: Schema.String,
-      code: Schema.String,
-      revision: Schema.NullOr(Schema.Number),
-    }),
-  ),
-  inFlight: Schema.Number.pipe(Schema.int(), Schema.nonNegative()),
-  lastSuccessAt: Schema.NullOr(Schema.String),
-  lastTickAt: Schema.NullOr(Schema.String),
-  oldestDueAt: Schema.NullOr(Schema.String),
-  pending: Schema.Number.pipe(Schema.int(), Schema.nonNegative()),
-  unknown: Schema.Number.pipe(Schema.int(), Schema.nonNegative()),
-});
-export type EmailDispatchHealth = Schema.Schema.Type<
-  typeof EmailDispatchHealthSchema
->;
-
 export const EmailSettingsViewSchema = Schema.Struct({
   canonicalOrigin: Schema.String,
-  dispatch: EmailDispatchHealthSchema,
   enabled: Schema.Boolean,
   environment: Schema.Struct({
     hasCloudflareBinding: Schema.Boolean,
@@ -517,13 +482,6 @@ export const EmailSettingsViewSchema = Schema.Struct({
   fromEmail: Schema.NullOr(Schema.String),
   fromName: Schema.NullOr(Schema.String),
   hasApiKey: Schema.Boolean,
-  paused: Schema.NullOr(
-    Schema.Struct({
-      at: Schema.String,
-      reasonCode: Schema.NullOr(Schema.String),
-      revision: Schema.Number,
-    }),
-  ),
   provider: EmailSettingsProviderSchema,
   readiness: Schema.Struct({
     availability: NotificationAvailabilitySchema,
@@ -543,36 +501,6 @@ export const NotificationPreferenceViewSchema = Schema.Struct({
 });
 export type NotificationPreferenceView = Schema.Schema.Type<
   typeof NotificationPreferenceViewSchema
->;
-
-export const NotificationHistoryViewItemSchema = Schema.Struct({
-  createdAt: Schema.String,
-  id: Schema.String,
-  leadId: Schema.String,
-  reasonCode: Schema.NullOr(Schema.String),
-  reasonLabel: Schema.NullOr(Schema.String),
-  status: Schema.Literal(
-    'accepted',
-    'claimed',
-    'failed',
-    'pending',
-    'retry',
-    'sending',
-    'skipped',
-    'unknown',
-  ),
-  statusLabel: Schema.String,
-});
-export type NotificationHistoryViewItem = Schema.Schema.Type<
-  typeof NotificationHistoryViewItemSchema
->;
-
-export const NotificationHistoryViewSchema = Schema.Struct({
-  data: Schema.Array(NotificationHistoryViewItemSchema),
-  nextCursor: Schema.NullOr(Schema.String),
-});
-export type NotificationHistoryView = Schema.Schema.Type<
-  typeof NotificationHistoryViewSchema
 >;
 
 export const AccountCapabilitiesSchema = Schema.Struct({

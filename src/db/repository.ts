@@ -18,11 +18,8 @@ import {
   idempotencyKeys,
   leads,
   leadTags,
-  notificationDispatchState,
-  notificationOutbox,
   notificationPreferences,
   type NotificationProvider,
-  type NotificationStatus,
   notificationTestAttempts,
   type NotificationTestStatus,
   session,
@@ -55,7 +52,7 @@ import {
   gt,
   isNotNull,
   isNull,
-  lt,
+  ne,
   or,
   sql,
 } from 'drizzle-orm';
@@ -104,53 +101,6 @@ const id = (): string => {
 };
 
 const getDatabase = (environment: Env) => createClient(environment.DB);
-
-export const notificationEventKey = (leadId: string): string =>
-  `lead.created:${leadId}`;
-
-/**
- * Recipient-selection statements for one new-lead event. Callers append these
- * to the same atomic batch as the lead insert. Selection is evaluated by D1 at
- * transaction time against opted-in, enabled staff in a workspace whose
- * installation switch is on; the manual creator is excluded. A disabled
- * installation therefore cannot create intent, while an enabled but
- * misconfigured installation records durable intent for later delivery.
- */
-export const notificationIntentStatements = (
-  environment: Env,
-  leadId: string,
-  actorUserId: null | string,
-  timestamp: number,
-): Statement[] => [
-  prepare(
-    environment.DB,
-    `INSERT INTO notification_outbox (
-        id, workspace_id, event_key, event_kind, lead_id, recipient_user_id,
-        recipient_email, template_version, status, attempt_count,
-        next_attempt_at, created_at, updated_at
-      )
-      SELECT
-        lower(hex(randomblob(16))), p.workspace_id, ?, 'lead.created', ?,
-        p.user_id, u.email, 1, 'pending', 0, ?, ?, ?
-      FROM notification_preferences p
-      JOIN user u ON u.id = p.user_id
-      JOIN email_settings s
-        ON s.workspace_id = p.workspace_id AND s.enabled = 1
-      WHERE p.workspace_id = ?
-        AND p.new_lead_email = 1
-        AND u.disabled_at IS NULL
-        AND (? IS NULL OR p.user_id <> ?)`,
-  ).bind(
-    notificationEventKey(leadId),
-    leadId,
-    timestamp,
-    timestamp,
-    timestamp,
-    DEFAULT_WORKSPACE_ID,
-    actorUserId,
-    actorUserId,
-  ),
-];
 
 export type LeadPage = {
   leads: LeadRecord[];
@@ -2337,15 +2287,9 @@ export const createLeadAtomically = async (
     JSON.stringify(response),
     timestamp,
   );
-  // Recipient selection runs inside the same atomic batch as the lead, so a
-  // rollback can never lose the durable intent and a replay can never create
-  // a second set of rows. Intake has no authenticated actor.
-  const notificationStatements = notificationIntentStatements(
-    environment,
-    leadId,
-    null,
-    timestamp,
-  );
+  // Recipient selection and notification are best-effort event work now: the
+  // lead and its idempotency row commit here, and the application command
+  // publishes `lead.created` only after this function reports a new commit.
 
   // A concurrent writer can create the same scope/tag between the plan read
   // and the batch, which aborts the whole batch on the unique index. Because
@@ -2360,7 +2304,6 @@ export const createLeadAtomically = async (
       ...leadTagStatements(environment, leadId, plan.assignments, timestamp),
       activityStatement,
       idempotencyStatement,
-      ...notificationStatements,
     ];
     try {
       await executeAtomically(environment.DB, statements);
@@ -2391,7 +2334,6 @@ export const createLead = async (
   environment: Env,
   input: CreateLeadRequest,
   tagSpecs: readonly TagSpec[] = [],
-  actorUserId: null | string = null,
 ): Promise<LeadRecord> => {
   const ms = now().getTime();
   const leadId = id();
@@ -2427,10 +2369,6 @@ export const createLead = async (
       ...tagPlanStatements(environment, plan, ms),
       leadStatement,
       ...leadTagStatements(environment, leadId, plan.assignments, ms),
-      // A manual creator never receives an alert for their own creation, but
-      // every other enabled subscriber does; selection happens inside the
-      // same atomic batch as the lead insert.
-      ...notificationIntentStatements(environment, leadId, actorUserId, ms),
     ];
     try {
       await executeAtomically(environment.DB, statements);
@@ -2628,23 +2566,19 @@ export const createLeadActivity = async (
 
 // --- New-lead email notifications -------------------------------------------
 //
-// Persistence for personal preferences, the durable outbox, encrypted
-// installation settings, the narrow administration capability, test attempts,
-// bounded dispatch health, and the fenced delivery state machine. Drizzle
-// stays inside this module per the repository boundary; selection, retry, and
-// provider policy live in src/application/notification-commands.ts.
+// Persistence for personal preferences, encrypted installation settings, the
+// narrow administration capability, and explicit test attempts. Drizzle stays
+// inside this module per the repository boundary; recipient selection,
+// provider policy, and delivery live in src/application and src/notifications.
 
 export type EmailCredentialRecord = typeof emailCredentials.$inferSelect;
 export type EmailSettingsRecord = typeof emailSettings.$inferSelect;
-export type NotificationDispatchStateRecord =
-  typeof notificationDispatchState.$inferSelect;
-export type NotificationOutboxRecord = typeof notificationOutbox.$inferSelect;
 export type NotificationPreferenceRecord =
   typeof notificationPreferences.$inferSelect;
 export type NotificationTestAttemptRecord =
   typeof notificationTestAttempts.$inferSelect;
 
-// --- Personal preferences and history ---------------------------------------
+// --- Personal preferences ---------------------------------------------------
 
 export const getNotificationPreference = async (
   environment: Env,
@@ -2686,71 +2620,36 @@ export const upsertNotificationPreference = async (
     });
 };
 
-export type NotificationHistoryItem = {
-  createdAt: Date;
-  id: string;
-  leadId: string;
-  reasonCode: null | string;
-  status: NotificationStatus;
-};
-
-export type NotificationHistoryPage = {
-  items: NotificationHistoryItem[];
-  nextCursor: null | string;
+export type LeadCreatedRecipient = {
+  email: string;
+  userId: string;
 };
 
 /**
- * Keyset history for one recipient. The caller's session user id is bound by
- * the repository, so a cursor can never address another staff member's rows.
+ * Opted-in, enabled recipients for a newly created lead. The manual creator
+ * is excluded when an actor is known. Selection is read at notification time
+ * rather than written with the lead, so a preference change before the best-
+ * effort delivery is honored.
  */
-export const listNotificationHistory = async (
+export const listLeadCreatedRecipients = async (
   environment: Env,
-  userId: string,
-  cursor: Keyset | null,
-  limit: number,
-): Promise<NotificationHistoryPage> => {
-  const database = getDatabase(environment);
-  const keyset =
-    cursor === null
-      ? undefined
-      : or(
-          lt(notificationOutbox.createdAt, new Date(cursor.createdAt)),
-          and(
-            eq(notificationOutbox.createdAt, new Date(cursor.createdAt)),
-            lt(notificationOutbox.id, cursor.id),
-          ),
-        );
-  const rows = await database
-    .select({
-      createdAt: notificationOutbox.createdAt,
-      id: notificationOutbox.id,
-      leadId: notificationOutbox.leadId,
-      reasonCode: notificationOutbox.reasonCode,
-      status: notificationOutbox.status,
-    })
-    .from(notificationOutbox)
+  actorUserId: null | string,
+): Promise<LeadCreatedRecipient[]> => {
+  const rows = await getDatabase(environment)
+    .select({ email: user.email, userId: notificationPreferences.userId })
+    .from(notificationPreferences)
+    .innerJoin(user, eq(user.id, notificationPreferences.userId))
     .where(
       and(
-        eq(notificationOutbox.workspaceId, DEFAULT_WORKSPACE_ID),
-        eq(notificationOutbox.recipientUserId, userId),
-        keyset,
+        eq(notificationPreferences.workspaceId, DEFAULT_WORKSPACE_ID),
+        eq(notificationPreferences.newLeadEmail, true),
+        isNull(user.disabledAt),
+        actorUserId === null
+          ? undefined
+          : ne(notificationPreferences.userId, actorUserId),
       ),
-    )
-    .orderBy(desc(notificationOutbox.createdAt), desc(notificationOutbox.id))
-    .limit(limit + 1);
-
-  const items = rows.slice(0, limit);
-  const last = items.at(-1);
-  return {
-    items,
-    nextCursor:
-      rows.length > limit && last !== undefined
-        ? encodeKeysetCursor({
-            createdAt: last.createdAt.toISOString(),
-            id: last.id,
-          })
-        : null,
-  };
+    );
+  return rows;
 };
 
 // --- Installation settings and credentials ----------------------------------
@@ -2954,9 +2853,8 @@ export const saveEmailSettings = async (
         environment.DB,
         `INSERT INTO email_settings (
             workspace_id, provider, enabled, from_email, from_name,
-            canonical_origin, revision, paused_revision, paused_reason_code,
-            paused_at, updated_by_user_id, updated_at, write_token
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?)`,
+            canonical_origin, revision, updated_by_user_id, updated_at, write_token
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).bind(
         DEFAULT_WORKSPACE_ID,
         effectiveProvider,
@@ -2979,9 +2877,8 @@ export const saveEmailSettings = async (
         environment.DB,
         `UPDATE email_settings SET
             provider = ?, enabled = ?, from_email = ?, from_name = ?,
-            canonical_origin = ?, revision = ?, paused_revision = NULL,
-            paused_reason_code = NULL, paused_at = NULL,
-            updated_by_user_id = ?, updated_at = ?, write_token = ?
+            canonical_origin = ?, revision = ?, updated_by_user_id = ?,
+            updated_at = ?, write_token = ?
           WHERE workspace_id = ? AND revision = ?`,
       ).bind(
         effectiveProvider,
@@ -3019,45 +2916,6 @@ export const saveEmailSettings = async (
   }
 
   return { kind: 'saved', settings };
-};
-
-export const recordEmailSettingsConfigError = async (
-  environment: Env,
-  input: { now: Date; reasonCode: string; revision: number },
-): Promise<void> => {
-  const nowMs = input.now.getTime();
-  await prepare(
-    environment.DB,
-    `UPDATE email_settings
-      SET paused_revision = ?, paused_reason_code = ?, paused_at = ?,
-          updated_at = ?
-      WHERE workspace_id = ? AND revision = ?`,
-  )
-    .bind(
-      input.revision,
-      input.reasonCode,
-      nowMs,
-      nowMs,
-      DEFAULT_WORKSPACE_ID,
-      input.revision,
-    )
-    .run();
-};
-
-export const clearEmailSettingsPause = async (
-  environment: Env,
-  revision: number,
-  timestamp: Date,
-): Promise<void> => {
-  await prepare(
-    environment.DB,
-    `UPDATE email_settings
-      SET paused_revision = NULL, paused_reason_code = NULL, paused_at = NULL,
-          updated_at = ?
-      WHERE workspace_id = ? AND revision = ?`,
-  )
-    .bind(timestamp.getTime(), DEFAULT_WORKSPACE_ID, revision)
-    .run();
 };
 
 export const recordEmailSettingsAudit = async (
@@ -3222,6 +3080,7 @@ export const reserveNotificationTestAttempt = async (
   input: {
     configRevision: number;
     now: Date;
+    provider: NotificationProvider;
     requestId: string;
     userId: string;
   },
@@ -3232,10 +3091,10 @@ export const reserveNotificationTestAttempt = async (
   const result = await prepare(
     environment.DB,
     `INSERT INTO notification_test_attempts (
-        id, workspace_id, user_id, config_revision, status,
+        id, workspace_id, user_id, provider, config_revision, status,
         created_at, updated_at
       )
-      SELECT ?, ?, ?, ?, 'sending', ?, ?
+      SELECT ?, ?, ?, ?, ?, 'sending', ?, ?
       WHERE NOT EXISTS (
           SELECT 1 FROM notification_test_attempts
           WHERE workspace_id = ? AND id = ?)
@@ -3250,6 +3109,7 @@ export const reserveNotificationTestAttempt = async (
       input.requestId,
       DEFAULT_WORKSPACE_ID,
       input.userId,
+      input.provider,
       input.configRevision,
       nowMs,
       nowMs,
@@ -3282,87 +3142,6 @@ export const reserveNotificationTestAttempt = async (
   return 'daily_limited';
 };
 
-export const freezeNotificationTestAttempt = async (
-  environment: Env,
-  input: {
-    configRevision: number;
-    deliveryKey: string;
-    envelopeJson: string;
-    notCreatedBefore: Date;
-    now: Date;
-    provider: NotificationProvider;
-    requestId: string;
-    userId: string;
-    writeToken: null | string;
-  },
-): Promise<boolean> => {
-  const result = await prepare(
-    environment.DB,
-    `UPDATE notification_test_attempts
-      SET status = 'sending', reason_code = NULL, completed_at = NULL,
-          provider = COALESCE(provider, ?),
-          config_revision = COALESCE(config_revision, ?),
-          delivery_key = COALESCE(delivery_key, ?),
-          frozen_envelope_json = COALESCE(frozen_envelope_json, ?),
-          updated_at = ?
-      WHERE id = ? AND workspace_id = ? AND user_id = ?
-        AND ((status = 'sending' AND provider IS NULL)
-          OR status IN ('ambiguous', 'rejected'))
-        AND config_revision = ?
-        AND (provider IS NULL OR provider = ?)
-        AND (delivery_key IS NULL OR delivery_key = ?)
-        AND (frozen_envelope_json IS NULL OR frozen_envelope_json = ?)
-        AND created_at > ?
-        AND EXISTS (
-          SELECT 1 FROM email_settings s
-          WHERE s.workspace_id = ? AND s.revision = ?
-            AND (s.write_token = ? OR (s.write_token IS NULL AND ? IS NULL)))`,
-  )
-    .bind(
-      input.provider,
-      input.configRevision,
-      input.deliveryKey,
-      input.envelopeJson,
-      input.now.getTime(),
-      input.requestId,
-      DEFAULT_WORKSPACE_ID,
-      input.userId,
-      input.configRevision,
-      input.provider,
-      input.deliveryKey,
-      input.envelopeJson,
-      input.notCreatedBefore.getTime(),
-      DEFAULT_WORKSPACE_ID,
-      input.configRevision,
-      input.writeToken,
-      input.writeToken,
-    )
-    .run();
-  const frozen = (result.meta?.changes ?? 0) > 0;
-  if (!frozen) {
-    // Only an unstarted reservation can be cancelled. Never overwrite another
-    // invocation's frozen, accepted or ambiguous result after losing the CAS.
-    await prepare(
-      environment.DB,
-      `UPDATE notification_test_attempts
-      SET status = 'configuration_error', reason_code = 'config_changed',
-          completed_at = ?, updated_at = ?
-      WHERE id = ? AND workspace_id = ? AND user_id = ?
-        AND status = 'sending' AND provider IS NULL`,
-    )
-      .bind(
-        input.now.getTime(),
-        input.now.getTime(),
-        input.requestId,
-        DEFAULT_WORKSPACE_ID,
-        input.userId,
-      )
-      .run();
-  }
-
-  return frozen;
-};
-
 export const completeNotificationTestAttempt = async (
   environment: Env,
   input: {
@@ -3392,626 +3171,4 @@ export const completeNotificationTestAttempt = async (
       input.userId,
     )
     .run();
-};
-
-// --- Durable delivery state machine -----------------------------------------
-
-export const getNotificationOutboxRow = async (
-  environment: Env,
-  outboxId: string,
-): Promise<NotificationOutboxRecord | null> => {
-  const row = await getDatabase(environment)
-    .select()
-    .from(notificationOutbox)
-    .where(
-      and(
-        eq(notificationOutbox.workspaceId, DEFAULT_WORKSPACE_ID),
-        eq(notificationOutbox.id, outboxId),
-      ),
-    )
-    .get();
-  return row ?? null;
-};
-
-export type NotificationEligibility = {
-  currentEmail: null | string;
-  disabledAt: Date | null;
-  leadDeletedAt: Date | null;
-  leadExists: boolean;
-  newLeadEmail: boolean | null;
-  userExists: boolean;
-};
-
-export const getNotificationEligibility = async (
-  environment: Env,
-  row: NotificationOutboxRecord,
-): Promise<NotificationEligibility | null> => {
-  const result = await getDatabase(environment)
-    .select({
-      currentEmail: user.email,
-      disabledAt: user.disabledAt,
-      leadDeletedAt: leads.deletedAt,
-      leadId: leads.id,
-      newLeadEmail: notificationPreferences.newLeadEmail,
-      userId: user.id,
-    })
-    .from(notificationOutbox)
-    .leftJoin(user, eq(user.id, notificationOutbox.recipientUserId))
-    .leftJoin(leads, eq(leads.id, notificationOutbox.leadId))
-    .leftJoin(
-      notificationPreferences,
-      and(
-        eq(notificationPreferences.workspaceId, notificationOutbox.workspaceId),
-        eq(notificationPreferences.userId, notificationOutbox.recipientUserId),
-      ),
-    )
-    .where(eq(notificationOutbox.id, row.id))
-    .get();
-  if (result === undefined) {
-    return null;
-  }
-
-  return {
-    currentEmail: result.currentEmail,
-    disabledAt: result.disabledAt,
-    leadDeletedAt: result.leadDeletedAt,
-    leadExists: result.leadId !== null,
-    newLeadEmail: result.newLeadEmail,
-    userExists: result.userId !== null,
-  };
-};
-
-/**
- * Recovers leases abandoned by a suspended or crashed invocation. Claimed
- * rows are safe to release (no external call happened yet). Expired sending
- * rows follow the provider-specific ambiguity policy: a Resend row is
- * eligible to repeat the identical keyed request only inside its recorded
- * idempotency deadline; everything else becomes an honest unknown.
- */
-export const recoverExpiredNotificationLeases = async (
-  environment: Env,
-  timestamp: Date,
-  limit: number,
-): Promise<number> => {
-  const database = getDatabase(environment);
-  const nowMs = timestamp.getTime();
-  const results = await database.batch([
-    database
-      .update(notificationOutbox)
-      .set({
-        leaseExpiresAt: null,
-        leaseToken: null,
-        status: 'pending',
-        updatedAt: timestamp,
-      })
-      .where(
-        sql`${notificationOutbox.id} IN (
-          SELECT id FROM notification_outbox
-          WHERE status = 'claimed'
-            AND lease_expires_at IS NOT NULL
-            AND lease_expires_at <= ${nowMs}
-          ORDER BY lease_expires_at ASC, id ASC
-          LIMIT ${limit})`,
-      ),
-    database
-      .update(notificationOutbox)
-      .set({
-        leaseExpiresAt: null,
-        leaseToken: null,
-        nextAttemptAt: timestamp,
-        reasonCode: 'ambiguous_lease',
-        status: 'retry',
-        uncertainAt: sql`COALESCE(${notificationOutbox.uncertainAt}, ${nowMs})`,
-        updatedAt: timestamp,
-      })
-      .where(
-        sql`${notificationOutbox.id} IN (
-          SELECT id FROM notification_outbox
-          WHERE status = 'sending'
-            AND lease_expires_at IS NOT NULL
-            AND lease_expires_at <= ${nowMs}
-            AND provider = 'resend'
-            AND idempotency_deadline IS NOT NULL
-            AND idempotency_deadline > ${nowMs}
-          ORDER BY lease_expires_at ASC, id ASC
-          LIMIT ${limit})`,
-      ),
-    database
-      .update(notificationOutbox)
-      .set({
-        leaseExpiresAt: null,
-        leaseToken: null,
-        reasonCode: 'lease_expired',
-        status: 'unknown',
-        uncertainAt: sql`COALESCE(${notificationOutbox.uncertainAt}, ${nowMs})`,
-        updatedAt: timestamp,
-      })
-      .where(
-        sql`${notificationOutbox.id} IN (
-          SELECT id FROM notification_outbox
-          WHERE status = 'sending'
-            AND lease_expires_at IS NOT NULL
-            AND lease_expires_at <= ${nowMs}
-          ORDER BY lease_expires_at ASC, id ASC
-          LIMIT ${limit})`,
-      ),
-  ]);
-  return results.reduce(
-    (total, result) => total + (result.meta?.changes ?? 0),
-    0,
-  );
-};
-
-/**
- * Expires stale events so a long provider outage cannot deliver a backlog of
- * day-old alerts. Never-attempted rows are skipped; ambiguous retries remain
- * unknown because acceptance cannot be ruled out; definite rejections are
- * skipped. Accepted rows are untouched.
- */
-export const expireStaleNotificationIntents = async (
-  environment: Env,
-  cutoff: Date,
-  timestamp: Date,
-  limit: number,
-): Promise<number> => {
-  const database = getDatabase(environment);
-  const cutoffMs = cutoff.getTime();
-  const results = await database.batch([
-    database
-      .update(notificationOutbox)
-      .set({ reasonCode: 'expired', status: 'skipped', updatedAt: timestamp })
-      .where(
-        sql`${notificationOutbox.id} IN (
-          SELECT id FROM notification_outbox
-          WHERE status = 'pending' AND created_at <= ${cutoffMs}
-            AND uncertain_at IS NULL
-          ORDER BY created_at ASC, id ASC
-          LIMIT ${limit})`,
-      ),
-    database
-      .update(notificationOutbox)
-      .set({
-        reasonCode: 'expired_ambiguous',
-        status: 'unknown',
-        uncertainAt: sql`COALESCE(${notificationOutbox.uncertainAt}, ${timestamp.getTime()})`,
-        updatedAt: timestamp,
-      })
-      .where(
-        sql`${notificationOutbox.id} IN (
-          SELECT id FROM notification_outbox
-          WHERE status IN ('pending', 'retry') AND created_at <= ${cutoffMs}
-            AND uncertain_at IS NOT NULL
-          ORDER BY created_at ASC, id ASC
-          LIMIT ${limit})`,
-      ),
-    database
-      .update(notificationOutbox)
-      .set({ reasonCode: 'expired', status: 'skipped', updatedAt: timestamp })
-      .where(
-        sql`${notificationOutbox.id} IN (
-          SELECT id FROM notification_outbox
-          WHERE status = 'retry' AND created_at <= ${cutoffMs}
-            AND uncertain_at IS NULL
-          ORDER BY created_at ASC, id ASC
-          LIMIT ${limit})`,
-      ),
-  ]);
-  return results.reduce(
-    (total, result) => total + (result.meta?.changes ?? 0),
-    0,
-  );
-};
-
-/**
- * Bounded retention cleanup: deletes only resolved terminal rows older than
- * the retention cutoff. Pending/claimed/sending/retry rows and unresolved
- * `unknown` rows are never deleted, so cleanup can never create resend
- * behavior or erase evidence that still needs reconciliation.
- */
-export const cleanupResolvedNotificationRows = async (
-  environment: Env,
-  cutoff: Date,
-  limit: number,
-): Promise<number> => {
-  const result = await prepare(
-    environment.DB,
-    `DELETE FROM notification_outbox WHERE id IN (
-      SELECT id FROM notification_outbox
-      WHERE status IN ('accepted', 'failed', 'skipped')
-        AND updated_at < ?
-      ORDER BY updated_at ASC
-      LIMIT ?)`,
-  )
-    .bind(cutoff.getTime(), limit)
-    .run();
-  return result.meta?.changes ?? 0;
-};
-
-/**
- * Claims exactly one due row with a fresh lease token and returns it. The
- * subquery picks the oldest due row; the UPDATE applies only to that id, so
- * two concurrent claimers can match the same candidate but only one observes
- * a `changes` value of one.
- */
-type RawNotificationOutboxRow = {
-  accepted_at: null | number;
-  attempt_count: number;
-  config_revision: null | number;
-  created_at: number;
-  delivery_key: null | string;
-  event_key: string;
-  event_kind: string;
-  first_attempt_at: null | number;
-  frozen_envelope_json: null | string;
-  id: string;
-  idempotency_deadline: null | number;
-  lead_id: string;
-  lease_expires_at: null | number;
-  lease_token: null | string;
-  next_attempt_at: number;
-  payload_hash: null | string;
-  provider: NotificationProvider | null;
-  provider_message_id: null | string;
-  reason_code: null | string;
-  recipient_email: string;
-  recipient_user_id: null | string;
-  status: NotificationStatus;
-  template_version: number;
-  uncertain_at: null | number;
-  updated_at: number;
-  workspace_id: string;
-};
-
-const mapRawNotificationOutbox = (
-  row: RawNotificationOutboxRow,
-): NotificationOutboxRecord => ({
-  acceptedAt: row.accepted_at === null ? null : new Date(row.accepted_at),
-  attemptCount: row.attempt_count,
-  configRevision: row.config_revision,
-  createdAt: new Date(row.created_at),
-  deliveryKey: row.delivery_key,
-  eventKey: row.event_key,
-  eventKind: row.event_kind,
-  firstAttemptAt:
-    row.first_attempt_at === null ? null : new Date(row.first_attempt_at),
-  frozenEnvelopeJson: row.frozen_envelope_json,
-  id: row.id,
-  idempotencyDeadline:
-    row.idempotency_deadline === null
-      ? null
-      : new Date(row.idempotency_deadline),
-  leadId: row.lead_id,
-  leaseExpiresAt:
-    row.lease_expires_at === null ? null : new Date(row.lease_expires_at),
-  leaseToken: row.lease_token,
-  nextAttemptAt: new Date(row.next_attempt_at),
-  payloadHash: row.payload_hash,
-  provider: row.provider,
-  providerMessageId: row.provider_message_id,
-  reasonCode: row.reason_code,
-  recipientEmail: row.recipient_email,
-  recipientUserId: row.recipient_user_id,
-  status: row.status,
-  templateVersion: row.template_version,
-  uncertainAt: row.uncertain_at === null ? null : new Date(row.uncertain_at),
-  updatedAt: new Date(row.updated_at),
-  workspaceId: row.workspace_id,
-});
-
-export const claimNextNotification = async (
-  environment: Env,
-  timestamp: Date,
-  leaseToken: string,
-  leaseMs: number,
-): Promise<NotificationOutboxRecord | null> => {
-  const claimed = await prepare(
-    environment.DB,
-    `UPDATE notification_outbox
-      SET status = 'claimed', lease_token = ?, lease_expires_at = ?,
-          updated_at = ?
-      WHERE id = (
-        SELECT id FROM notification_outbox
-        WHERE status IN ('pending', 'retry') AND next_attempt_at <= ?
-        ORDER BY next_attempt_at ASC, id ASC
-        LIMIT 1)
-        AND status IN ('pending', 'retry')
-      RETURNING *`,
-  )
-    .bind(
-      leaseToken,
-      timestamp.getTime() + leaseMs,
-      timestamp.getTime(),
-      timestamp.getTime(),
-    )
-    .first<RawNotificationOutboxRow>();
-
-  return claimed === null ? null : mapRawNotificationOutbox(claimed);
-};
-
-/**
- * Moves a claimed row into `sending` immediately before the external call and
- * freezes the provider, configuration revision, envelope, hash, delivery key,
- * first-attempt time, and idempotency deadline. Frozen values are never
- * rewritten on retry. Increments attempt_count exactly on this transition.
- */
-export const freezeNotificationAttempt = async (
-  environment: Env,
-  input: {
-    configRevision: number;
-    deliveryKey: string;
-    envelopeJson: string;
-    idempotencyDeadline: Date | null;
-    leadId: string;
-    leaseMs: number;
-    leaseToken: string;
-    outboxId: string;
-    payloadHash: string;
-    provider: NotificationProvider;
-    recipientUserId: null | string;
-    timestamp: Date;
-    writeToken: null | string;
-  },
-): Promise<boolean> => {
-  // The write token (or, for legacy NULL tokens, the revision) pins the
-  // configuration snapshot that produced this sender/credential. Eligibility
-  // and lease expiry are re-verified in the same transaction as the freeze, so
-  // a disable, opt-out, delete, or recovery between the read and this point
-  // prevents the external call.
-  const result = await prepare(
-    environment.DB,
-    `UPDATE notification_outbox SET
-        status = 'sending',
-        attempt_count = attempt_count + 1,
-        provider = COALESCE(provider, ?),
-        config_revision = COALESCE(config_revision, ?),
-        delivery_key = COALESCE(delivery_key, ?),
-        frozen_envelope_json = COALESCE(frozen_envelope_json, ?),
-        payload_hash = COALESCE(payload_hash, ?),
-        first_attempt_at = COALESCE(first_attempt_at, ?),
-        idempotency_deadline = COALESCE(idempotency_deadline, ?),
-        lease_expires_at = ?,
-        updated_at = ?
-      WHERE id = ? AND lease_token = ? AND status = 'claimed'
-        AND lease_expires_at > ?
-        AND EXISTS (
-          SELECT 1 FROM email_settings s
-          WHERE s.workspace_id = ?
-            AND s.enabled = 1
-            AND (s.paused_revision IS NULL OR s.paused_revision <> s.revision)
-            AND (s.write_token = ?
-              OR (s.write_token IS NULL AND s.revision = ?)))
-        AND EXISTS (
-          SELECT 1 FROM user u
-          JOIN notification_preferences p
-            ON p.workspace_id = ? AND p.user_id = u.id
-          WHERE u.id = ? AND u.disabled_at IS NULL AND p.new_lead_email = 1)
-        AND EXISTS (
-          SELECT 1 FROM leads l
-          WHERE l.id = ? AND l.deleted_at IS NULL)`,
-  )
-    .bind(
-      input.provider,
-      input.configRevision,
-      input.deliveryKey,
-      input.envelopeJson,
-      input.payloadHash,
-      input.timestamp.getTime(),
-      input.idempotencyDeadline?.getTime() ?? null,
-      input.timestamp.getTime() + input.leaseMs,
-      input.timestamp.getTime(),
-      input.outboxId,
-      input.leaseToken,
-      input.timestamp.getTime(),
-      DEFAULT_WORKSPACE_ID,
-      input.writeToken,
-      input.configRevision,
-      DEFAULT_WORKSPACE_ID,
-      input.recipientUserId,
-      input.leadId,
-    )
-    .run();
-  return (result.meta?.changes ?? 0) > 0;
-};
-
-export type NotificationCompletion = {
-  acceptedAt?: Date | null;
-  nextAttemptAt?: Date;
-  providerMessageId?: null | string;
-  reasonCode: null | string;
-  status: NotificationStatus;
-  /**
-   * Marks an unresolved acceptance outcome. Once set it is never cleared, so
-   * a later definite rejection or suppression cannot erase the possibility
-   * that an earlier attempt was accepted.
-   */
-  uncertain?: boolean;
-};
-
-/**
- * Applies one terminal or retry transition fenced by the lease token. A stale
- * holder whose lease was recovered cannot overwrite its successor's state.
- */
-export const completeNotificationAttempt = async (
-  environment: Env,
-  input: {
-    completion: NotificationCompletion;
-    leaseToken: string;
-    outboxId: string;
-    timestamp: Date;
-  },
-): Promise<boolean> => {
-  const database = getDatabase(environment);
-  const result = await database
-    .update(notificationOutbox)
-    .set({
-      ...(input.completion.acceptedAt === undefined
-        ? {}
-        : { acceptedAt: input.completion.acceptedAt }),
-      ...(input.completion.nextAttemptAt === undefined
-        ? {}
-        : { nextAttemptAt: input.completion.nextAttemptAt }),
-      ...(input.completion.providerMessageId === undefined
-        ? {}
-        : { providerMessageId: input.completion.providerMessageId }),
-      ...(input.completion.uncertain === true
-        ? {
-            uncertainAt: sql`COALESCE(${notificationOutbox.uncertainAt}, ${input.timestamp.getTime()})`,
-          }
-        : {}),
-      leaseExpiresAt: null,
-      leaseToken: null,
-      reasonCode: input.completion.reasonCode,
-      status: input.completion.status,
-      updatedAt: input.timestamp,
-    })
-    .where(
-      and(
-        eq(notificationOutbox.id, input.outboxId),
-        eq(notificationOutbox.leaseToken, input.leaseToken),
-        sql`${notificationOutbox.status} IN ('claimed', 'sending')`,
-      ),
-    )
-    .run();
-  return (result.meta?.changes ?? 0) > 0;
-};
-
-/**
- * Extends a held lease while the delivery command performs its external call,
- * so a slow provider does not let the lease expire mid-flight.
- */
-export const renewNotificationLease = async (
-  environment: Env,
-  input: {
-    leaseMs: number;
-    leaseToken: string;
-    outboxId: string;
-    timestamp: Date;
-  },
-): Promise<boolean> => {
-  const result = await prepare(
-    environment.DB,
-    `UPDATE notification_outbox SET lease_expires_at = ?, updated_at = ?
-      WHERE id = ? AND lease_token = ? AND status = 'sending' AND lease_expires_at > ?`,
-  )
-    .bind(
-      input.timestamp.getTime() + input.leaseMs,
-      input.timestamp.getTime(),
-      input.outboxId,
-      input.leaseToken,
-      input.timestamp.getTime(),
-    )
-    .run();
-  return (result.meta?.changes ?? 0) > 0;
-};
-
-// --- Bounded dispatch health ------------------------------------------------
-
-export const recordNotificationDispatchTick = async (
-  environment: Env,
-  timestamp: Date,
-): Promise<void> => {
-  const nowMs = timestamp.getTime();
-  await prepare(
-    environment.DB,
-    `INSERT INTO notification_dispatch_state (
-        workspace_id, last_tick_at, updated_at
-      ) VALUES (?, ?, ?)
-      ON CONFLICT(workspace_id) DO UPDATE SET
-        last_tick_at = excluded.last_tick_at,
-        updated_at = excluded.updated_at`,
-  )
-    .bind(DEFAULT_WORKSPACE_ID, nowMs, nowMs)
-    .run();
-};
-
-export const recordNotificationDispatchConfigError = async (
-  environment: Env,
-  input: { code: string; revision: null | number; timestamp: Date },
-): Promise<void> => {
-  const nowMs = input.timestamp.getTime();
-  await prepare(
-    environment.DB,
-    `UPDATE notification_dispatch_state
-      SET config_error_code = ?, config_error_at = ?, config_error_revision = ?,
-          updated_at = ?
-      WHERE workspace_id = ?`,
-  )
-    .bind(input.code, nowMs, input.revision, nowMs, DEFAULT_WORKSPACE_ID)
-    .run();
-};
-
-export const recordNotificationDispatchSuccess = async (
-  environment: Env,
-  timestamp: Date,
-): Promise<void> => {
-  const nowMs = timestamp.getTime();
-  await prepare(
-    environment.DB,
-    `UPDATE notification_dispatch_state
-      SET last_success_at = ?, config_error_code = NULL, config_error_at = NULL,
-          config_error_revision = NULL, updated_at = ?
-      WHERE workspace_id = ?`,
-  )
-    .bind(nowMs, nowMs, DEFAULT_WORKSPACE_ID)
-    .run();
-};
-
-export const getNotificationDispatchState = async (
-  environment: Env,
-): Promise<NotificationDispatchStateRecord | null> => {
-  const row = await getDatabase(environment)
-    .select()
-    .from(notificationDispatchState)
-    .where(eq(notificationDispatchState.workspaceId, DEFAULT_WORKSPACE_ID))
-    .get();
-  return row ?? null;
-};
-
-export type NotificationDispatchHealth = {
-  dispatch: NotificationDispatchStateRecord | null;
-  inFlight: number;
-  oldestDueAt: Date | null;
-  pending: number;
-  unknown: number;
-};
-
-/**
- * Bounded, redacted operational status for the authorized settings view and
- * operators: scheduler tick/error state plus due and unresolved counts. It
- * never carries recipient addresses, lead data, or provider messages.
- */
-export const getNotificationDispatchHealth = async (
-  environment: Env,
-): Promise<NotificationDispatchHealth> => {
-  const [dispatch, counts] = await Promise.all([
-    getNotificationDispatchState(environment),
-    prepare(
-      environment.DB,
-      `SELECT
-        (SELECT COUNT(*) FROM notification_outbox
-          WHERE status IN ('pending', 'retry')) AS pending,
-        (SELECT COUNT(*) FROM notification_outbox
-          WHERE status IN ('claimed', 'sending')) AS in_flight,
-        (SELECT COUNT(*) FROM notification_outbox
-          WHERE status = 'unknown') AS unknown_count,
-        (SELECT MIN(next_attempt_at) FROM notification_outbox
-          WHERE status IN ('pending', 'retry')) AS oldest_due_at`,
-    ).first<{
-      in_flight: number;
-      oldest_due_at: null | number;
-      pending: number;
-      unknown_count: number;
-    }>(),
-  ]);
-
-  return {
-    dispatch,
-    inFlight: Number(counts?.in_flight ?? 0),
-    oldestDueAt:
-      counts?.oldest_due_at === null || counts?.oldest_due_at === undefined
-        ? null
-        : new Date(counts.oldest_due_at),
-    pending: Number(counts?.pending ?? 0),
-    unknown: Number(counts?.unknown_count ?? 0),
-  };
 };

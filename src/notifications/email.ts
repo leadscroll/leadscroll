@@ -1,18 +1,23 @@
 /**
  * Provider-agnostic email transport contract.
  *
- * Business code (outbox, delivery, settings) depends only on this module; the
- * Cloudflare and Resend adapters implement it under ./providers. A result is
- * always one of three normalized outcomes:
+ * Business code depends only on this module; the Cloudflare and Resend
+ * adapters implement it under ./providers. A result is always one of three
+ * normalized outcomes:
  *
  * - accepted: the provider returned a positive acknowledgement. A message id
  *   is evidence of submission, not inbox delivery.
  * - rejected: a definite non-acceptance (validation, configuration, quota,
- *   suppression). `retryable` distinguishes transient rate/quota rejections
- *   from permanent failures.
+ *   suppression). `retryable` describes the provider's own guidance; the
+ *   best-effort event subscriber does not automatically retry.
  * - ambiguous: acceptance is unknown (transport failure, timeout, malformed
- *   success, provider 5xx). Callers apply the provider-specific recovery
- *   policy; they never switch providers or fabricate a new idempotency key.
+ *   success, provider 5xx). The caller reports it honestly and never switches
+ *   providers.
+ *
+ * Every send is bounded by a finite timeout. The default applies when the
+ * caller does not pass one in the send context; the subscriber tightens it to
+ * the remaining background budget so one slow provider cannot outlive the
+ * Worker's runtime window.
  */
 
 export type ConfigurationCheck =
@@ -33,20 +38,26 @@ export type EmailEnvelope = {
 
 export type EmailProvider = 'cloudflare' | 'resend';
 
+export const DEFAULT_PROVIDER_TIMEOUT_MS = 10_000;
+
 export type EmailSender = {
-  capabilities: {
-    /**
-     * Length of the provider's idempotency-key window in seconds, or null when
-     * the provider has no documented request-level idempotency.
-     */
-    idempotencyWindowSeconds: null | number;
-  };
   checkConfiguration: () => ConfigurationCheck;
   provider: EmailProvider;
-  send: (
-    envelope: EmailEnvelope,
-    context: { deliveryKey: string },
-  ) => Promise<SendResult>;
+  send: (envelope: EmailEnvelope, context: SendContext) => Promise<SendResult>;
+};
+
+export type SendContext = {
+  /**
+   * Namespaced key scoped to one event/recipient (or one explicit test). It
+   * only exists so a provider with request-level idempotency can collapse an
+   * accidental duplicate of the same message; best-effort delivery does not
+   * retry.
+   */
+  deliveryKey: string;
+  /**
+   * Finite timeout for this call. Defaults to DEFAULT_PROVIDER_TIMEOUT_MS.
+   */
+  timeoutMs?: number;
 };
 
 export type SendResult =
@@ -61,104 +72,12 @@ export type SendResult =
     };
 
 /**
- * Deterministic wire serialization for a frozen envelope. Object-key order is
- * fixed by construction, so the same envelope always produces the same JSON
- * and hash across retries and deployments.
+ * Stable duplicate-collapse key for one new-lead recipient. The key is not
+ * durable state: it is derived from the committed event and recipient so two
+ * accidental deliveries of the same event share a provider idempotency key.
  */
-export const serializeEnvelope = (envelope: EmailEnvelope): string =>
-  JSON.stringify({
-    from: {
-      email: envelope.from.email,
-      ...(envelope.from.name === undefined ? {} : { name: envelope.from.name }),
-    },
-    html: envelope.html,
-    subject: envelope.subject,
-    text: envelope.text,
-    to: envelope.to,
-  });
-
-const asRecord = (value: unknown): null | Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
-
-/**
- * Parses a persisted frozen envelope. Anything malformed returns null so the
- * delivery command can fail closed instead of sending an unintended message.
- */
-export const parseEnvelope = (json: string): EmailEnvelope | null => {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(json);
-  } catch {
-    return null;
-  }
-
-  const record = asRecord(parsed);
-  const from = record === null ? null : asRecord(record.from);
-  if (
-    record === null ||
-    from === null ||
-    typeof from.email !== 'string' ||
-    (from.name !== undefined && typeof from.name !== 'string') ||
-    typeof record.to !== 'string' ||
-    typeof record.subject !== 'string' ||
-    typeof record.html !== 'string' ||
-    typeof record.text !== 'string'
-  ) {
-    return null;
-  }
-
-  return {
-    from: {
-      email: from.email,
-      ...(typeof from.name === 'string' ? { name: from.name } : {}),
-    },
-    html: record.html,
-    subject: record.subject,
-    text: record.text,
-    to: record.to,
-  };
-};
-
-const toHex = (buffer: ArrayBuffer): string =>
-  Array.from(new Uint8Array(buffer), (byte) =>
-    byte.toString(16).padStart(2, '0'),
-  ).join('');
-
-/**
- * SHA-256 of the frozen wire payload; used for integrity and conflict checks.
- */
-export const envelopePayloadHash = async (
-  envelope: EmailEnvelope,
-): Promise<string> =>
-  toHex(
-    await crypto.subtle.digest(
-      'SHA-256',
-      new TextEncoder().encode(serializeEnvelope(envelope)),
-    ),
-  );
-
-/**
- * Namespaced idempotency key for a durable outbox row. The outbox id is
- * stable, unique per recipient, and never reused, so the key is identical on
- * every retry while remaining distinguishable from other installations' keys
- * at a shared provider account.
- */
-export const deliveryKeyFor = (outboxId: string): string =>
-  `leadscroll-notification:${outboxId}`;
+export const leadDeliveryKey = (leadId: string, userId: string): string =>
+  `leadscroll-notification:${leadId}:${userId}`;
 
 export const testDeliveryKeyFor = (requestId: string): string =>
   `leadscroll-email-test:${requestId}`;
-
-/**
- * Two frozen attempts may only be retried together when they reference the
- * exact same provider, delivery key, and payload hash.
- */
-export type FrozenAttempt = {
-  configRevision: number;
-  deliveryKey: string;
-  envelope: EmailEnvelope;
-  payloadHash: string;
-  provider: EmailProvider;
-};

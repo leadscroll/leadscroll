@@ -7,7 +7,6 @@ import {
 import {
   accountCapabilitiesQueryKey,
   emailSettingsQueryKey,
-  notificationHistoryQueryKey,
   notificationPreferenceQueryKey,
   savedConfigurationTestable,
 } from '@/notifications/queryKeys';
@@ -129,9 +128,6 @@ describe('identity-scoped query keys', () => {
     expect(accountCapabilitiesQueryKey('user-a')).not.toEqual(
       accountCapabilitiesQueryKey('user-b'),
     );
-    expect(notificationHistoryQueryKey('user-a')).not.toEqual(
-      notificationHistoryQueryKey('user-b'),
-    );
     expect(notificationPreferenceQueryKey('user-a')).not.toEqual(
       notificationPreferenceQueryKey('user-b'),
     );
@@ -143,29 +139,19 @@ describe('saved configuration testing', () => {
     overrides: Partial<EmailSettingsView>,
   ): EmailSettingsView => ({
     canonicalOrigin: 'https://crm.example.test',
-    dispatch: {
-      configError: null,
-      inFlight: 0,
-      lastSuccessAt: null,
-      lastTickAt: null,
-      oldestDueAt: null,
-      pending: 0,
-      unknown: 0,
-    },
     enabled: false,
     environment: { hasCloudflareBinding: true, hasEncryptionKey: true },
     fromEmail: 'notifications@example.test',
     fromName: 'LeadScroll',
     hasApiKey: true,
-    paused: null,
     provider: 'resend',
-    readiness: { availability: 'unavailable', reasonCode: 'paused' },
+    readiness: { availability: 'disabled', reasonCode: null },
     revision: 1,
     test: null,
     ...overrides,
   });
 
-  test('a paused or notifications-off configuration can still be tested', () => {
+  test('a notifications-off configuration can still be tested', () => {
     expect(savedConfigurationTestable(settings({}))).toEqual({ ok: true });
     expect(
       savedConfigurationTestable(

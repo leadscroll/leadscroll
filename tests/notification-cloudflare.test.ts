@@ -34,7 +34,6 @@ describe('Cloudflare email adapter', () => {
   test('isolates a missing binding to Cloudflare mode', async () => {
     const sender = createCloudflareEmailSender(undefined);
     expect(sender.provider).toBe('cloudflare');
-    expect(sender.capabilities.idempotencyWindowSeconds).toBeNull();
     expect(sender.checkConfiguration()).toEqual({
       configured: false,
       reason: 'cloudflare_binding_missing',
@@ -144,5 +143,21 @@ describe('Cloudflare email adapter', () => {
       reason: 'E_DELIVERY_FAILED',
       retryable: true,
     });
+  });
+
+  test('a binding that never resolves times out honestly without retry', async () => {
+    const send = vi.fn(() => new Promise<{ messageId: string }>(() => {}));
+    const sender = createCloudflareEmailSender(bindingWith(send));
+    await expect(
+      sender.send(envelope, {
+        deliveryKey: 'leadscroll-notification:timeout',
+        timeoutMs: 10,
+      }),
+    ).resolves.toEqual({
+      kind: 'ambiguous',
+      provider: 'cloudflare',
+      reason: 'timeout',
+    });
+    expect(send).toHaveBeenCalledTimes(1);
   });
 });

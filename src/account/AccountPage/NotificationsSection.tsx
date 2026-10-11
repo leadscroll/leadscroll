@@ -1,41 +1,25 @@
 import { Notice } from '@/components/Notice';
 import { Button } from '@/components/ui/Button';
+import { type NotificationAvailability } from '@/domain/schemas';
 import {
-  type NotificationAvailability,
-  type NotificationHistoryView,
-} from '@/domain/schemas';
-import {
-  notificationHistoryQueryKey,
   notificationPreferenceQueryKey,
   notificationsApi,
 } from '@/notifications/api';
-import {
-  type InfiniteData,
-  useInfiniteQuery,
-  useMutation,
-  useQuery,
-  useQueryClient,
-} from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { toast } from 'sonner';
-import { Link } from 'wouter';
 
 const AVAILABILITY_NOTES: Record<NotificationAvailability, string> = {
   configured:
-    'Alert emails are sent from the installation sender to your account email.',
+    'Alert emails are sent best-effort to your account email when a lead is created. There is no retry or delivery history.',
   disabled:
     'Email notifications are not enabled on this installation yet. Your preference is saved and applies once an administrator enables a provider.',
   misconfigured:
     'Email is not fully configured yet. Your preference is saved and alerts start after an administrator finishes setup.',
-  unavailable:
-    'Sending is paused after a provider configuration error. Your preference is saved; alerts resume when the administrator resolves it.',
 };
 
 const availabilityNote = (availability: NotificationAvailability): string =>
   AVAILABILITY_NOTES[availability];
-
-const formatTimestamp = (value: string): string =>
-  new Date(value).toLocaleString();
 
 export const NotificationsSection = ({
   email,
@@ -48,18 +32,6 @@ export const NotificationsSection = ({
   const preference = useQuery({
     queryFn: () => notificationsApi.getPreference(),
     queryKey: notificationPreferenceQueryKey(userId),
-  });
-  const history = useInfiniteQuery<
-    NotificationHistoryView,
-    Error,
-    InfiniteData<NotificationHistoryView>,
-    readonly unknown[],
-    string | undefined
-  >({
-    getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
-    initialPageParam: undefined,
-    queryFn: ({ pageParam }) => notificationsApi.history(pageParam),
-    queryKey: notificationHistoryQueryKey(userId),
   });
   const [draft, setDraft] = useState<boolean | null>(null);
   const saved = preference.data?.newLeadEmail ?? false;
@@ -79,7 +51,6 @@ export const NotificationsSection = ({
     },
   });
 
-  const rows = history.data?.pages.flatMap((page) => page.data) ?? [];
   return (
     <section className="min-w-0 rounded-xl border border-slate-800 bg-slate-900/40 p-5">
       <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-400">
@@ -87,7 +58,7 @@ export const NotificationsSection = ({
       </h2>
       <p className="mt-1 text-xs text-slate-500">
         Alerts about newly created leads only. Emails link to the authenticated
-        lead page.
+        lead page and are sent without retry.
       </p>
 
       {preference.isPending ? (
@@ -137,62 +108,6 @@ export const NotificationsSection = ({
           )}
         </>
       )}
-
-      <div className="mt-6 border-t border-slate-800 pt-4">
-        <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500">
-          Delivery history
-        </h3>
-        {history.isPending ? (
-          <p className="mt-3 text-sm text-slate-400">Loading history…</p>
-        ) : history.error ? (
-          <div className="mt-3">
-            <Notice error={history.error} />
-          </div>
-        ) : rows.length === 0 ? (
-          <p className="mt-3 text-sm text-slate-400">
-            No notification history yet.
-          </p>
-        ) : (
-          <>
-            <ul className="mt-3 grid gap-2">
-              {rows.map((row) => (
-                <li
-                  className="flex min-w-0 flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-800 bg-slate-950/60 px-4 py-3"
-                  key={row.id}
-                >
-                  <div className="min-w-0">
-                    <p className="text-sm font-medium text-slate-100">
-                      {row.statusLabel}
-                    </p>
-                    <p className="mt-0.5 text-xs text-slate-500">
-                      {row.reasonLabel ?? formatTimestamp(row.createdAt)}
-                    </p>
-                  </div>
-                  <Link
-                    className="text-xs font-semibold text-cyan-300 hover:text-cyan-200"
-                    href={`/leads/${row.leadId}`}
-                  >
-                    Open lead
-                  </Link>
-                </li>
-              ))}
-            </ul>
-            {history.hasNextPage && (
-              <div className="mt-3">
-                <Button
-                  disabled={history.isFetchingNextPage}
-                  onClick={() => {
-                    void history.fetchNextPage();
-                  }}
-                  tone="secondary"
-                >
-                  {history.isFetchingNextPage ? 'Loading…' : 'Load more'}
-                </Button>
-              </div>
-            )}
-          </>
-        )}
-      </div>
     </section>
   );
 };

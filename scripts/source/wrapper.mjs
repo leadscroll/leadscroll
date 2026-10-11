@@ -1,10 +1,10 @@
 /**
  * Generated Worker entry for source-built installations.
  *
- * The wrapper preserves the source Worker's `fetch` and `scheduled` handlers.
- * `fetch` also stamps the exact pinned commit; scheduled dispatch must be
- * forwarded or installed installations would silently stop processing
- * notifications even though the source Worker handles them.
+ * The wrapper preserves the source Worker's `fetch` handler, including the
+ * execution-context argument it uses to schedule best-effort notification
+ * work, and stamps the exact pinned commit. There is no `scheduled` handler:
+ * notifications are event-driven and best-effort, not Cron-delivered.
  */
 export const sourceWorkerWrapper = (
   commit,
@@ -15,8 +15,5 @@ export default {
     const stamped = new Response(response.body, response);
     stamped.headers.set('X-LeadScroll-Commit', ${JSON.stringify(commit)});
     return stamped;
-  },
-  async scheduled(controller, env, ctx) {
-    return core.scheduled(controller, env, ctx);
   }
 };`;

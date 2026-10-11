@@ -145,15 +145,17 @@ resources automatically.
 
 ## Email notification runtime
 
-Generated source builds preserve the Worker's `fetch` and `scheduled` handlers,
-so source-pin upgrades keep the one-per-minute notification dispatcher without
-template edits. Standard templates declare the native `EMAIL` binding and the
-Cron trigger in `wrangler.jsonc`; older/custom installations may need to add
-them. The optional `EMAIL_SETTINGS_ENCRYPTION_KEY` secret is needed only to
-store a Resend API key through the UI and survives source-pin changes as a
-Worker secret; replacing the Worker recreates secrets and requires re-entering
-provider keys. See the upstream `docs/email-notifications.md` for setup,
-rollback, and operator recovery.
+Generated source builds preserve the Worker's `fetch` handler and its execution
+context argument, which is how best-effort notification work is scheduled with
+`ctx.waitUntil` after a lead commits. There is no `scheduled` handler and no
+Cron trigger: notification delivery is event-driven and best-effort. Standard
+templates declare the native `EMAIL` binding in `wrangler.jsonc`; older/custom
+installations may need to add it. The optional `EMAIL_SETTINGS_ENCRYPTION_KEY`
+secret is needed only to store a Resend API key through the UI and survives
+source-pin changes as a Worker secret; replacing the Worker recreates secrets
+and requires re-entering provider keys. See the upstream
+`docs/email-notifications.md` for setup, best-effort limits, rollback, and
+operator recovery.
 
 ## Verification boundary
 

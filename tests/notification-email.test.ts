@@ -1,11 +1,4 @@
-import {
-  deliveryKeyFor,
-  type EmailEnvelope,
-  envelopePayloadHash,
-  parseEnvelope,
-  serializeEnvelope,
-  testDeliveryKeyFor,
-} from '@/notifications/email';
+import { leadDeliveryKey, testDeliveryKeyFor } from '@/notifications/email';
 import {
   NOTIFICATION_SUBJECT,
   renderNewLeadNotification,
@@ -14,65 +7,11 @@ import {
 } from '@/notifications/templates';
 import { describe, expect, test } from 'vitest';
 
-const envelope = (): EmailEnvelope => ({
-  from: { email: 'notifications@example.test', name: 'LeadScroll' },
-  html: '<p>Hello</p>',
-  subject: NOTIFICATION_SUBJECT,
-  text: 'Hello',
-  to: 'staff@example.test',
-});
-
-describe('email envelope freezing', () => {
-  test('serializes deterministically and parses back', () => {
-    const value = envelope();
-    const serialized = serializeEnvelope(value);
-    expect(serialized).toBe(serializeEnvelope(value));
-    expect(parseEnvelope(serialized)).toEqual(value);
-  });
-
-  test('drops an absent display name but keeps the address', () => {
-    const withoutName = serializeEnvelope({
-      ...envelope(),
-      from: { email: 'notifications@example.test' },
-    });
-    expect(withoutName).not.toContain('"name"');
-    expect(parseEnvelope(withoutName)?.from).toEqual({
-      email: 'notifications@example.test',
-    });
-  });
-
-  test('returns null for malformed frozen payloads', () => {
-    expect(parseEnvelope('not json')).toBeNull();
-    expect(parseEnvelope('{}')).toBeNull();
-    expect(parseEnvelope('{"from":{"email":"a@b.c"}}')).toBeNull();
-    expect(
-      parseEnvelope(
-        JSON.stringify({
-          from: { email: 1 },
-          html: 'x',
-          subject: 's',
-          text: 't',
-          to: 'a@b.c',
-        }),
-      ),
-    ).toBeNull();
-  });
-
-  test('hashes the exact wire payload', async () => {
-    const first = await envelopePayloadHash(envelope());
-    const second = await envelopePayloadHash(envelope());
-    expect(first).toBe(second);
-    expect(first).toMatch(/^[\da-f]{64}$/u);
-
-    const changed = await envelopePayloadHash({
-      ...envelope(),
-      subject: 'A different subject',
-    });
-    expect(changed).not.toBe(first);
-  });
-
-  test('namespaces delivery keys', () => {
-    expect(deliveryKeyFor('abc')).toBe('leadscroll-notification:abc');
+describe('delivery keys', () => {
+  test('namespaces event/recipient and test keys', () => {
+    expect(leadDeliveryKey('lead-1', 'user-1')).toBe(
+      'leadscroll-notification:lead-1:user-1',
+    );
     expect(testDeliveryKeyFor('abc')).toBe('leadscroll-email-test:abc');
   });
 });

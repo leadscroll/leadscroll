@@ -15,7 +15,6 @@
     "migrations_dir": ".leadscroll/current/migrations"
   }],
   "send_email": [{ "name": "EMAIL" }],
-  "triggers": { "crons": ["* * * * *"] },
   "vars": { "ENVIRONMENT": "production" },
   "observability": { "enabled": true }
 }

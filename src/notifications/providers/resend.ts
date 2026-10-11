@@ -2,22 +2,24 @@
  * Resend HTTPS adapter.
  *
  * Uses the fixed public API host, a server-side decrypted send-only API key,
- * and a namespaced `Idempotency-Key` derived from the durable outbox id. The
- * adapter never regenerates the key or payload: retries of an ambiguous call
- * must repeat the exact request so Resend's 24-hour idempotency window can
- * collapse duplicates. Error classification follows the documented Resend
- * error reference (checked 2026-10-11).
+ * and the caller's namespaced `Idempotency-Key` so an accidental duplicate of
+ * the same event/recipient collapses inside Resend's documented 24-hour
+ * window. Requests carry a finite timeout; a timeout or transport failure is
+ * ambiguous and is reported honestly without automatic retry. Error
+ * classification follows the documented Resend error reference (checked
+ * 2026-10-11).
  */
 
 import {
   type ConfigurationCheck,
+  DEFAULT_PROVIDER_TIMEOUT_MS,
   type EmailEnvelope,
   type EmailSender,
+  type SendContext,
   type SendResult,
 } from '../email';
 
 const RESEND_API_URL = 'https://api.resend.com/emails';
-const IDEMPOTENCY_WINDOW_SECONDS = 24 * 60 * 60;
 const MAX_IDEMPOTENCY_KEY_LENGTH = 256;
 
 export type FetchLike = (
@@ -175,7 +177,6 @@ export const createResendEmailSender = (
   apiKey: string | undefined,
   fetchImplementation: FetchLike = fetch,
 ): EmailSender => ({
-  capabilities: { idempotencyWindowSeconds: IDEMPOTENCY_WINDOW_SECONDS },
   checkConfiguration: (): ConfigurationCheck =>
     apiKey === undefined || apiKey.trim().length === 0
       ? { configured: false, reason: 'resend_api_key_missing' }
@@ -183,7 +184,7 @@ export const createResendEmailSender = (
   provider: 'resend',
   send: async (
     envelope: EmailEnvelope,
-    context: { deliveryKey: string },
+    context: SendContext,
   ): Promise<SendResult> => {
     if (apiKey === undefined || apiKey.trim().length === 0) {
       return {
@@ -197,6 +198,9 @@ export const createResendEmailSender = (
     const idempotencyKey = context.deliveryKey.slice(
       0,
       MAX_IDEMPOTENCY_KEY_LENGTH,
+    );
+    const signal = AbortSignal.timeout(
+      context.timeoutMs ?? DEFAULT_PROVIDER_TIMEOUT_MS,
     );
     let response: Response;
     try {
@@ -214,14 +218,16 @@ export const createResendEmailSender = (
           'Idempotency-Key': idempotencyKey,
         },
         method: 'POST',
+        signal,
       });
     } catch {
-      // A transport failure leaves acceptance unknown; the caller may repeat
-      // the identical keyed request inside the idempotency window.
+      // A timeout means acceptance is unknown and the request was aborted. A
+      // transport failure leaves acceptance unknown too; neither is retried
+      // automatically.
       return {
         kind: 'ambiguous',
         provider: 'resend',
-        reason: 'transport_error',
+        reason: signal.aborted ? 'timeout' : 'transport_error',
       };
     }
 

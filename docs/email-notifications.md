@@ -8,20 +8,28 @@ campaigns.
 
 ## How it works
 
-1. A lead is created through public/API intake or manually in the app. The same
-   atomic D1 batch that stores the lead records one durable outbox row per
-   opted-in, enabled recipient (the manual creator is excluded).
-2. A Cron Trigger wakes the Worker every minute. Each tick records its health,
-   recovers abandoned leases, expires stale events, and processes at most one
-   due notification. The default of one message per minute keeps CPU and D1
-   headroom on Workers Free.
-3. The delivery command claims one row with a lease, rechecks the recipient,
-   address, preference, and lead, freezes the provider/envelope/hash, and sends.
-   Provider, payload, hash, and idempotency key are pinned before the first
-   attempt; changed credentials never silently retarget an attempted row.
+1. A lead is created through public/API intake or manually in the app. The
+   shared lead service returns only after the lead's atomic D1 batch has
+   committed.
+2. The application command then publishes a small typed `lead.created` event
+   carrying the lead id and the creator (null for intake). Replays, idempotency
+   conflicts, validation failures, and failed transactions publish nothing.
+3. A fixed email subscriber reads the current installation configuration and
+   the current opted-in, enabled staff, excludes the manual creator, checks the
+   lead still exists, and sends one generic message per recipient through the
+   saved provider.
+4. The subscriber runs on the Worker's `ctx.waitUntil`, so it never delays the
+   HTTP response. It uses a small concurrency limit (4), an overall background
+   budget (20 seconds), and a per-provider-call timeout (10 seconds).
 
-The email provider never sits on the lead-creation path. A provider outage
-cannot fail or slow down intake; it only delays alerts.
+Delivery is **best-effort by design**. There is no outbox, queue, Cron trigger,
+retry engine, replay/reconciliation, or delivery history. A Worker
+interruption, a crash between the commit and publication, a provider timeout,
+or a provider rejection can lose an alert. There is no exactly-once claim. A
+timeout may still have been accepted by the provider, so nothing is ever
+automatically resent. A future queue can wrap the event boundary without
+changing the lead service or the subscriber; that infrastructure is
+deliberately not built yet.
 
 ## Provider setup
 
@@ -43,7 +51,9 @@ or sender environment variables are required.
 
 Older/custom installations without the binding report
 `cloudflare_binding_missing`; the owner can add `"send_email": [{ "name":
-"EMAIL" }]` and redeploy, or keep using Resend.
+"EMAIL" }]` and redeploy, or keep using Resend. The Cloudflare binding has no
+documented per-request idempotency and cannot be canceled, so a timeout is
+reported as unknown and left alone.
 
 ### Resend
 
@@ -67,133 +77,95 @@ Older/custom installations without the binding report
    actions; removing the key that backs the selected provider disables Resend
    atomically.
 
-### Cron
-
-Both `wrangler.jsonc` files declare `"triggers": { "crons": ["* * * * *"] }`.
-Every tick records scheduler health and runs bounded, indexed lease recovery,
-stale-event expiry, and terminal-row cleanup, so a disabled installation still
-incurs a small fixed amount of D1 work (roughly one health write plus three
-limited statements per minute). Older installations can add the same block and
-redeploy.
-
-## Enabling, testing, and pausing
+## Enabling and testing
 
 - Saving settings never sends a message. You can save and enable without ever
   running a test; the UI shows **Not tested** until an explicit test runs for
   the current settings.
-- An explicit test works even while delivery is paused or the enable switch is
-  off, as long as the saved provider configuration is locally complete: testing
-  is how a paused revision recovers, and it never turns live alerts on.
-  Missing local resources (no binding, no key, no sender) still block the test
-  with a specific setup message.
-- **Send test email** sends one message to the signed-in administrator's own
-  account email using the saved configuration. It is limited to one per minute
-  and five per 24 hours per installation, and the request id makes retries
-  idempotent.
+- An explicit test works even while the enable switch is off, as long as the
+  saved provider configuration is locally complete. Missing local resources
+  (no binding, no key, no sender) still block the test with a specific setup
+  message.
+- **Send test email** sends one attempt to the signed-in administrator's own
+  account email using the saved configuration and reports accepted, rejected,
+  or unknown honestly. It is limited to one per minute and five per 24 hours
+  per installation, and the request id deduplicates concurrent double-clicks.
+  There is no automatic retry and no frozen-payload replay: sending another
+  test is always an explicit administrator action with a new request id.
 - Changing provider, sender, or key increments the settings revision. Previous
   test evidence no longer applies to the new revision, but no test is required
   to save or enable.
-- A definite provider-configuration failure (for example an invalid key or an
-  unverified domain) pauses further attempts for that revision. Correcting the
-  settings or completing a successful test resumes sending. Paused is shown
-  separately from the enabled preference, and disabling email always works.
+- A provider rejection is recorded with a redacted reason code and shown for
+  the current revision. It never pauses the installation: correct the settings
+  (or disable email) and the next event uses the new configuration.
 
-## Staff preferences and history
+## Staff preferences
 
 Each account manages its own **New lead emails** opt-in under **Account →
-Notifications**; it defaults off and never backfills historical leads.
-The account email is the only possible destination. Turning alerts off skips
-pending rows at dispatch; a message already accepted by the provider cannot be
-recalled.
+Notifications**; it defaults off and never backfills historical leads. The
+account email is the only possible destination, and the manual creator is
+excluded from their own alert. There is no per-recipient delivery history:
+every send is best-effort.
 
-**Account → Notifications → Delivery history** shows the caller's own rows.
-"Accepted by email service" means the provider accepted the message for
-delivery — it does not prove inbox delivery or a read.
+## Bounded work
 
-## Reliability and unknown outcomes
+The subscriber never fans out without limit:
 
-- Accepted rows are never resent.
-- Transient rejections retry with bounded backoff (1m, 5m, 15m, 1h, 6h,
-  capped by event expiry).
-- Resend retries reuse the exact same payload and idempotency key only inside
-  its 24-hour window (with a safety margin); after that an unresolved outcome
-  stays `unknown`.
-- Cloudflare has no documented per-request idempotency, so an ambiguous
-  submission is recorded as `unknown` rather than blindly retried.
-- Events older than 24 hours are not delivered: never-attempted rows are
-  skipped and ambiguous ones remain `unknown`.
-- Terminal outbox rows older than 30 days are cleaned up in bounded batches;
-  unresolved `unknown` rows are retained for operator reconciliation.
-- There is no exactly-once guarantee: D1 and the provider do not share a
-  transaction. Duplicate suppression is durable per event/recipient, and the
-  provider-specific policies above keep the residual window honest.
-
-Reconcile an `unknown` row with the provider's own logs/message ids before
-taking any action. There is deliberately no generic resend endpoint.
-
-## Operators
-
-The first account created with `SETUP_TOKEN` receives the narrow
-`manageEmailSettings` capability atomically. On upgrades the migration grants
-it to the surviving enabled bootstrap registrant when that identity is
-unambiguous. If no administrator exists (for example the bootstrap account was
-deleted), an operator grants the capability to one explicit enabled account.
-
-Source checkout:
-
-```sh
-pnpm run notifications:grant-admin -- <user-id>            # remote D1
-pnpm run notifications:grant-admin -- <user-id> --local    # local D1
-```
-
-Copied template installation (the command ships in the copied repository and
-is self-contained; no upstream checkout is needed):
-
-```sh
-pnpm run notifications:grant-admin -- <user-id>            # remote D1
-pnpm run notifications:grant-admin -- <user-id> --local    # local D1
-```
-
-Find ids with `wrangler d1 execute DB --remote --command "SELECT id, email,
-disabled_at FROM user ORDER BY email"`. The command refuses unknown or disabled
-accounts, is idempotent, and never promotes the first account automatically.
+- At most 4 provider calls run at once.
+- The whole subscriber run is bounded by a 20-second budget below the Worker
+  `waitUntil` lifetime.
+- Each call gets the smaller of a 10-second provider timeout and the remaining
+  budget. Resend requests are aborted on timeout; the Cloudflare binding cannot
+  be canceled, so a timeout there is recorded as unknown.
+- If the budget runs out, the remaining recipients are reported as skipped with
+  `budget_exhausted`; they are not silently dropped and they are not retried.
 
 ## Observability
 
-Every dispatch outcome emits one structured line with the event
-`notification.dispatch`, the opaque outbox id, the outcome, the attempt count,
-and an allowlisted reason code. It never includes addresses, envelopes, lead
-data, or provider response bodies. **Manage → Email → Scheduler** shows the last
-tick, waiting/in-flight/unknown counts, the last accepted send, and the current
-scheduler error.
+Every subscriber run emits one bounded structured line with the event
+`notification.event`: the event kind, the opaque lead id, the outcome
+(`delivered`, `failed`, or `skipped`), recipient counts, the selected provider,
+and an allowlisted reason code. Dispatcher failures emit a separate
+`subscriber_failed` or `scheduling_failed` line with the error class only. No
+addresses, envelopes, lead payloads, API keys, or provider response bodies are
+ever logged.
 
-Operators can query the same redacted state directly:
+Operators can inspect the persisted configuration and the redacted audit trail
+directly:
 
 ```sh
 pnpm exec wrangler d1 execute DB --remote --command \
-  "SELECT status, COUNT(*) FROM notification_outbox GROUP BY status"
+  "SELECT provider, enabled, from_email, revision FROM email_settings"
 pnpm exec wrangler d1 execute DB --remote --command \
-  "SELECT last_tick_at, last_success_at, config_error_code, config_error_at FROM notification_dispatch_state"
+  "SELECT action, revision, test_outcome, reason_code, created_at FROM email_settings_audit ORDER BY created_at DESC LIMIT 20"
 ```
 
-Health thresholds worth watching: a waiting item older than five minutes, no
-tick for five minutes while email is enabled, or any `unknown` row.
+There is no scheduler to monitor and no delivery-status table to reconcile.
+
+## Upgrade note
+
+Migration `0006_thin_deathbird.sql` removes the durable notification outbox,
+dispatch state, scheduler pause columns, and test replay columns. Obsolete
+notification delivery records are discarded by design; they are not migrated
+into a new queue. Settings, encrypted credentials, personal preferences,
+permissions, and the redacted audit trail are preserved, and CRM lead data is
+untouched.
 
 ## Rollback
 
-Disable sending in **Manage → Email** first: no new sends start, pending mail is
-paused and expires, and accepted/unknown rows are never auto-resent. Reverting
-Worker code is safe with additive tables and migrations in place; do not roll
-the schema back destructively. Provider API keys can be revoked at the provider
-even though old D1 backups may retain ciphertext.
+Disable sending in **Manage → Email** first: no new sends start. Reverting
+Worker code is safe with additive migrations in place; do not roll the schema
+back destructively. Provider API keys can be revoked at the provider even
+though old D1 backups may retain ciphertext.
 
 ## Limits and untested assumptions
 
-- Worker/D1/CPU costs are bounded by one message per minute plus one health
-  write per tick. Measure before raising the batch size.
 - Local configuration checks cannot prove remote entitlement. The standard
   clean-account deployment of the always-present `EMAIL` binding (no Email
   Routing/Sending onboarding) is a release validation step, not something the
   app can prove locally. Until it is verified on a real account, treat the
   default binding as untested deployment behavior; absent-binding installs
   keep working by design.
+- Best-effort delivery is an explicit product tradeoff. If missed alerts become
+  unacceptable, add a queue at the event boundary; do not restore the removed
+  state machine piecemeal.

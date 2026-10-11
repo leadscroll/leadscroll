@@ -27,7 +27,6 @@ export const AccountSessionCacheBoundary = ({
 
         return root === 'account-capabilities' ||
           root === 'email-settings' ||
-          root === 'notification-history' ||
           root === 'notification-preference'
           ? keyUserId !== userId
           : false;

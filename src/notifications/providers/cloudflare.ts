@@ -1,18 +1,19 @@
 /**
  * Cloudflare Email Sending adapter (native `send_email` binding).
  *
- * The binding has no documented request-level idempotency and no capability
- * probe, so a transport/internal failure at the binding boundary is
- * `ambiguous`: the same notification is never blindly re-submitted, and the
- * delivery command records an unknown outcome for operator reconciliation.
- * Documented error codes with a definitive meaning are normalized into
- * permanent or retryable rejections.
+ * The binding exposes no request-level idempotency and cannot be canceled, so
+ * a transport/internal failure at the binding boundary is `ambiguous`: the
+ * best-effort subscriber never blindly resubmits, and a timeout is recorded
+ * honestly without retry. Documented error codes with a definitive meaning are
+ * normalized into permanent or retryable rejections.
  */
 
 import {
   type ConfigurationCheck,
+  DEFAULT_PROVIDER_TIMEOUT_MS,
   type EmailEnvelope,
   type EmailSender,
+  type SendContext,
   type SendResult,
 } from '../email';
 
@@ -92,10 +93,16 @@ export const classifyCloudflareError = (error: unknown): SendResult => {
   };
 };
 
+class CloudflareTimeoutError extends Error {
+  constructor() {
+    super('The Cloudflare EMAIL binding did not resolve within the timeout.');
+    this.name = 'CloudflareTimeoutError';
+  }
+}
+
 export const createCloudflareEmailSender = (
   binding: CloudflareEmailBinding | undefined,
 ): EmailSender => ({
-  capabilities: { idempotencyWindowSeconds: null },
   checkConfiguration: (): ConfigurationCheck =>
     binding === undefined
       ? {
@@ -104,7 +111,10 @@ export const createCloudflareEmailSender = (
         }
       : { configured: true },
   provider: 'cloudflare',
-  send: async (envelope: EmailEnvelope): Promise<SendResult> => {
+  send: async (
+    envelope: EmailEnvelope,
+    context: SendContext,
+  ): Promise<SendResult> => {
     if (binding === undefined) {
       return {
         kind: 'rejected',
@@ -114,21 +124,28 @@ export const createCloudflareEmailSender = (
       };
     }
 
+    const from = {
+      email: envelope.from.email,
+      name:
+        envelope.from.name ?? envelope.from.email.split('@')[0] ?? 'LeadScroll',
+    };
+    const timeoutMs = context.timeoutMs ?? DEFAULT_PROVIDER_TIMEOUT_MS;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      const from: EmailAddress = {
-        email: envelope.from.email,
-        name:
-          envelope.from.name ??
-          envelope.from.email.split('@')[0] ??
-          'LeadScroll',
-      };
-      const result = await binding.send({
-        from,
-        html: envelope.html,
-        subject: envelope.subject,
-        text: envelope.text,
-        to: envelope.to,
-      });
+      const result = await Promise.race([
+        binding.send({
+          from,
+          html: envelope.html,
+          subject: envelope.subject,
+          text: envelope.text,
+          to: envelope.to,
+        }),
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => {
+            reject(new CloudflareTimeoutError());
+          }, timeoutMs);
+        }),
+      ]);
       const messageId =
         typeof result?.messageId === 'string' && result.messageId.length > 0
           ? result.messageId
@@ -139,7 +156,17 @@ export const createCloudflareEmailSender = (
         provider: 'cloudflare',
       };
     } catch (error) {
+      if (error instanceof CloudflareTimeoutError) {
+        // The binding cannot be canceled, so acceptance is unknown. Report it
+        // honestly and let the caller decide; there is no automatic retry.
+        return { kind: 'ambiguous', provider: 'cloudflare', reason: 'timeout' };
+      }
+
       return classifyCloudflareError(error);
+    } finally {
+      if (timer !== undefined) {
+        clearTimeout(timer);
+      }
     }
   },
 });

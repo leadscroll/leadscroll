@@ -295,117 +295,13 @@ export const notificationPreferences = sqliteTable(
   (table) => [primaryKey({ columns: [table.workspaceId, table.userId] })],
 );
 
-// Durable per-recipient delivery ledger. One row per
-// (workspace, event, recipient, template version); the unique index is the
-// duplicate guard for intake replays and concurrent creation. Provider
-// credentials are never stored here: `provider` and `config_revision` pin the
-// account configuration, and `frozen_envelope_json` holds only the rendered
-// minimal message frozen at the first attempt.
-export const NOTIFICATION_STATUSES = [
-  'pending',
-  'claimed',
-  'sending',
-  'accepted',
-  'retry',
-  'skipped',
-  'failed',
-  'unknown',
-] as const;
-export type NotificationStatus = (typeof NOTIFICATION_STATUSES)[number];
-
 export const NOTIFICATION_PROVIDERS = ['cloudflare', 'resend'] as const;
 export type NotificationProvider = (typeof NOTIFICATION_PROVIDERS)[number];
 
-export const notificationOutbox = sqliteTable(
-  'notification_outbox',
-  {
-    acceptedAt: timestampMs('accepted_at'),
-    attemptCount: integer('attempt_count').notNull().default(0),
-    configRevision: integer('config_revision'),
-    createdAt: timestampMs('created_at').notNull(),
-    deliveryKey: text('delivery_key'),
-    eventKey: text('event_key').notNull(),
-    eventKind: text('event_kind').notNull().default('lead.created'),
-    firstAttemptAt: timestampMs('first_attempt_at'),
-    frozenEnvelopeJson: text('frozen_envelope_json'),
-    id: text('id').primaryKey(),
-    idempotencyDeadline: timestampMs('idempotency_deadline'),
-    leadId: text('lead_id')
-      .notNull()
-      .references(() => leads.id),
-    leaseExpiresAt: timestampMs('lease_expires_at'),
-    leaseToken: text('lease_token'),
-    nextAttemptAt: timestampMs('next_attempt_at').notNull(),
-    payloadHash: text('payload_hash'),
-    provider: text('provider', { enum: NOTIFICATION_PROVIDERS }),
-    providerMessageId: text('provider_message_id'),
-    reasonCode: text('reason_code'),
-    recipientEmail: text('recipient_email').notNull(),
-    // Set to NULL when the staff account is deleted; the accepted audit row
-    // and the frozen address survive. Deletion also skips pending work.
-    recipientUserId: text('recipient_user_id').references(() => user.id, {
-      onDelete: 'set null',
-    }),
-    status: text('status', { enum: NOTIFICATION_STATUSES })
-      .notNull()
-      .default('pending'),
-    templateVersion: integer('template_version').notNull().default(1),
-    // Set once when any attempt produced an unresolved acceptance outcome.
-    // Never cleared: a later definite rejection or suppression must not erase
-    // the possibility that an earlier attempt was accepted.
-    uncertainAt: timestampMs('uncertain_at'),
-    updatedAt: timestampMs('updated_at').notNull(),
-    workspaceId: text('workspace_id')
-      .notNull()
-      .references(() => workspaces.id),
-  },
-  (table) => [
-    uniqueIndex('notification_outbox_event_recipient_unique').on(
-      table.workspaceId,
-      table.eventKey,
-      table.recipientUserId,
-      table.templateVersion,
-    ),
-    // Due-work scan: pending/retry rows ordered by their next attempt.
-    index('notification_outbox_due_idx').on(
-      table.status,
-      table.nextAttemptAt,
-      table.id,
-    ),
-    // Lease recovery scan (claimed/sending rows whose lease expired).
-    index('notification_outbox_lease_idx').on(table.leaseExpiresAt),
-    // Bounded retention cleanup scan over resolved terminal rows.
-    index('notification_outbox_cleanup_idx').on(table.status, table.updatedAt),
-    // Per-recipient self-service history, newest first.
-    index('notification_outbox_history_idx').on(
-      table.workspaceId,
-      table.recipientUserId,
-      table.createdAt,
-    ),
-  ],
-);
-
-// Bounded operational state per workspace: proves the scheduler runs and
-// records the last safe configuration error without deriving health from
-// successful messages alone.
-export const notificationDispatchState = sqliteTable(
-  'notification_dispatch_state',
-  {
-    configErrorAt: timestampMs('config_error_at'),
-    configErrorCode: text('config_error_code'),
-    configErrorRevision: integer('config_error_revision'),
-    lastSuccessAt: timestampMs('last_success_at'),
-    lastTickAt: timestampMs('last_tick_at').notNull(),
-    updatedAt: timestampMs('updated_at').notNull(),
-    workspaceId: text('workspace_id').primaryKey(),
-  },
-  () => [],
-);
-
-// Explicit administrator test messages. The request id is durable so replays
-// and concurrent attempts cannot emit a second message; the frozen payload
-// lets a Resend ambiguous outcome retry the exact same keyed request inside
-// its idempotency window.
+// Explicit administrator test messages. One row is one attempt: the request
+// id is the durable dedup key and the saved configuration revision tells the
+// UI whether the result still applies. There is no frozen payload, automatic
+// retry, or replay; an ambiguous result is reported as unknown and left alone.
 export const NOTIFICATION_TEST_STATUSES = [
   'sending',
   'accepted',
@@ -422,8 +318,6 @@ export const notificationTestAttempts = sqliteTable(
     completedAt: timestampMs('completed_at'),
     configRevision: integer('config_revision').notNull(),
     createdAt: timestampMs('created_at').notNull(),
-    deliveryKey: text('delivery_key'),
-    frozenEnvelopeJson: text('frozen_envelope_json'),
     id: text('id').primaryKey(),
     provider: text('provider', { enum: NOTIFICATION_PROVIDERS }),
     providerMessageId: text('provider_message_id'),
@@ -447,10 +341,13 @@ export const notificationTestAttempts = sqliteTable(
   ],
 );
 
+// NOTE: the durable delivery outbox and scheduler state were removed in
+// migration 0006. Notification delivery is best-effort event work now; see
+// docs/email-notifications.md.
+
 // Installation-level email configuration singleton per workspace. `revision`
-// is server-generated and compare-and-swap guarded; a paused configuration
-// error is tied to the revision that produced it, so any settings change
-// resumes attempts without an automatic test.
+// is server-generated and compare-and-swap guarded, so concurrent
+// administrator edits cannot silently overwrite each other.
 export const EMAIL_SETTINGS_PROVIDERS = [
   'disabled',
   'cloudflare',
@@ -465,9 +362,6 @@ export const emailSettings = sqliteTable(
     enabled: integer('enabled', { mode: 'boolean' }).notNull().default(false),
     fromEmail: text('from_email'),
     fromName: text('from_name'),
-    pausedAt: timestampMs('paused_at'),
-    pausedReasonCode: text('paused_reason_code'),
-    pausedRevision: integer('paused_revision'),
     provider: text('provider', { enum: EMAIL_SETTINGS_PROVIDERS })
       .notNull()
       .default('disabled'),

@@ -9,7 +9,6 @@ import {
   type AccountCapabilities,
   type EmailSettingsView,
   type EmailTestView,
-  type NotificationHistoryView,
   type NotificationPreferenceView,
   type UpdateEmailSettingsRequest,
 } from '@/domain/schemas';
@@ -20,7 +19,6 @@ export type UpdateEmailSettingsInput = UpdateEmailSettingsRequest;
 export {
   accountCapabilitiesQueryKey,
   emailSettingsQueryKey,
-  notificationHistoryQueryKey,
   notificationPreferenceQueryKey,
   type SavedConfigurationTest,
   savedConfigurationTestable,
@@ -30,7 +28,6 @@ export type {
   EmailSettingsView,
   EmailTestOutcome,
   EmailTestView,
-  NotificationHistoryView,
   NotificationPreferenceView,
 } from '@/domain/schemas';
 
@@ -39,12 +36,6 @@ export const notificationsApi = {
   getPreference: () =>
     request<NotificationPreferenceView>('/v1/account/notifications'),
   getSettings: () => request<EmailSettingsView>('/v1/settings/email'),
-  history: (cursor?: string) =>
-    request<NotificationHistoryView>(
-      `/v1/account/notifications/history${
-        cursor === undefined ? '' : `?cursor=${encodeURIComponent(cursor)}`
-      }`,
-    ),
   saveSettings: (input: UpdateEmailSettingsInput) =>
     request<EmailSettingsView>('/v1/settings/email', {
       body: JSON.stringify(input),

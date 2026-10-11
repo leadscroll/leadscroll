@@ -39,12 +39,11 @@ describe('Resend email adapter', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  test('sends the frozen payload to the fixed endpoint with an idempotency key', async () => {
+  test('sends the payload to the fixed endpoint with an idempotency key', async () => {
     const fetchMock = vi.fn<FetchLike>(async () =>
       jsonResponse({ id: 're_1' }),
     );
     const sender = senderWith(fetchMock);
-    expect(sender.capabilities.idempotencyWindowSeconds).toBe(86_400);
 
     await expect(
       sender.send(envelope, { deliveryKey: 'leadscroll-notification:abc' }),
@@ -69,12 +68,12 @@ describe('Resend email adapter', () => {
     });
   });
 
-  test('identical retries reuse the exact key and body', async () => {
+  test('repeated sends with the same context reuse the exact key and body', async () => {
     const fetchMock = vi.fn<FetchLike>(async () =>
       jsonResponse({ id: 're_2' }),
     );
     const sender = senderWith(fetchMock);
-    const context = { deliveryKey: 'leadscroll-notification:retry' };
+    const context = { deliveryKey: 'leadscroll-notification:repeat' };
     await sender.send(envelope, context);
     await sender.send(envelope, context);
     expect(fetchMock).toHaveBeenCalledTimes(2);
@@ -84,6 +83,29 @@ describe('Resend email adapter', () => {
     expect((first.headers as Record<string, string>)['Idempotency-Key']).toBe(
       (second.headers as Record<string, string>)['Idempotency-Key'],
     );
+  });
+
+  test('aborts on timeout and reports the unknown outcome honestly', async () => {
+    const hangingFetch = vi.fn<FetchLike>(
+      async (_input, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => {
+            reject(new Error('aborted'));
+          });
+        }),
+    );
+
+    await expect(
+      senderWith(hangingFetch).send(envelope, {
+        deliveryKey: 'leadscroll-notification:timeout',
+        timeoutMs: 10,
+      }),
+    ).resolves.toEqual({
+      kind: 'ambiguous',
+      provider: 'resend',
+      reason: 'timeout',
+    });
+    expect(hangingFetch).toHaveBeenCalledTimes(1);
   });
 
   test('treats malformed success and transport failures as ambiguous', async () => {

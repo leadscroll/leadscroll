@@ -1,9 +1,5 @@
 import { type EmailSettingsView, type EmailTestView } from '../api';
-import {
-  pausedReasonLabel,
-  readinessReasonLabel,
-  testOutcomeLabel,
-} from './labels';
+import { readinessReasonLabel, testOutcomeLabel } from './labels';
 import { Notice } from '@/components/Notice';
 import { Button } from '@/components/ui/Button';
 
@@ -11,14 +7,12 @@ const availabilityTone = {
   configured: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-100',
   disabled: 'border-slate-700 bg-slate-900/60 text-slate-300',
   misconfigured: 'border-amber-500/30 bg-amber-500/10 text-amber-100',
-  unavailable: 'border-rose-500/30 bg-rose-500/10 text-rose-100',
 } as const;
 
 const availabilityTitle = {
   configured: 'Configured locally',
   disabled: 'Email sending is disabled',
   misconfigured: 'Configuration is incomplete',
-  unavailable: 'Sending is paused',
 } as const;
 
 const formatTimestamp = (value: null | string): string =>
@@ -64,17 +58,12 @@ export const EmailStatusPanel = ({
               'Complete the saved provider configuration.'}
           </p>
         )}
-        {availability === 'unavailable' && settings.paused && (
-          <p className="mt-1">
-            {pausedReasonLabel(settings.paused.reasonCode)} Changing the
-            settings or a successful test resumes sending.
-          </p>
-        )}
         {availability === 'configured' && (
           <p className="mt-1">
-            Local configuration checks passed. A test email confirms the
-            provider accepts messages; local checks cannot prove remote
-            readiness.
+            Local configuration checks passed. Alerts are sent best-effort while
+            the Worker request that created the lead is alive; there is no retry
+            or delivery history. A test email confirms the provider accepts
+            messages; local checks cannot prove remote readiness.
           </p>
         )}
       </div>
@@ -137,57 +126,9 @@ export const EmailStatusPanel = ({
         )}
         <p className="mt-2 text-xs text-slate-500">
           The test goes only to your own account email using the saved
-          configuration. Saving or enabling never sends automatically.
+          configuration. Saving or enabling never sends automatically. One
+          attempt is made; an unknown outcome is not retried.
         </p>
-      </div>
-
-      <div className="mt-4 rounded-lg border border-slate-800 bg-slate-950/60 p-3">
-        <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500">
-          Scheduler
-        </h3>
-        <dl className="mt-2 grid gap-1 text-xs text-slate-400">
-          <div className="flex items-center justify-between gap-3">
-            <dt>Last tick</dt>
-            <dd className="text-slate-300">
-              {formatTimestamp(settings.dispatch.lastTickAt)}
-            </dd>
-          </div>
-          <div className="flex items-center justify-between gap-3">
-            <dt>Waiting to send</dt>
-            <dd className="text-slate-300">{settings.dispatch.pending}</dd>
-          </div>
-          <div className="flex items-center justify-between gap-3">
-            <dt>In flight</dt>
-            <dd className="text-slate-300">{settings.dispatch.inFlight}</dd>
-          </div>
-          <div className="flex items-center justify-between gap-3">
-            <dt>Outcome unknown</dt>
-            <dd
-              className={
-                settings.dispatch.unknown > 0
-                  ? 'text-amber-300'
-                  : 'text-slate-300'
-              }
-            >
-              {settings.dispatch.unknown}
-            </dd>
-          </div>
-          <div className="flex items-center justify-between gap-3">
-            <dt>Last accepted send</dt>
-            <dd className="text-slate-300">
-              {formatTimestamp(settings.dispatch.lastSuccessAt)}
-            </dd>
-          </div>
-          {settings.dispatch.configError !== null && (
-            <div className="flex items-center justify-between gap-3">
-              <dt>Scheduler error</dt>
-              <dd className="text-amber-300">
-                {settings.dispatch.configError.code} ·{' '}
-                {formatTimestamp(settings.dispatch.configError.at)}
-              </dd>
-            </div>
-          )}
-        </dl>
       </div>
 
       {error !== null && error !== undefined && (

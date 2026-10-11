@@ -482,21 +482,14 @@ describe('email settings API behavior', () => {
     ).toMatchObject({ total: 0 });
   });
 
-  test('the settings view includes redacted scheduler health', async () => {
+  test('the settings view reports readiness without delivery machinery', async () => {
     const fx = await startApiFixture();
     const view = await fx.request('/v1/settings/email');
     expect(view.status).toBe(200);
-    expect(view.json.data).toMatchObject({
-      dispatch: {
-        configError: null,
-        inFlight: 0,
-        lastSuccessAt: null,
-        lastTickAt: null,
-        oldestDueAt: null,
-        pending: 0,
-        unknown: 0,
-      },
-    });
+    const data = view.json.data as Record<string, unknown>;
+    expect(data.readiness).toMatchObject({ availability: 'disabled' });
+    expect(data).not.toHaveProperty('dispatch');
+    expect(data).not.toHaveProperty('paused');
   });
 
   test('forged permission or provider override fields are ignored by the schema', async () => {
@@ -515,7 +508,7 @@ describe('email settings API behavior', () => {
 });
 
 describe('self-service notification API', () => {
-  test('reads and updates the caller preference and own history', async () => {
+  test('reads and updates the caller preference', async () => {
     const fx = await startApiFixture();
     const initial = await fx.request('/v1/account/notifications');
     expect(initial.status).toBe(200);
@@ -534,13 +527,9 @@ describe('self-service notification API', () => {
 
     const reloaded = await fx.request('/v1/account/notifications');
     expect(reloaded.json.data).toMatchObject({ newLeadEmail: true });
-
-    const history = await fx.request('/v1/account/notifications/history');
-    expect(history.status).toBe(200);
-    expect(history.json.data).toMatchObject({ data: [], nextCursor: null });
   });
 
-  test('rejects a non-boolean preference and unknown history fields', async () => {
+  test('rejects a non-boolean preference and the removed history endpoint', async () => {
     const fx = await startApiFixture();
     const invalid = await fx.request('/v1/account/notifications', {
       body: JSON.stringify({ newLeadEmail: 'yes' }),
@@ -548,9 +537,7 @@ describe('self-service notification API', () => {
     });
     expect(invalid.status).toBe(422);
 
-    const page = await fx.request(
-      '/v1/account/notifications/history?limit=999',
-    );
-    expect(page.status).toBe(422);
+    const removed = await fx.request('/v1/account/notifications/history');
+    expect(removed.status).toBe(404);
   });
 });
