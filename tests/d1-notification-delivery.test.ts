@@ -1158,6 +1158,21 @@ describe('unresolved acceptance remains honest', () => {
     });
   };
 
+  test('expiry preserves uncertainty after an abandoned retry claim returns to pending', async () => {
+    const now = new Date();
+    await ambiguousRow('ambig-pending-expiry', {
+      created_at: now.getTime() - NOTIFICATION_EVENT_TTL_MS - 1,
+      status: 'pending',
+    });
+    await expireStaleNotificationIntents(
+      fixture.env,
+      new Date(now.getTime() - NOTIFICATION_EVENT_TTL_MS),
+      now,
+      100,
+    );
+    expect((await readStrings('ambig-pending-expiry')).status).toBe('unknown');
+  });
+
   test('an installation disable during an uncertain retry preserves unknown outcome', async () => {
     await ambiguousRow('ambig-install-disabled');
     const { calls, sender } = recordingSender(

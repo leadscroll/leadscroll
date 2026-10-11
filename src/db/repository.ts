@@ -3564,6 +3564,7 @@ export const expireStaleNotificationIntents = async (
         sql`${notificationOutbox.id} IN (
           SELECT id FROM notification_outbox
           WHERE status = 'pending' AND created_at <= ${cutoffMs}
+            AND uncertain_at IS NULL
           ORDER BY created_at ASC, id ASC
           LIMIT ${limit})`,
       ),
@@ -3578,7 +3579,7 @@ export const expireStaleNotificationIntents = async (
       .where(
         sql`${notificationOutbox.id} IN (
           SELECT id FROM notification_outbox
-          WHERE status = 'retry' AND created_at <= ${cutoffMs}
+          WHERE status IN ('pending', 'retry') AND created_at <= ${cutoffMs}
             AND uncertain_at IS NOT NULL
           ORDER BY created_at ASC, id ASC
           LIMIT ${limit})`,

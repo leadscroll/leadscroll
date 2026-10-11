@@ -1105,7 +1105,7 @@ export const sendTestEmailCommand = (
       return yield* Effect.fail(domainError(testable.code, testable.message));
     }
 
-    let existing = yield* persist(() =>
+    const existing = yield* persist(() =>
       getOwnedNotificationTestAttempt(
         environment,
         input.requestId,
@@ -1132,12 +1132,15 @@ export const sendTestEmailCommand = (
         return yield* persist(() => reReadTest(environment, input));
       }
 
-      existing = yield* persist(() =>
+      const reserved = yield* persist(() =>
         getOwnedNotificationTestAttempt(
           environment,
           input.requestId,
           input.actorUserId,
         ),
+      );
+      return yield* persist(() =>
+        sendAndRecordTest(environment, state, input, overrides, now, reserved),
       );
     } else {
       if (testAttemptConflict(existing, state, input) !== null) {
