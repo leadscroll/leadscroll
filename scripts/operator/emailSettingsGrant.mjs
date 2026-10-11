@@ -31,7 +31,8 @@ const usage =
 const args = process.argv.slice(2);
 const local = args.includes('--local');
 const unknown = args.filter(
-  (argument) => argument.startsWith('--') && argument !== '--local',
+  (argument) =>
+    argument !== '--' && argument.startsWith('--') && argument !== '--local',
 );
 const userId = args.find((argument) => !argument.startsWith('--'));
 
