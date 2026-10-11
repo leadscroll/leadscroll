@@ -637,6 +637,86 @@ describe('notification delivery state machine', () => {
     expect((await readStrings('out-resend-adapter')).provider).toBe('resend');
   });
 
+  test('never touches a present EMAIL binding in Resend or disabled modes', async () => {
+    let emailCalls = 0;
+    fixture.setEmailBinding({
+      send: async () => {
+        emailCalls += 1;
+        throw new Error('the EMAIL binding must not be called');
+      },
+    });
+    await fixture.enableProvider({ provider: 'resend' });
+    await fixture.insertCredential('re_test_key');
+    await enabledUserAndLead();
+    await fixture.insertOutbox({
+      id: 'out-unused-email',
+      leadId: LEAD_ID,
+      recipient_email: 'staff@example.test',
+      recipient_user_id: USER_ID,
+    });
+    const resendCalls: string[] = [];
+    const resendFetch: FetchLike = async (url) => {
+      resendCalls.push(String(url));
+      return Response.json({ id: 're-unused' });
+    };
+
+    await expect(
+      processNextNotification(fixture.env, {
+        fetchImplementation: resendFetch,
+      }),
+    ).resolves.toMatchObject({ kind: 'accepted' });
+    expect(emailCalls).toBe(0);
+    expect(resendCalls).toEqual(['https://api.resend.com/emails']);
+
+    await fixture.enableProvider({ provider: 'disabled' });
+    await fixture.insertOutbox({
+      id: 'out-disabled-email',
+      leadId: LEAD_ID,
+      recipient_email: 'staff@example.test',
+      recipient_user_id: USER_ID,
+    });
+    await expect(processNextNotification(fixture.env)).resolves.toMatchObject({
+      kind: 'disabled',
+    });
+    expect(emailCalls).toBe(0);
+  });
+
+  test('a credential that cannot be decrypted pauses the revision without sending', async () => {
+    await fixture.enableProvider({ provider: 'resend' });
+    await fixture.insertCredential('re_encrypted_with_other_key');
+    // Encrypt the fixture credential under a different root key than the one
+    // the deployment will use at send time.
+    const { encryptCredential } =
+      await import('@/notifications/credential-crypto');
+    const otherKey = Buffer.from(new Uint8Array(32).fill(9)).toString('base64');
+    const envelope = await encryptCredential(otherKey, {
+      provider: 'resend',
+      value: 're_other_key',
+      workspaceId: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
+    });
+    await fixture.db
+      .prepare(
+        'UPDATE email_credentials SET ciphertext = ?, nonce = ?, key_version = ? WHERE provider = ?',
+      )
+      .bind(envelope.ciphertext, envelope.nonce, envelope.keyVersion, 'resend')
+      .run();
+    await enabledUserAndLead();
+    await fixture.insertOutbox({
+      id: 'out-decrypt',
+      leadId: LEAD_ID,
+      recipient_email: 'staff@example.test',
+      recipient_user_id: USER_ID,
+    });
+
+    await expect(processNextNotification(fixture.env)).resolves.toMatchObject({
+      kind: 'misconfigured',
+      reasonCode: 'decrypt_failed',
+    });
+    const settings = await getEmailSettings(fixture.env);
+    expect(settings?.pausedRevision).toBe(settings?.revision);
+    expect((await readStrings('out-decrypt')).status).toBe('retry');
+  });
+
   test('dispatch is bounded and retention cleanup only removes resolved rows', async () => {
     await fixture.enableProvider({ provider: 'cloudflare' });
     configureCloudflareBinding();

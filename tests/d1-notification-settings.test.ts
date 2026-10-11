@@ -411,6 +411,35 @@ describe('administrator test email command', () => {
     expect(calls[0].body).toBe(calls[1].body);
   });
 
+  test('concurrent sends with the same request id emit one message', async () => {
+    await configuredResend();
+    const calls: string[] = [];
+    const fetchMock: FetchLike = async (_url, init) => {
+      calls.push(
+        String((init?.headers as Record<string, string>)['Idempotency-Key']),
+      );
+      return Response.json({ id: 're-concurrent' });
+    };
+
+    const [first, second] = await Promise.all([
+      run(
+        sendTestEmailCommand(fixture.env, testInput('test-concurrent'), {
+          fetchImplementation: fetchMock,
+        }),
+      ),
+      run(
+        sendTestEmailCommand(fixture.env, testInput('test-concurrent'), {
+          fetchImplementation: fetchMock,
+        }),
+      ),
+    ]);
+    expect(Either.isRight(first)).toBe(true);
+    expect(Either.isRight(second)).toBe(true);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toBe('leadscroll-email-test:test-concurrent');
+    expect(await fixture.count('notification_test_attempts')).toBe(1);
+  });
+
   test('enforces one per minute and five per day per installation', async () => {
     await configuredResend();
     const fetchMock = vi.fn<FetchLike>(acceptedFetch());
