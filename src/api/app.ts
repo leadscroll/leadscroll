@@ -609,13 +609,24 @@ const createAppWithAuth = (environment: Env, getAuth: AuthForRequest) => {
       // errors. Normalize them to the same `{ code, details, message }` envelope
       // the manual `parse()` helper returns, so clients see one error shape.
       // Decoder messages are never returned: some schemas accept free-form
-      // values (custom fields, notes) that a message could echo.
-      .onError(({ code, error }) => {
+      // values (custom fields, notes) that a message could echo. Malformed
+      // JSON is redacted only on the sensitive settings route; intake has its
+      // own route-level parser mapping (413/415).
+      .onError(({ code, error, request }) => {
         if (error instanceof Response) {
           return error;
         }
 
-        if (code === 'VALIDATION' || code === 'PARSE') {
+        if (code === 'VALIDATION') {
+          return withNoStore(
+            errorResponse(422, 'validation_error', 'The request is invalid.'),
+          );
+        }
+
+        if (
+          code === 'PARSE' &&
+          new URL(request.url).pathname.startsWith('/v1/settings/email')
+        ) {
           return withNoStore(
             errorResponse(422, 'validation_error', 'The request is invalid.'),
           );
