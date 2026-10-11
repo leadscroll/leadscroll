@@ -29,10 +29,6 @@ describe('Resend email adapter', () => {
   test('reports a missing key and never calls fetch', async () => {
     const fetchMock = vi.fn<FetchLike>(async () => jsonResponse({ id: 'x' }));
     const sender = createResendEmailSender(undefined, fetchMock);
-    expect(sender.checkConfiguration()).toEqual({
-      configured: false,
-      reason: 'resend_api_key_missing',
-    });
     await expect(
       sender.send(envelope, { deliveryKey: 'k' }),
     ).resolves.toMatchObject({ kind: 'rejected', retryable: false });

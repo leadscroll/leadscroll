@@ -11,7 +11,6 @@
  */
 
 import {
-  type ConfigurationCheck,
   DEFAULT_PROVIDER_TIMEOUT_MS,
   type EmailEnvelope,
   type EmailSender,
@@ -177,10 +176,6 @@ export const createResendEmailSender = (
   apiKey: string | undefined,
   fetchImplementation: FetchLike = fetch,
 ): EmailSender => ({
-  checkConfiguration: (): ConfigurationCheck =>
-    apiKey === undefined || apiKey.trim().length === 0
-      ? { configured: false, reason: 'resend_api_key_missing' }
-      : { configured: true },
   provider: 'resend',
   send: async (
     envelope: EmailEnvelope,

@@ -9,7 +9,6 @@
  */
 
 import {
-  type ConfigurationCheck,
   DEFAULT_PROVIDER_TIMEOUT_MS,
   type EmailEnvelope,
   type EmailSender,
@@ -103,13 +102,6 @@ class CloudflareTimeoutError extends Error {
 export const createCloudflareEmailSender = (
   binding: CloudflareEmailBinding | undefined,
 ): EmailSender => ({
-  checkConfiguration: (): ConfigurationCheck =>
-    binding === undefined
-      ? {
-          configured: false,
-          reason: 'cloudflare_binding_missing',
-        }
-      : { configured: true },
   provider: 'cloudflare',
   send: async (
     envelope: EmailEnvelope,

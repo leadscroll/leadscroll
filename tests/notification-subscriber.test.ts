@@ -45,7 +45,6 @@ const recordingSender = (
     result ?? { kind: 'accepted', provider: 'cloudflare' };
   const sent: SentMessage[] = [];
   const sender: EmailSender = {
-    checkConfiguration: () => ({ configured: true }),
     provider: 'cloudflare',
     send: async (envelope, context) => {
       const resolved =
@@ -216,7 +215,6 @@ describe('lead.created email subscriber', () => {
     let maxInFlight = 0;
     const releases: Array<() => void> = [];
     const sender: EmailSender = {
-      checkConfiguration: () => ({ configured: true }),
       provider: 'cloudflare',
       send: async () => {
         inFlight += 1;

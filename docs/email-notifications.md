@@ -151,6 +151,12 @@ into a new queue. Settings, encrypted credentials, personal preferences,
 permissions, and the redacted audit trail are preserved, and CRM lead data is
 untouched.
 
+Copied source-built installations that still declare the old
+`"triggers": { "crons": ["* * * * *"] }` block should remove it from their
+`wrangler.jsonc` when upgrading: the Worker no longer exports a `scheduled`
+handler, so a Cron invocation would fail harmlessly but noisily. New installs
+and the root configuration ship without it.
+
 ## Rollback
 
 Disable sending in **Manage → Email** first: no new sends start. Reverting

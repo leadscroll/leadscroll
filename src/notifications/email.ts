@@ -20,9 +20,6 @@
  * Worker's runtime window.
  */
 
-export type ConfigurationCheck =
-  { configured: false; reason: string } | { configured: true };
-
 export type EmailAddress = {
   email: string;
   name?: string;
@@ -41,7 +38,6 @@ export type EmailProvider = 'cloudflare' | 'resend';
 export const DEFAULT_PROVIDER_TIMEOUT_MS = 10_000;
 
 export type EmailSender = {
-  checkConfiguration: () => ConfigurationCheck;
   provider: EmailProvider;
   send: (envelope: EmailEnvelope, context: SendContext) => Promise<SendResult>;
 };

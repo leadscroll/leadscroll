@@ -34,10 +34,6 @@ describe('Cloudflare email adapter', () => {
   test('isolates a missing binding to Cloudflare mode', async () => {
     const sender = createCloudflareEmailSender(undefined);
     expect(sender.provider).toBe('cloudflare');
-    expect(sender.checkConfiguration()).toEqual({
-      configured: false,
-      reason: 'cloudflare_binding_missing',
-    });
     await expect(
       sender.send(envelope, { deliveryKey: 'leadscroll-notification:1' }),
     ).resolves.toEqual({
@@ -55,7 +51,6 @@ describe('Cloudflare email adapter', () => {
       return { messageId: 'cf-message-1' };
     });
     const sender = createCloudflareEmailSender(bindingWith(send));
-    expect(sender.checkConfiguration()).toEqual({ configured: true });
     await expect(
       sender.send(envelope, { deliveryKey: 'ignored-for-cloudflare' }),
     ).resolves.toEqual({
