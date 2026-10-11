@@ -1,3 +1,4 @@
+import { sourceWorkerWrapper } from './wrapper.mjs';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import {
@@ -148,6 +149,15 @@ esac
     trace: await readFile(tracePath, 'utf8'),
   };
 };
+
+test('source wrapper preserves the scheduled handler and commit stamp', () => {
+  const wrapper = sourceWorkerWrapper('a'.repeat(40));
+  assert.match(wrapper, /async fetch\(request, env, ctx\)/u);
+  assert.match(wrapper, /core\.fetch\(request, env, ctx\)/u);
+  assert.match(wrapper, /X-LeadScroll-Commit/u);
+  assert.match(wrapper, /async scheduled\(controller, env, ctx\)/u);
+  assert.match(wrapper, /return core\.scheduled\(controller, env, ctx\)/u);
+});
 
 test('copied README installs the exact small caller in its own repository', async () => {
   const [caller, readme] = await Promise.all([

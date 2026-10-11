@@ -3163,7 +3163,6 @@ export const reserveNotificationTestAttempt = async (
   input: {
     configRevision: number;
     now: Date;
-    provider: NotificationProvider;
     requestId: string;
     userId: string;
   },
@@ -3174,10 +3173,10 @@ export const reserveNotificationTestAttempt = async (
   const result = await prepare(
     environment.DB,
     `INSERT INTO notification_test_attempts (
-        id, workspace_id, user_id, config_revision, provider, status,
+        id, workspace_id, user_id, config_revision, status,
         created_at, updated_at
       )
-      SELECT ?, ?, ?, ?, ?, 'sending', ?, ?
+      SELECT ?, ?, ?, ?, 'sending', ?, ?
       WHERE NOT EXISTS (
           SELECT 1 FROM notification_test_attempts
           WHERE workspace_id = ? AND id = ?)
@@ -3193,7 +3192,6 @@ export const reserveNotificationTestAttempt = async (
       DEFAULT_WORKSPACE_ID,
       input.userId,
       input.configRevision,
-      input.provider,
       nowMs,
       nowMs,
       DEFAULT_WORKSPACE_ID,
@@ -3239,9 +3237,12 @@ export const freezeNotificationTestAttempt = async (
   const result = await prepare(
     environment.DB,
     `UPDATE notification_test_attempts
-      SET provider = ?, config_revision = ?, delivery_key = ?,
+      SET status = 'sending', reason_code = NULL, completed_at = NULL,
+          provider = ?, config_revision = ?, delivery_key = ?,
           frozen_envelope_json = ?, updated_at = ?
-      WHERE id = ? AND workspace_id = ? AND status = 'sending'`,
+      WHERE id = ? AND workspace_id = ?
+        AND ((status = 'sending' AND provider IS NULL)
+          OR status IN ('ambiguous', 'rejected'))`,
   )
     .bind(
       input.provider,

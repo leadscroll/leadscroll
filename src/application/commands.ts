@@ -78,7 +78,11 @@ export const createIntakeCommand = (
     );
   });
 
-export const createLeadCommand = (environment: Env, input: CreateLeadRequest) =>
+export const createLeadCommand = (
+  environment: Env,
+  input: CreateLeadRequest,
+  actorUserId: null | string,
+) =>
   Effect.gen(function* () {
     yield* validate(() => {
       if (!input.email && !input.firstName && !input.lastName) {
@@ -91,7 +95,9 @@ export const createLeadCommand = (environment: Env, input: CreateLeadRequest) =>
 
     const tagSpecs = yield* leadTagSpecs(input);
 
-    return yield* persist(() => createLead(environment, input, tagSpecs));
+    return yield* persist(() =>
+      createLead(environment, input, tagSpecs, actorUserId),
+    );
   });
 
 export const updateLeadCommand = (

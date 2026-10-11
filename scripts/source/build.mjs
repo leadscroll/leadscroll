@@ -3,6 +3,7 @@ import {
   sourceBuildFormat,
   validateSourceManifest,
 } from './manifest.mjs';
+import { sourceWorkerWrapper } from './wrapper.mjs';
 import { build } from 'esbuild';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
@@ -117,15 +118,7 @@ await build({
   outfile: join(destination, 'worker.mjs'),
   platform: 'browser',
   stdin: {
-    contents: `import core from './src/worker-global.ts';
-export default {
-  async fetch(request, env, ctx) {
-    const response = await core.fetch(request, env, ctx);
-    const stamped = new Response(response.body, response);
-    stamped.headers.set('X-LeadScroll-Commit', ${JSON.stringify(commit)});
-    return stamped;
-  }
-};`,
+    contents: sourceWorkerWrapper(commit),
     resolveDir: source,
     sourcefile: 'source-build-entry.js',
   },

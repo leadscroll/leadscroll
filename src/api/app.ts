@@ -14,6 +14,14 @@ import {
 } from '@/application/commands';
 import { type DomainError, type PersistenceError } from '@/application/errors';
 import {
+  getEmailSettingsView,
+  getNotificationPreferenceView,
+  listNotificationHistoryCommand,
+  sendTestEmailCommand,
+  updateEmailSettingsCommand,
+  updateNotificationPreferenceCommand,
+} from '@/application/notification-commands';
+import {
   bulkTagCommand,
   createTagCommand,
   deleteTagCommand,
@@ -49,6 +57,8 @@ import {
   createStaffInvite,
   type Env,
   getLead,
+  hasAnyEmailSettingsPermission,
+  hasEmailSettingsPermission,
   isBootstrapGrantAvailable,
   isBrowserIntakeToken,
   isIntakeToken,
@@ -74,9 +84,13 @@ import {
   HealthSchema,
   IntakeRequestSchema,
   ListLeadsQuerySchema,
+  ListNotificationHistoryQuerySchema,
+  SendEmailTestRequestSchema,
   SetLeadTagsRequestSchema,
   SetStaffDisabledRequestSchema,
+  UpdateEmailSettingsRequestSchema,
   UpdateLeadRequestSchema,
+  UpdateNotificationPreferenceRequestSchema,
   UpdateTagRequestSchema,
   UpdateTagScopeRequestSchema,
   ValidateInviteRequestSchema,
@@ -136,9 +150,12 @@ const UNSAFE_METHODS = new Set(['DELETE', 'PATCH', 'POST', 'PUT']);
 const DOMAIN_ERROR_STATUS: Record<string, number> = {
   conflict: 409,
   not_found: 404,
+  revision_conflict: 409,
   scope_conflict: 409,
   scope_exists: 409,
   tag_exists: 409,
+  test_daily_limited: 429,
+  test_rate_limited: 429,
 };
 
 const domainErrorStatus = (code: string): number =>
@@ -307,6 +324,39 @@ const requireAdmin = async (
       ),
     } as const;
   }
+};
+
+// Installation email administration is a narrow capability: authentication
+// alone is not enough, and an installation with no designated administrator
+// reports an explicit owner-setup state instead of promoting the caller.
+const requireEmailAdministrator = async (
+  environment: Env,
+  userId: null | string,
+): Promise<{ error: Response } | { userId: string }> => {
+  if (userId === null) {
+    return {
+      error: errorResponse(401, 'unauthorized', 'A real session is required.'),
+    };
+  }
+
+  if (await hasEmailSettingsPermission(environment, userId)) {
+    return { userId };
+  }
+
+  const anyPermission = await hasAnyEmailSettingsPermission(environment);
+  return {
+    error: anyPermission
+      ? errorResponse(
+          403,
+          'forbidden',
+          'You do not have permission to manage email settings.',
+        )
+      : errorResponse(
+          403,
+          'email_settings_owner_required',
+          'No email settings administrator exists on this installation. An operator must grant the capability to an enabled account.',
+        ),
+  };
 };
 
 // The public intake route is unauthenticated and cookie-free, so it answers
@@ -689,6 +739,10 @@ const createAppWithAuth = (environment: Env, getAuth: AuthForRequest) => {
           // The account-sessions routes need the caller's own session row;
           // no raw token is propagated into application context.
           adminSession: admin.identity.session,
+          // Durable account id, used for self-suppression and per-user
+          // notification state. Null for the development bypass when no
+          // matching account row exists; such routes fail closed.
+          adminUserId: admin.identity.userId,
         };
       })
       .get(
@@ -719,10 +773,10 @@ const createAppWithAuth = (environment: Env, getAuth: AuthForRequest) => {
       )
       .post(
         '/v1/leads',
-        async ({ body, request }) => {
+        async ({ adminUserId, body, request }) => {
           const result = await run(
             request,
-            createLeadCommand(environment, body),
+            createLeadCommand(environment, body, adminUserId),
           );
           return 'error' in result
             ? result.error
@@ -1042,6 +1096,166 @@ const createAppWithAuth = (environment: Env, getAuth: AuthForRequest) => {
           return 'error' in result
             ? result.error
             : { data: { revoked: result.data } };
+        },
+      )
+      // Self-service notification preference and own-recipient history. The
+      // session user id is authoritative; no path, body, or cursor field can
+      // address another staff member's rows.
+      .get('/v1/account/notifications', async ({ adminUserId }) => {
+        if (adminUserId === null) {
+          return errorResponse(
+            401,
+            'unauthorized',
+            'A real session is required.',
+          );
+        }
+
+        return {
+          data: await getNotificationPreferenceView(environment, adminUserId),
+        };
+      })
+      .put(
+        '/v1/account/notifications',
+        async ({ adminUserId, body, request }) => {
+          if (adminUserId === null) {
+            return errorResponse(
+              401,
+              'unauthorized',
+              'A real session is required.',
+            );
+          }
+
+          const parsed = await parse(
+            UpdateNotificationPreferenceRequestSchema,
+            body,
+          );
+          if ('error' in parsed) {
+            return parsed.error;
+          }
+
+          const result = await run(
+            request,
+            updateNotificationPreferenceCommand(
+              environment,
+              adminUserId,
+              parsed.data.newLeadEmail,
+            ),
+          );
+          return 'error' in result ? result.error : { data: result.data };
+        },
+      )
+      .get(
+        '/v1/account/notifications/history',
+        async ({ adminUserId, query, request }) => {
+          if (adminUserId === null) {
+            return errorResponse(
+              401,
+              'unauthorized',
+              'A real session is required.',
+            );
+          }
+
+          const parsed = await parse(ListNotificationHistoryQuerySchema, query);
+          if ('error' in parsed) {
+            return parsed.error;
+          }
+
+          const result = await run(
+            request,
+            listNotificationHistoryCommand(
+              environment,
+              adminUserId,
+              parsed.data.cursor ?? null,
+              parsed.data.limit ?? LIST_LIMIT_DEFAULT,
+            ),
+          );
+          return 'error' in result ? result.error : result.data;
+        },
+      )
+      // Installation email settings. Every route below requires the narrow
+      // manageEmailSettings capability on top of the staff session guard.
+      .get('/v1/settings/email', async ({ adminUserId, request }) => {
+        const admin = await requireEmailAdministrator(environment, adminUserId);
+        if ('error' in admin) {
+          return admin.error;
+        }
+
+        const view = await getEmailSettingsView(
+          environment,
+          resolveAuthOrigin(environment, request),
+        );
+        return Response.json(
+          { data: view },
+          { headers: { 'Cache-Control': 'no-store' } },
+        );
+      })
+      .put('/v1/settings/email', async ({ adminUserId, body, request }) => {
+        const admin = await requireEmailAdministrator(environment, adminUserId);
+        if ('error' in admin) {
+          return admin.error;
+        }
+
+        const parsed = await parse(UpdateEmailSettingsRequestSchema, body);
+        if ('error' in parsed) {
+          return parsed.error;
+        }
+
+        const result = await run(
+          request,
+          updateEmailSettingsCommand(environment, {
+            actorUserId: admin.userId,
+            canonicalOrigin: resolveAuthOrigin(environment, request),
+            credential: parsed.data.credential,
+            enabled: parsed.data.enabled,
+            expectedRevision: parsed.data.expectedRevision,
+            fromEmail: parsed.data.fromEmail ?? null,
+            fromName: parsed.data.fromName ?? null,
+            provider: parsed.data.provider,
+          }),
+        );
+        if ('error' in result) {
+          return result.error;
+        }
+
+        return Response.json(
+          { data: result.data },
+          { headers: { 'Cache-Control': 'no-store' } },
+        );
+      })
+      .post(
+        '/v1/settings/email/test',
+        async ({ adminEmail, adminUserId, body, request }) => {
+          const admin = await requireEmailAdministrator(
+            environment,
+            adminUserId,
+          );
+          if ('error' in admin) {
+            return admin.error;
+          }
+
+          const parsed = await parse(SendEmailTestRequestSchema, body);
+          if ('error' in parsed) {
+            return parsed.error;
+          }
+
+          const result = await run(
+            request,
+            sendTestEmailCommand(environment, {
+              actorEmail: adminEmail.toLowerCase(),
+              actorUserId: admin.userId,
+              canonicalOrigin: resolveAuthOrigin(environment, request),
+              expectedRevision: parsed.data.expectedRevision,
+              requestId: parsed.data.requestId,
+            }),
+          );
+          if ('error' in result) {
+            return result.error;
+          }
+
+          return Response.json(
+            { data: result.data },
+            { headers: { 'Cache-Control': 'no-store' } },
+          );
         },
       )
   );

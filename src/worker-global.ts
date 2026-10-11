@@ -1,5 +1,6 @@
 import { createApp } from './api/app';
 import { logRequest, markRequestStart } from './api/logging';
+import { runNotificationDispatch } from './application/notification-commands';
 import { type Env as Environment } from './db/repository';
 import { env } from 'cloudflare:workers';
 
@@ -39,5 +40,15 @@ export default {
     }
 
     return workerEnvironment.ASSETS.fetch(request);
+  },
+  /**
+   * Scheduled dispatch. The `environment` argument is the runtime binding for
+   * real Cron invocations; tests may pass an explicit fixture instead. The
+   * handler returns its promise so the platform awaits the bounded work.
+   */
+  async scheduled(_controller?: unknown, environment?: unknown): Promise<void> {
+    const target =
+      (environment as Environment | undefined) ?? workerEnvironment;
+    await runNotificationDispatch(target);
   },
 };

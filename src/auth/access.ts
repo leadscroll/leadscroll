@@ -4,6 +4,11 @@ import { type Env, getStaffAccountByEmail } from '@/db/repository';
 export type SessionIdentity = {
   email: string;
   session: null | { id: string; userId: string };
+  // Resolved staff-account id. Present for real sessions and for the
+  // development bypass when a matching account row exists; null when the
+  // bypass has no durable account (features that must persist per-user state
+  // fail closed).
+  userId: null | string;
 };
 
 export class UnauthorizedError extends Error {
@@ -20,9 +25,14 @@ export const requireSessionIdentity = async (
   // Development/test-only bypass so local runs and the Miniflare D1 suites do
   // not need a real session. Production always requires a Better Auth session.
   if (environment.ENVIRONMENT !== 'production' && environment.DEV_ADMIN_EMAIL) {
+    const bypassAccount = await getStaffAccountByEmail(
+      environment,
+      environment.DEV_ADMIN_EMAIL.toLowerCase(),
+    );
     return {
       email: environment.DEV_ADMIN_EMAIL,
       session: null,
+      userId: bypassAccount?.id ?? null,
     };
   }
 
@@ -58,6 +68,7 @@ export const requireSessionIdentity = async (
       id: session.session.id,
       userId: session.session.userId,
     },
+    userId: account.id,
   };
 };
 

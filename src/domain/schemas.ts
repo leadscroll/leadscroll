@@ -376,3 +376,88 @@ export const AccountSessionViewSchema = Schema.Struct({
 export type AccountSessionView = Schema.Schema.Type<
   typeof AccountSessionViewSchema
 >;
+
+// New-lead email notifications. Personal preferences stay separate from
+// installation-level email settings; "availability" is a closed, safe summary
+// computed from the saved provider configuration.
+export const NotificationAvailabilitySchema = Schema.Literal(
+  'configured',
+  'disabled',
+  'misconfigured',
+  'unavailable',
+);
+export type NotificationAvailability = Schema.Schema.Type<
+  typeof NotificationAvailabilitySchema
+>;
+
+export const UpdateNotificationPreferenceRequestSchema = Schema.Struct({
+  newLeadEmail: Schema.Boolean,
+}).annotations({
+  description:
+    'Opt in or out of email alerts for newly created leads. Defaults off.',
+});
+export type UpdateNotificationPreferenceRequest = Schema.Schema.Type<
+  typeof UpdateNotificationPreferenceRequestSchema
+>;
+
+export const ListNotificationHistoryQuerySchema = Schema.Struct({
+  cursor: Schema.optional(NonEmptyStringSchema),
+  limit: Schema.optional(
+    Schema.NumberFromString.pipe(
+      Schema.int(),
+      Schema.greaterThanOrEqualTo(1),
+      Schema.lessThanOrEqualTo(100),
+    ),
+  ),
+});
+export type ListNotificationHistoryQuery = Schema.Schema.Type<
+  typeof ListNotificationHistoryQuerySchema
+>;
+
+// Installation email settings. `expectedRevision` is a server-generated
+// compare-and-swap token; the credential operation is explicit keep/replace/
+// remove so a blank key field can never erase a stored credential.
+export const EmailSettingsProviderSchema = Schema.Literal(
+  'cloudflare',
+  'disabled',
+  'resend',
+);
+export type EmailSettingsProvider = Schema.Schema.Type<
+  typeof EmailSettingsProviderSchema
+>;
+
+export const EmailCredentialOperationSchema = Schema.Struct({
+  operation: Schema.Literal('keep', 'remove', 'replace'),
+  value: Schema.optional(Schema.String.pipe(Schema.maxLength(512))),
+}).annotations({
+  description:
+    'keep preserves the stored provider key, replace stores the supplied value, remove deletes it and disables the affected provider.',
+});
+
+export const UpdateEmailSettingsRequestSchema = Schema.Struct({
+  credential: EmailCredentialOperationSchema,
+  enabled: Schema.Boolean,
+  expectedRevision: Schema.Number.pipe(Schema.int(), Schema.nonNegative()),
+  fromEmail: Schema.optional(Schema.NullOr(EmailSchema)),
+  fromName: Schema.optional(
+    Schema.NullOr(NonEmptyStringSchema.pipe(Schema.maxLength(120))),
+  ),
+  provider: EmailSettingsProviderSchema,
+}).annotations({
+  description:
+    'Saves installation email settings. Never sends a test automatically and never accepts a client-chosen origin or provider base URL.',
+});
+export type UpdateEmailSettingsRequest = Schema.Schema.Type<
+  typeof UpdateEmailSettingsRequestSchema
+>;
+
+export const SendEmailTestRequestSchema = Schema.Struct({
+  expectedRevision: Schema.Number.pipe(Schema.int(), Schema.nonNegative()),
+  requestId: NonEmptyStringSchema.pipe(Schema.maxLength(64)),
+}).annotations({
+  description:
+    'Sends one optional test message to the signed-in administrator using the saved configuration; requestId deduplicates retries.',
+});
+export type SendEmailTestRequest = Schema.Schema.Type<
+  typeof SendEmailTestRequestSchema
+>;
