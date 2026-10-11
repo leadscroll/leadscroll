@@ -341,9 +341,8 @@ export const notificationTestAttempts = sqliteTable(
   ],
 );
 
-// NOTE: the durable delivery outbox and scheduler state were removed in
-// migration 0006. Notification delivery is best-effort event work now; see
-// docs/email-notifications.md.
+// Notification delivery is best-effort event work, with no persisted delivery
+// state; see docs/email-notifications.md.
 
 // Installation-level email configuration singleton per workspace. `revision`
 // is server-generated and compare-and-swap guarded, so concurrent

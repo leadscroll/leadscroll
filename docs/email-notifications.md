@@ -153,28 +153,19 @@ There is no scheduler to monitor and no delivery-status table to reconcile.
 
 ## Upgrade note
 
-Migration `0006_thin_deathbird.sql` removes the durable notification outbox,
-dispatch state, scheduler pause columns, and test replay columns. Obsolete
-notification delivery records are discarded by design; they are not migrated
-into a new queue. Settings, encrypted credentials, personal preferences,
-permissions, and the redacted audit trail are preserved, and CRM lead data is
-untouched.
-
-Copied source-built installations that still declare the old
-`"triggers": { "crons": ["* * * * *"] }` block should remove it from their
-`wrangler.jsonc` when upgrading: the Worker no longer exports a `scheduled`
-handler, so a Cron invocation would fail harmlessly but noisily. New installs
-and the root configuration ship without it.
+Migration `0004_email_notifications.sql` adds the email settings, encrypted
+credentials, administration permissions and audit, personal preferences, and
+test-attempt tables. It grants the email-administration capability to an enabled
+bootstrap owner identified by the existing registration claim. Existing CRM data
+and migrations remain unchanged. No outbox, scheduler state, or Cron is needed.
 
 ## Rollback
 
 Disabling sending stops future lead events from starting new sends, but a
 subscriber snapshot that was already running may still finish its in-flight
-sends; the change is not retroactive and does not cancel work. The schema is
-forward-only: migration `0006_thin_deathbird.sql` drops tables and columns the
-previous outbox-based code needs, so a code rollback requires a Worker version
-compatible with the current schema or restoring the database from a backup
-taken before `0006`. Do not roll the schema back destructively. Provider API
+sends; the change is not retroactive and does not cancel work. Keep the
+additive schema migration in place when rolling back application code; changing
+the source pin does not reverse database migrations. Provider API
 keys can be revoked at the provider even though old D1 backups may retain
 ciphertext.
 
