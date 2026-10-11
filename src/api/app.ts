@@ -156,6 +156,7 @@ const DOMAIN_ERROR_STATUS: Record<string, number> = {
   tag_exists: 409,
   test_daily_limited: 429,
   test_rate_limited: 429,
+  test_request_conflict: 409,
 };
 
 const domainErrorStatus = (code: string): number =>

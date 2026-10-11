@@ -619,6 +619,53 @@ describe('test attempt identity and replay safety', () => {
     }
   };
 
+  test('a settings change at the test send boundary prevents using the stale credential', async () => {
+    await configuredResend();
+    const fetchMock = vi.fn(acceptedFetch());
+    const outcome = await run(
+      sendTestEmailCommand(fixture.env, testInput('boundary-settings'), {
+        beforeFreeze: async () => {
+          await saveEmailSettings(
+            fixture.env,
+            saveInput(1, { provider: 'cloudflare' }),
+          );
+        },
+        fetchImplementation: fetchMock,
+      }),
+    );
+    expect(Either.isRight(outcome)).toBe(true);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(
+      (await getNotificationTestAttempt(fixture.env, 'boundary-settings'))
+        ?.provider,
+    ).toBeNull();
+  });
+
+  test('a test replay crossing its deadline during preparation never submits again', async () => {
+    await configuredResend();
+    const t0 = Date.now();
+    await ambiguousAttempt('boundary-deadline', t0);
+    const deadline =
+      t0 + NOTIFICATION_EVENT_TTL_MS - RESEND_IDEMPOTENCY_SAFETY_MS;
+    const clock = { now: deadline - 1 };
+    const fetchMock = vi.fn(acceptedFetch());
+    const outcome = await run(
+      sendTestEmailCommand(fixture.env, testInput('boundary-deadline'), {
+        beforeFreeze: async () => {
+          clock.now = deadline;
+        },
+        fetchImplementation: fetchMock,
+        now: () => new Date(clock.now),
+      }),
+    );
+    expect(Either.isRight(outcome)).toBe(true);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(
+      (await getNotificationTestAttempt(fixture.env, 'boundary-deadline'))
+        ?.status,
+    ).toBe('ambiguous');
+  });
+
   test('a provider change after an ambiguous attempt makes the old id a conflict with no new send', async () => {
     await configuredResend();
     await ambiguousAttempt('identity-provider', Date.now());

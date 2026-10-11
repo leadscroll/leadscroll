@@ -1158,6 +1158,46 @@ describe('unresolved acceptance remains honest', () => {
     });
   };
 
+  test('an installation disable during an uncertain retry preserves unknown outcome', async () => {
+    await ambiguousRow('ambig-install-disabled');
+    const { calls, sender } = recordingSender(
+      { kind: 'accepted', provider: 'resend' },
+      'resend',
+    );
+    const outcome = await processNextNotification(fixture.env, {
+      beforeFreeze: async () => {
+        await fixture.db.prepare('UPDATE email_settings SET enabled = 0').run();
+      },
+      sender,
+    });
+    expect(outcome.kind).toBe('unknown');
+    expect(calls).toHaveLength(0);
+    expect((await readStrings('ambig-install-disabled')).status).toBe(
+      'unknown',
+    );
+  });
+
+  test('ambiguous retry delay is persisted so another tick cannot immediately resend', async () => {
+    await ambiguousRow('ambig-delay');
+    const now = new Date();
+    const { calls, sender } = recordingSender(
+      { kind: 'ambiguous', provider: 'resend', reason: 'transport_error' },
+      'resend',
+    );
+    await expect(
+      processNextNotification(fixture.env, { now: () => now, sender }),
+    ).resolves.toMatchObject({ kind: 'retry' });
+    const row = await fixture.readOutbox('ambig-delay');
+    expect(row?.next_attempt_at).toBe(now.getTime() + 60_000);
+    await expect(
+      processNextNotification(fixture.env, {
+        now: () => new Date(now.getTime() + 1),
+        sender,
+      }),
+    ).resolves.toMatchObject({ kind: 'idle' });
+    expect(calls).toHaveLength(1);
+  });
+
   test('suppression after an ambiguous attempt becomes unknown, not skipped', async () => {
     await ambiguousRow('ambig-optout');
     await fixture.optIn(USER_ID, false);

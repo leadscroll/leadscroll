@@ -3288,10 +3288,12 @@ export const freezeNotificationTestAttempt = async (
     configRevision: number;
     deliveryKey: string;
     envelopeJson: string;
+    notCreatedBefore: Date;
     now: Date;
     provider: NotificationProvider;
     requestId: string;
     userId: string;
+    writeToken: null | string;
   },
 ): Promise<boolean> => {
   const result = await prepare(
@@ -3305,7 +3307,16 @@ export const freezeNotificationTestAttempt = async (
           updated_at = ?
       WHERE id = ? AND workspace_id = ? AND user_id = ?
         AND ((status = 'sending' AND provider IS NULL)
-          OR status IN ('ambiguous', 'rejected'))`,
+          OR status IN ('ambiguous', 'rejected'))
+        AND config_revision = ?
+        AND (provider IS NULL OR provider = ?)
+        AND (delivery_key IS NULL OR delivery_key = ?)
+        AND (frozen_envelope_json IS NULL OR frozen_envelope_json = ?)
+        AND created_at > ?
+        AND EXISTS (
+          SELECT 1 FROM email_settings s
+          WHERE s.workspace_id = ? AND s.revision = ?
+            AND (s.write_token = ? OR (s.write_token IS NULL AND ? IS NULL)))`,
   )
     .bind(
       input.provider,
@@ -3316,9 +3327,40 @@ export const freezeNotificationTestAttempt = async (
       input.requestId,
       DEFAULT_WORKSPACE_ID,
       input.userId,
+      input.configRevision,
+      input.provider,
+      input.deliveryKey,
+      input.envelopeJson,
+      input.notCreatedBefore.getTime(),
+      DEFAULT_WORKSPACE_ID,
+      input.configRevision,
+      input.writeToken,
+      input.writeToken,
     )
     .run();
-  return (result.meta?.changes ?? 0) > 0;
+  const frozen = (result.meta?.changes ?? 0) > 0;
+  if (!frozen) {
+    // Only an unstarted reservation can be cancelled. Never overwrite another
+    // invocation's frozen, accepted or ambiguous result after losing the CAS.
+    await prepare(
+      environment.DB,
+      `UPDATE notification_test_attempts
+      SET status = 'configuration_error', reason_code = 'config_changed',
+          completed_at = ?, updated_at = ?
+      WHERE id = ? AND workspace_id = ? AND user_id = ?
+        AND status = 'sending' AND provider IS NULL`,
+    )
+      .bind(
+        input.now.getTime(),
+        input.now.getTime(),
+        input.requestId,
+        DEFAULT_WORKSPACE_ID,
+        input.userId,
+      )
+      .run();
+  }
+
+  return frozen;
 };
 
 export const completeNotificationTestAttempt = async (
@@ -3848,13 +3890,14 @@ export const renewNotificationLease = async (
   const result = await prepare(
     environment.DB,
     `UPDATE notification_outbox SET lease_expires_at = ?, updated_at = ?
-      WHERE id = ? AND lease_token = ? AND status = 'sending'`,
+      WHERE id = ? AND lease_token = ? AND status = 'sending' AND lease_expires_at > ?`,
   )
     .bind(
       input.timestamp.getTime() + input.leaseMs,
       input.timestamp.getTime(),
       input.outboxId,
       input.leaseToken,
+      input.timestamp.getTime(),
     )
     .run();
   return (result.meta?.changes ?? 0) > 0;

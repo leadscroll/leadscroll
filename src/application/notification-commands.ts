@@ -774,12 +774,6 @@ const testAttemptConflict = (
     return 'owner';
   }
 
-  if (attempt.provider === null) {
-    // A concurrent reservation has not frozen its identity yet; the caller
-    // reports the durable in-progress state instead of replaying it.
-    return null;
-  }
-
   const settings = state.settings;
   if (settings === null) {
     return 'configuration';
@@ -787,6 +781,10 @@ const testAttemptConflict = (
 
   if (attempt.configRevision !== settings.revision) {
     return 'revision';
+  }
+
+  if (attempt.provider === null) {
+    return null;
   }
 
   if (attempt.provider !== settings.provider) {
@@ -990,7 +988,10 @@ const sendAndRecordTest = async (
   environment: Env,
   state: EmailSettingsState,
   input: SendTestEmailInput,
-  overrides: SenderOverrides,
+  overrides: SenderOverrides & {
+    beforeFreeze?: () => Promise<void>;
+    now?: () => Date;
+  },
   now: Date,
   existing: NotificationTestAttemptRecord | null,
 ): Promise<EmailTestView> => {
@@ -1023,14 +1024,22 @@ const sendAndRecordTest = async (
     return reReadTest(environment, input);
   }
 
+  await overrides.beforeFreeze?.();
+  const sendNow = overrides.now?.() ?? new Date();
   const frozen = await freezeNotificationTestAttempt(environment, {
     configRevision: existing?.configRevision ?? settings.revision,
     deliveryKey,
     envelopeJson: serializeEnvelope(envelope),
-    now,
+    notCreatedBefore: new Date(
+      sendNow.getTime() -
+        NOTIFICATION_EVENT_TTL_MS +
+        RESEND_IDEMPOTENCY_SAFETY_MS,
+    ),
+    now: sendNow,
     provider: existing?.provider ?? provider,
     requestId: input.requestId,
     userId: input.actorUserId,
+    writeToken: settings.writeToken,
   });
   if (!frozen) {
     return reReadTest(environment, input);
@@ -1070,7 +1079,10 @@ const sendAndRecordTest = async (
 export const sendTestEmailCommand = (
   environment: Env,
   input: SendTestEmailInput,
-  overrides: SenderOverrides & { now?: () => Date } = {},
+  overrides: SenderOverrides & {
+    beforeFreeze?: () => Promise<void>;
+    now?: () => Date;
+  } = {},
 ) =>
   Effect.gen(function* () {
     const now = overrides.now?.() ?? new Date();
@@ -1093,7 +1105,7 @@ export const sendTestEmailCommand = (
       return yield* Effect.fail(domainError(testable.code, testable.message));
     }
 
-    const existing = yield* persist(() =>
+    let existing = yield* persist(() =>
       getOwnedNotificationTestAttempt(
         environment,
         input.requestId,
@@ -1113,7 +1125,20 @@ export const sendTestEmailCommand = (
         );
       }
 
-      yield* reserveTest(environment, settings, input, now);
+      const reservation = yield* reserveTest(environment, settings, input, now);
+      if (reservation === 'duplicate') {
+        // The winner may already have frozen or completed this id. Never use
+        // our fresh envelope or snapshot to replay its accepted/ambiguous send.
+        return yield* persist(() => reReadTest(environment, input));
+      }
+
+      existing = yield* persist(() =>
+        getOwnedNotificationTestAttempt(
+          environment,
+          input.requestId,
+          input.actorUserId,
+        ),
+      );
     } else {
       if (testAttemptConflict(existing, state, input) !== null) {
         return yield* Effect.fail(
@@ -1522,6 +1547,7 @@ const recordSendResult = async (
       now.getTime() < prepared.idempotencyDeadline.getTime();
     if (retryableResend) {
       await finish({
+        nextAttemptAt: new Date(now.getTime() + 60_000),
         reasonCode: 'ambiguous',
         status: 'retry',
         uncertain: true,
@@ -1607,10 +1633,13 @@ const sendBoundaryRecheck = async (
   const unresolved = unresolvedAcceptance(row);
   if (state.availability === 'disabled') {
     return {
-      completion: { reasonCode: 'disabled', status: 'skipped' },
+      completion: {
+        reasonCode: 'disabled',
+        status: unresolved ? 'unknown' : 'skipped',
+      },
       outcome: {
         attempt: row.attemptCount,
-        kind: 'skipped',
+        kind: unresolved ? 'unknown' : 'skipped',
         outboxId: row.id,
         reasonCode: 'disabled',
       },
@@ -1790,6 +1819,20 @@ const processNextNotificationInner = async (
     }
 
     return { attempt: row.attemptCount, kind: 'idle' };
+  }
+
+  now = currentTime();
+  if (retryDeadlinePassed(row, now)) {
+    await finish({
+      reasonCode: 'idempotency_deadline_passed',
+      status: 'unknown',
+    });
+    return {
+      attempt: row.attemptCount,
+      kind: 'unknown',
+      outboxId: row.id,
+      reasonCode: 'idempotency_deadline_passed',
+    };
   }
 
   const renewed = await renewNotificationLease(environment, {
