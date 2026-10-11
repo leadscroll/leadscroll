@@ -1182,7 +1182,9 @@ const createAppWithAuth = (environment: Env, getAuth: AuthForRequest) => {
               parsed.data.limit ?? LIST_LIMIT_DEFAULT,
             ),
           );
-          return 'error' in result ? result.error : result.data;
+          // Envelope the view once so the SPA request helper unwraps it to the
+          // same `{ data, nextCursor }` shape the command returned.
+          return 'error' in result ? result.error : { data: result.data };
         },
       )
       // Installation email settings. Every route below requires the narrow

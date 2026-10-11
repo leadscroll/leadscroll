@@ -457,7 +457,7 @@ describe('self-service notification API', () => {
 
     const history = await fx.request('/v1/account/notifications/history');
     expect(history.status).toBe(200);
-    expect(history.json).toMatchObject({ data: [], nextCursor: null });
+    expect(history.json.data).toMatchObject({ data: [], nextCursor: null });
   });
 
   test('rejects a non-boolean preference and unknown history fields', async () => {
