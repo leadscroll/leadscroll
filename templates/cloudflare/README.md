@@ -41,7 +41,15 @@ both authentication secrets across upgrades.
    needs only the two authentication secrets.
 
 The template's `wrangler.jsonc` declares the native `EMAIL` binding and a
-one-minute Cron trigger. Both are inert until an administrator enables email in
+one-minute Cron trigger.
+
+If an upgrade leaves the installation without an email settings administrator
+(for example the original owner account was removed), grant the permission to
+one explicit enabled account from this repository:
+
+```sh
+pnpm run notifications:grant-admin -- <user-id> --remote
+``` Both are inert until an administrator enables email in
 **Manage → Email**; the Cron tick is a no-op while disabled. Keep all secret
 names across upgrades. See [email notifications][docs] in the upstream repository
 for provider setup, optional test emails, and delivery semantics.

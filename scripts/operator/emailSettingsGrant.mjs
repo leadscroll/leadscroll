@@ -107,14 +107,14 @@ const enabledUsers = value('enabled_users');
 const grants = value('grants');
 const inserted = value('inserted');
 
-if (enabledUsers === 0) {
+if (!Number.isFinite(enabledUsers) || enabledUsers === 0) {
   process.stderr.write(
     `No enabled account with id ${userId} exists. Grant the capability to a different account.\n`,
   );
   process.exit(1);
 }
 
-if (grants === 0) {
+if (!Number.isFinite(grants) || grants === 0) {
   process.stderr.write(
     'The capability was not granted; no permission row exists.\n',
   );

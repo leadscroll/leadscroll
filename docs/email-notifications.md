@@ -70,14 +70,22 @@ Older/custom installations without the binding report
 ### Cron
 
 Both `wrangler.jsonc` files declare `"triggers": { "crons": ["* * * * *"] }`.
-The tick is a harmless no-op while email is disabled. Older installations can
-add the same block and redeploy.
+Every tick records scheduler health and runs bounded, indexed lease recovery,
+stale-event expiry, and terminal-row cleanup, so a disabled installation still
+incurs a small fixed amount of D1 work (roughly one health write plus three
+limited statements per minute). Older installations can add the same block and
+redeploy.
 
 ## Enabling, testing, and pausing
 
 - Saving settings never sends a message. You can save and enable without ever
   running a test; the UI shows **Not tested** until an explicit test runs for
-  the current revision.
+  the current settings.
+- An explicit test works even while delivery is paused or the enable switch is
+  off, as long as the saved provider configuration is locally complete: testing
+  is how a paused revision recovers, and it never turns live alerts on.
+  Missing local resources (no binding, no key, no sender) still block the test
+  with a specific setup message.
 - **Send test email** sends one message to the signed-in administrator's own
   account email using the saved configuration. It is limited to one per minute
   and five per 24 hours per installation, and the request id makes retries
@@ -129,7 +137,17 @@ The first account created with `SETUP_TOKEN` receives the narrow
 `manageEmailSettings` capability atomically. On upgrades the migration grants
 it to the surviving enabled bootstrap registrant when that identity is
 unambiguous. If no administrator exists (for example the bootstrap account was
-deleted), an operator grants the capability to one explicit enabled account:
+deleted), an operator grants the capability to one explicit enabled account.
+
+Source checkout:
+
+```sh
+pnpm run notifications:grant-admin -- <user-id>            # remote D1
+pnpm run notifications:grant-admin -- <user-id> --local    # local D1
+```
+
+Copied template installation (the command ships in the copied repository and
+is self-contained; no upstream checkout is needed):
 
 ```sh
 pnpm run notifications:grant-admin -- <user-id>            # remote D1
@@ -138,7 +156,28 @@ pnpm run notifications:grant-admin -- <user-id> --local    # local D1
 
 Find ids with `wrangler d1 execute DB --remote --command "SELECT id, email,
 disabled_at FROM user ORDER BY email"`. The command refuses unknown or disabled
-accounts and never promotes the first account automatically.
+accounts, is idempotent, and never promotes the first account automatically.
+
+## Observability
+
+Every dispatch outcome emits one structured line with the event
+`notification.dispatch`, the opaque outbox id, the outcome, the attempt count,
+and an allowlisted reason code. It never includes addresses, envelopes, lead
+data, or provider response bodies. **Manage → Email → Scheduler** shows the last
+tick, waiting/in-flight/unknown counts, the last accepted send, and the current
+scheduler error.
+
+Operators can query the same redacted state directly:
+
+```sh
+pnpm exec wrangler d1 execute DB --remote --command \
+  "SELECT status, COUNT(*) FROM notification_outbox GROUP BY status"
+pnpm exec wrangler d1 execute DB --remote --command \
+  "SELECT last_tick_at, last_success_at, config_error_code, config_error_at FROM notification_dispatch_state"
+```
+
+Health thresholds worth watching: a waiting item older than five minutes, no
+tick for five minutes while email is enabled, or any `unknown` row.
 
 ## Rollback
 
