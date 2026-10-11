@@ -75,6 +75,7 @@
     "dev:worker": "pnpm run build && wrangler dev",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
+    "notifications:grant-admin": "node scripts/operator/emailSettingsGrant.mjs",
     "source:build": "node scripts/source/build.mjs",
     "test": "vitest run",
     "test:distribution": "node scripts/source/smoke.mjs",

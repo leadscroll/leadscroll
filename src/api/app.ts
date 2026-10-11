@@ -1101,6 +1101,19 @@ const createAppWithAuth = (environment: Env, getAuth: AuthForRequest) => {
       // Self-service notification preference and own-recipient history. The
       // session user id is authoritative; no path, body, or cursor field can
       // address another staff member's rows.
+      .get('/v1/account/capabilities', async ({ adminUserId }) => {
+        // Cosmetic only: the settings routes re-check the server capability.
+        // This lets the sidebar hide the Manage -> Email entry from ordinary
+        // staff without granting anything.
+        return {
+          data: {
+            manageEmailSettings:
+              adminUserId === null
+                ? false
+                : await hasEmailSettingsPermission(environment, adminUserId),
+          },
+        };
+      })
       .get('/v1/account/notifications', async ({ adminUserId }) => {
         if (adminUserId === null) {
           return errorResponse(

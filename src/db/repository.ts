@@ -3481,6 +3481,31 @@ export const expireStaleNotificationIntents = async (
 };
 
 /**
+ * Bounded retention cleanup: deletes only resolved terminal rows older than
+ * the retention cutoff. Pending/claimed/sending/retry rows and unresolved
+ * `unknown` rows are never deleted, so cleanup can never create resend
+ * behavior or erase evidence that still needs reconciliation.
+ */
+export const cleanupResolvedNotificationRows = async (
+  environment: Env,
+  cutoff: Date,
+  limit: number,
+): Promise<number> => {
+  const result = await prepare(
+    environment.DB,
+    `DELETE FROM notification_outbox WHERE id IN (
+      SELECT id FROM notification_outbox
+      WHERE status IN ('accepted', 'failed', 'skipped')
+        AND updated_at < ?
+      ORDER BY updated_at ASC
+      LIMIT ?)`,
+  )
+    .bind(cutoff.getTime(), limit)
+    .run();
+  return result.meta?.changes ?? 0;
+};
+
+/**
  * Claims exactly one due row with a fresh lease token and returns it. The
  * subquery picks the oldest due row; the UPDATE applies only to that id, so
  * two concurrent claimers can match the same candidate but only one observes

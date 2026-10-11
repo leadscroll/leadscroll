@@ -11,6 +11,7 @@
 import { DomainError, PersistenceError } from '@/application/errors';
 import {
   claimNextNotification,
+  cleanupResolvedNotificationRows,
   clearEmailSettingsPause,
   completeNotificationAttempt,
   completeNotificationTestAttempt,
@@ -74,6 +75,7 @@ import { Effect } from 'effect';
 // --- Constants ---------------------------------------------------------------
 
 export const NOTIFICATION_EVENT_TTL_MS = 24 * 60 * 60 * 1_000;
+export const NOTIFICATION_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
 export const NOTIFICATION_LEASE_MS = 5 * 60 * 1_000;
 export const NOTIFICATION_MAX_ATTEMPTS = 6;
 /**
@@ -1535,6 +1537,11 @@ export const runNotificationDispatch = async (
     environment,
     new Date(now.getTime() - NOTIFICATION_EVENT_TTL_MS),
     now,
+  );
+  await cleanupResolvedNotificationRows(
+    environment,
+    new Date(now.getTime() - NOTIFICATION_RETENTION_MS),
+    100,
   );
 
   const outcomes: ProcessNotificationOutcome[] = [];

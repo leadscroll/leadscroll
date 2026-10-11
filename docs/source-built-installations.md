@@ -143,6 +143,18 @@ survive. Migrate its existing repository in a review branch:
 This feature does not mutate existing installation repositories or Cloudflare
 resources automatically.
 
+## Email notification runtime
+
+Generated source builds preserve the Worker's `fetch` and `scheduled` handlers,
+so source-pin upgrades keep the one-per-minute notification dispatcher without
+template edits. Standard templates declare the native `EMAIL` binding and the
+Cron trigger in `wrangler.jsonc`; older/custom installations may need to add
+them. The optional `EMAIL_SETTINGS_ENCRYPTION_KEY` secret is needed only to
+store a Resend API key through the UI and survives source-pin changes as a
+Worker secret; replacing the Worker recreates secrets and requires re-entering
+provider keys. See the upstream `docs/email-notifications.md` for setup,
+rollback, and operator recovery.
+
 ## Verification boundary
 
 Local integration uses actual pinned Git checkouts, frozen installs, real Worker/UI

@@ -4,23 +4,73 @@ import { signOut, useSession } from '@/lib/auth-client';
 import { releaseLabel } from '@/lib/release';
 import { cn } from '@/lib/styles';
 import {
+  accountCapabilitiesQueryKey,
+  notificationsApi,
+} from '@/notifications/api';
+import { useQuery } from '@tanstack/react-query';
+import {
   ArrowUpRight,
   KeyRound,
   LayoutList,
   LogOut,
   Mail,
+  Send,
   Tags,
   Users,
 } from 'lucide-react';
 import { Link, useLocation } from 'wouter';
 
-const navigation = [
-  { href: '/leads', icon: LayoutList, label: 'All leads' },
-  { href: '/settings/tags', icon: Tags, label: 'Tags' },
-  { href: '/settings/invites', icon: Mail, label: 'Invitations' },
-  { href: '/settings/staff', icon: Users, label: 'Team members' },
-  { href: '/settings/tokens', icon: KeyRound, label: 'Intake tokens' },
+type NavigationItem = {
+  href: string;
+  icon: typeof LayoutList;
+  label: string;
+  requiresEmailSettings?: boolean;
+  section: 'Manage' | 'Workspace';
+};
+
+const navigation: NavigationItem[] = [
+  {
+    href: '/leads',
+    icon: LayoutList,
+    label: 'All leads',
+    section: 'Workspace',
+  },
+  { href: '/settings/tags', icon: Tags, label: 'Tags', section: 'Manage' },
+  {
+    href: '/settings/invites',
+    icon: Mail,
+    label: 'Invitations',
+    section: 'Manage',
+  },
+  {
+    href: '/settings/staff',
+    icon: Users,
+    label: 'Team members',
+    section: 'Manage',
+  },
+  {
+    href: '/settings/tokens',
+    icon: KeyRound,
+    label: 'Intake tokens',
+    section: 'Manage',
+  },
+  {
+    href: '/settings/email',
+    icon: Send,
+    label: 'Email',
+    requiresEmailSettings: true,
+    section: 'Manage',
+  },
 ];
+
+const activeNavigation = (
+  location: string,
+  href: string,
+  index: number,
+): boolean =>
+  location === href ||
+  location.startsWith(`${href}/`) ||
+  (index === 0 && location === '/');
 
 export const AppShell = ({
   children,
@@ -30,6 +80,18 @@ export const AppShell = ({
   const [location] = useLocation();
   const { data: session } = useSession();
   const name = session?.user.name || 'Your account';
+  // Capability visibility is cosmetic; every settings route re-checks the
+  // server-side grant before reading or writing.
+  const capabilities = useQuery({
+    queryFn: () => notificationsApi.capabilities(),
+    queryKey: accountCapabilitiesQueryKey,
+    staleTime: 60_000,
+  });
+  const visibleNavigation = navigation.filter(
+    (item) =>
+      item.requiresEmailSettings !== true ||
+      capabilities.data?.manageEmailSettings === true,
+  );
 
   return (
     <div className="app-shell">
@@ -53,22 +115,27 @@ export const AppShell = ({
           aria-label="Main navigation"
           className="sidebar-navigation"
         >
-          {navigation.map((item, index) => {
+          {visibleNavigation.map((item, index) => {
             const Icon = item.icon;
-            const active =
-              location === item.href ||
-              location.startsWith(`${item.href}/`) ||
-              (index === 0 && location === '/');
+            const showSection =
+              index === 0 ||
+              visibleNavigation[index - 1]?.section !== item.section;
             return (
               <div key={item.href}>
-                {(index === 0 || index === 1) && (
-                  <p className="nav-section-label">
-                    {index === 0 ? 'Workspace' : 'Manage'}
-                  </p>
+                {showSection && (
+                  <p className="nav-section-label">{item.section}</p>
                 )}
                 <Link
-                  aria-current={active ? 'page' : undefined}
-                  className={cn('nav-item', active && 'nav-item-active')}
+                  aria-current={
+                    activeNavigation(location, item.href, index)
+                      ? 'page'
+                      : undefined
+                  }
+                  className={cn(
+                    'nav-item',
+                    activeNavigation(location, item.href, index) &&
+                      'nav-item-active',
+                  )}
                   href={item.href}
                 >
                   <Icon size={16} />
