@@ -46,6 +46,7 @@ import {
   prepare,
   type Statement,
 } from '@/db/driver';
+import { DEFAULT_WORKSPACE_ID } from '@/domain/workspace';
 
 export type RedeemRegistrationInput = {
   /**
@@ -256,6 +257,17 @@ export const redeemRegistration = async (
     ).bind(crypto.randomUUID(), grant.kind, claimKey, claimKey, userId, now),
   ];
   if (grant.kind === 'bootstrap') {
+    // The bootstrap registrant becomes the initial installation email
+    // administrator in the same atomic batch that creates the account. The
+    // capability is otherwise granted only by the operator recovery command;
+    // ordinary registrations never receive it implicitly.
+    statements.push(
+      prepare(
+        database,
+        'INSERT OR IGNORE INTO email_settings_permissions (workspace_id, user_id, granted_at, granted_by_user_id) ' +
+          'VALUES (?, ?, ?, NULL)',
+      ).bind(DEFAULT_WORKSPACE_ID, userId, timestamp),
+    );
     statements.push(
       prepare(
         database,

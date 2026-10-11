@@ -4,6 +4,7 @@ import {
   check,
   index,
   integer,
+  primaryKey,
   sqliteTable,
   text,
   uniqueIndex,
@@ -267,6 +268,277 @@ export const idempotencyKeys = sqliteTable(
     uniqueIndex('idempotency_workspace_key_unique').on(
       table.workspaceId,
       table.key,
+    ),
+  ],
+);
+
+// --- New-lead email notifications ------------------------------------------
+
+// Personal opt-in, off by default for every existing and future account. The
+// feature is only available when the installation's email settings enable a
+// provider; the preference itself is always writable so a staff member can
+// opt in while email is being configured.
+export const notificationPreferences = sqliteTable(
+  'notification_preferences',
+  {
+    newLeadEmail: integer('new_lead_email', { mode: 'boolean' })
+      .notNull()
+      .default(false),
+    updatedAt: timestampMs('updated_at').notNull(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
+    workspaceId: text('workspace_id')
+      .notNull()
+      .references(() => workspaces.id),
+  },
+  (table) => [primaryKey({ columns: [table.workspaceId, table.userId] })],
+);
+
+// Durable per-recipient delivery ledger. One row per
+// (workspace, event, recipient, template version); the unique index is the
+// duplicate guard for intake replays and concurrent creation. Provider
+// credentials are never stored here: `provider` and `config_revision` pin the
+// account configuration, and `frozen_envelope_json` holds only the rendered
+// minimal message frozen at the first attempt.
+export const NOTIFICATION_STATUSES = [
+  'pending',
+  'claimed',
+  'sending',
+  'accepted',
+  'retry',
+  'skipped',
+  'failed',
+  'unknown',
+] as const;
+export type NotificationStatus = (typeof NOTIFICATION_STATUSES)[number];
+
+export const NOTIFICATION_PROVIDERS = ['cloudflare', 'resend'] as const;
+export type NotificationProvider = (typeof NOTIFICATION_PROVIDERS)[number];
+
+export const notificationOutbox = sqliteTable(
+  'notification_outbox',
+  {
+    acceptedAt: timestampMs('accepted_at'),
+    attemptCount: integer('attempt_count').notNull().default(0),
+    configRevision: integer('config_revision'),
+    createdAt: timestampMs('created_at').notNull(),
+    deliveryKey: text('delivery_key'),
+    eventKey: text('event_key').notNull(),
+    eventKind: text('event_kind').notNull().default('lead.created'),
+    firstAttemptAt: timestampMs('first_attempt_at'),
+    frozenEnvelopeJson: text('frozen_envelope_json'),
+    id: text('id').primaryKey(),
+    idempotencyDeadline: timestampMs('idempotency_deadline'),
+    leadId: text('lead_id')
+      .notNull()
+      .references(() => leads.id),
+    leaseExpiresAt: timestampMs('lease_expires_at'),
+    leaseToken: text('lease_token'),
+    nextAttemptAt: timestampMs('next_attempt_at').notNull(),
+    payloadHash: text('payload_hash'),
+    provider: text('provider', { enum: NOTIFICATION_PROVIDERS }),
+    providerMessageId: text('provider_message_id'),
+    reasonCode: text('reason_code'),
+    recipientEmail: text('recipient_email').notNull(),
+    // Set to NULL when the staff account is deleted; the accepted audit row
+    // and the frozen address survive. Deletion also skips pending work.
+    recipientUserId: text('recipient_user_id').references(() => user.id, {
+      onDelete: 'set null',
+    }),
+    status: text('status', { enum: NOTIFICATION_STATUSES })
+      .notNull()
+      .default('pending'),
+    templateVersion: integer('template_version').notNull().default(1),
+    updatedAt: timestampMs('updated_at').notNull(),
+    workspaceId: text('workspace_id')
+      .notNull()
+      .references(() => workspaces.id),
+  },
+  (table) => [
+    uniqueIndex('notification_outbox_event_recipient_unique').on(
+      table.workspaceId,
+      table.eventKey,
+      table.recipientUserId,
+      table.templateVersion,
+    ),
+    // Due-work scan: pending/retry rows ordered by their next attempt.
+    index('notification_outbox_due_idx').on(
+      table.status,
+      table.nextAttemptAt,
+      table.id,
+    ),
+    // Lease recovery scan (claimed/sending rows whose lease expired).
+    index('notification_outbox_lease_idx').on(table.leaseExpiresAt),
+    // Per-recipient self-service history, newest first.
+    index('notification_outbox_history_idx').on(
+      table.workspaceId,
+      table.recipientUserId,
+      table.createdAt,
+    ),
+  ],
+);
+
+// Bounded operational state per workspace: proves the scheduler runs and
+// records the last safe configuration error without deriving health from
+// successful messages alone.
+export const notificationDispatchState = sqliteTable(
+  'notification_dispatch_state',
+  {
+    configErrorAt: timestampMs('config_error_at'),
+    configErrorCode: text('config_error_code'),
+    configErrorRevision: integer('config_error_revision'),
+    lastSuccessAt: timestampMs('last_success_at'),
+    lastTickAt: timestampMs('last_tick_at').notNull(),
+    updatedAt: timestampMs('updated_at').notNull(),
+    workspaceId: text('workspace_id').primaryKey(),
+  },
+  () => [],
+);
+
+// Explicit administrator test messages. The request id is durable so replays
+// and concurrent attempts cannot emit a second message; the frozen payload
+// lets a Resend ambiguous outcome retry the exact same keyed request inside
+// its idempotency window.
+export const NOTIFICATION_TEST_STATUSES = [
+  'sending',
+  'accepted',
+  'rejected',
+  'ambiguous',
+  'configuration_error',
+] as const;
+export type NotificationTestStatus =
+  (typeof NOTIFICATION_TEST_STATUSES)[number];
+
+export const notificationTestAttempts = sqliteTable(
+  'notification_test_attempts',
+  {
+    completedAt: timestampMs('completed_at'),
+    configRevision: integer('config_revision').notNull(),
+    createdAt: timestampMs('created_at').notNull(),
+    deliveryKey: text('delivery_key'),
+    frozenEnvelopeJson: text('frozen_envelope_json'),
+    id: text('id').primaryKey(),
+    provider: text('provider', { enum: NOTIFICATION_PROVIDERS }),
+    providerMessageId: text('provider_message_id'),
+    reasonCode: text('reason_code'),
+    status: text('status', { enum: NOTIFICATION_TEST_STATUSES })
+      .notNull()
+      .default('sending'),
+    updatedAt: timestampMs('updated_at').notNull(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
+    workspaceId: text('workspace_id')
+      .notNull()
+      .references(() => workspaces.id),
+  },
+  (table) => [
+    index('notification_test_attempts_workspace_created_idx').on(
+      table.workspaceId,
+      table.createdAt,
+    ),
+  ],
+);
+
+// Installation-level email configuration singleton per workspace. `revision`
+// is server-generated and compare-and-swap guarded; a paused configuration
+// error is tied to the revision that produced it, so any settings change
+// resumes attempts without an automatic test.
+export const EMAIL_SETTINGS_PROVIDERS = [
+  'disabled',
+  'cloudflare',
+  'resend',
+] as const;
+export type EmailSettingsProvider = (typeof EMAIL_SETTINGS_PROVIDERS)[number];
+
+export const emailSettings = sqliteTable(
+  'email_settings',
+  {
+    canonicalOrigin: text('canonical_origin'),
+    enabled: integer('enabled', { mode: 'boolean' }).notNull().default(false),
+    fromEmail: text('from_email'),
+    fromName: text('from_name'),
+    pausedAt: timestampMs('paused_at'),
+    pausedReasonCode: text('paused_reason_code'),
+    pausedRevision: integer('paused_revision'),
+    provider: text('provider', { enum: EMAIL_SETTINGS_PROVIDERS })
+      .notNull()
+      .default('disabled'),
+    revision: integer('revision').notNull().default(0),
+    updatedAt: timestampMs('updated_at').notNull(),
+    updatedByUserId: text('updated_by_user_id').references(() => user.id, {
+      onDelete: 'set null',
+    }),
+    workspaceId: text('workspace_id').primaryKey(),
+    // Random token written by every successful save. Credential and audit
+    // statements in the same batch are gated on it, so a compare-and-swap loser
+    // whose UPDATE matched no rows cannot slip its writes into a concurrent
+    // winner's revision.
+    writeToken: text('write_token'),
+  },
+  () => [],
+);
+
+// Encrypted provider credentials. The plaintext value is never stored; the
+// AES-256-GCM envelope binds the workspace, provider, and key version through
+// authenticated additional data. Removing the row is the only delete path.
+export const emailCredentials = sqliteTable(
+  'email_credentials',
+  {
+    ciphertext: text('ciphertext').notNull(),
+    keyVersion: integer('key_version').notNull(),
+    nonce: text('nonce').notNull(),
+    provider: text('provider', { enum: ['resend'] }).notNull(),
+    updatedAt: timestampMs('updated_at').notNull(),
+    updatedByUserId: text('updated_by_user_id').references(() => user.id, {
+      onDelete: 'set null',
+    }),
+    workspaceId: text('workspace_id')
+      .notNull()
+      .references(() => workspaces.id),
+  },
+  (table) => [primaryKey({ columns: [table.workspaceId, table.provider] })],
+);
+
+// Narrow installation-level capability. Presence of a row grants
+// manageEmailSettings. Nothing else is editable here: there is no general
+// roles editor in this release.
+export const emailSettingsPermissions = sqliteTable(
+  'email_settings_permissions',
+  {
+    grantedAt: timestampMs('granted_at').notNull(),
+    grantedByUserId: text('granted_by_user_id'),
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
+    workspaceId: text('workspace_id')
+      .notNull()
+      .references(() => workspaces.id),
+  },
+  (table) => [primaryKey({ columns: [table.workspaceId, table.userId] })],
+);
+
+// Redacted audit trail: actor, action, revision, safe outcome, and time. Key
+// material, message bodies, and recipient addresses are never recorded here.
+export const emailSettingsAudit = sqliteTable(
+  'email_settings_audit',
+  {
+    action: text('action').notNull(),
+    actorUserId: text('actor_user_id'),
+    createdAt: timestampMs('created_at').notNull(),
+    id: text('id').primaryKey(),
+    reasonCode: text('reason_code'),
+    revision: integer('revision').notNull(),
+    testOutcome: text('test_outcome'),
+    workspaceId: text('workspace_id')
+      .notNull()
+      .references(() => workspaces.id),
+  },
+  (table) => [
+    index('email_settings_audit_workspace_created_idx').on(
+      table.workspaceId,
+      table.createdAt,
     ),
   ],
 );

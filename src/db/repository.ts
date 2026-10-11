@@ -10,9 +10,21 @@ import {
   activities,
   apiTokens,
   bootstrapState,
+  emailCredentials,
+  emailSettings,
+  emailSettingsAudit,
+  emailSettingsPermissions,
+  type EmailSettingsProvider,
   idempotencyKeys,
   leads,
   leadTags,
+  notificationDispatchState,
+  notificationOutbox,
+  notificationPreferences,
+  type NotificationProvider,
+  type NotificationStatus,
+  notificationTestAttempts,
+  type NotificationTestStatus,
   session,
   staffInvites,
   tags,
@@ -31,6 +43,8 @@ import {
   type UpdateLeadRequest,
 } from '@/domain/schemas';
 import { normalizeSourceTag, tagLabel, type TagSpec } from '@/domain/tags';
+import { DEFAULT_WORKSPACE_ID } from '@/domain/workspace';
+import { type EncryptedCredential } from '@/notifications/credential-crypto';
 import {
   and,
   asc,
@@ -41,10 +55,14 @@ import {
   gt,
   isNotNull,
   isNull,
+  lt,
+  lte,
   or,
   sql,
 } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/sqlite-core';
+
+export { DEFAULT_WORKSPACE_ID } from '@/domain/workspace';
 
 export type Env = {
   ASSETS: Fetcher;
@@ -55,13 +73,19 @@ export type Env = {
   DB: Database;
   // Development/test-only identity bypass. Never honored in production.
   DEV_ADMIN_EMAIL?: string;
+  // Optional native Cloudflare Email Sending binding. Declared by standard
+  // installations and invoked only when the saved provider is `cloudflare`;
+  // disabled/Resend paths must never call or probe it.
+  EMAIL?: Pick<SendEmail, 'send'>;
+  // Dedicated AES-256-GCM root key for UI-entered provider credentials. Not
+  // required by the base CRM; absent means credential writes and sends fail
+  // closed while Disable and ordinary CRM features keep working.
+  EMAIL_SETTINGS_ENCRYPTION_KEY?: string;
   ENVIRONMENT: 'development' | 'production' | 'test';
   // Invite token required to create a staff account (X-Setup-Token header on
   // POST /api/auth/sign-up/email). Unset or empty rejects every sign-up.
   SETUP_TOKEN?: string;
 };
-
-export const DEFAULT_WORKSPACE_ID = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
 
 const ULID_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 
@@ -81,6 +105,53 @@ const id = (): string => {
 };
 
 const getDatabase = (environment: Env) => createClient(environment.DB);
+
+export const notificationEventKey = (leadId: string): string =>
+  `lead.created:${leadId}`;
+
+/**
+ * Recipient-selection statements for one new-lead event. Callers append these
+ * to the same atomic batch as the lead insert. Selection is evaluated by D1 at
+ * transaction time against opted-in, enabled staff in a workspace whose
+ * installation switch is on; the manual creator is excluded. A disabled
+ * installation therefore cannot create intent, while an enabled but
+ * misconfigured installation records durable intent for later delivery.
+ */
+export const notificationIntentStatements = (
+  environment: Env,
+  leadId: string,
+  actorUserId: null | string,
+  timestamp: number,
+): Statement[] => [
+  prepare(
+    environment.DB,
+    `INSERT INTO notification_outbox (
+        id, workspace_id, event_key, event_kind, lead_id, recipient_user_id,
+        recipient_email, template_version, status, attempt_count,
+        next_attempt_at, created_at, updated_at
+      )
+      SELECT
+        lower(hex(randomblob(16))), p.workspace_id, ?, 'lead.created', ?,
+        p.user_id, u.email, 1, 'pending', 0, ?, ?, ?
+      FROM notification_preferences p
+      JOIN user u ON u.id = p.user_id
+      JOIN email_settings s
+        ON s.workspace_id = p.workspace_id AND s.enabled = 1
+      WHERE p.workspace_id = ?
+        AND p.new_lead_email = 1
+        AND u.disabled_at IS NULL
+        AND (? IS NULL OR p.user_id <> ?)`,
+  ).bind(
+    notificationEventKey(leadId),
+    leadId,
+    timestamp,
+    timestamp,
+    timestamp,
+    DEFAULT_WORKSPACE_ID,
+    actorUserId,
+    actorUserId,
+  ),
+];
 
 export type LeadPage = {
   leads: LeadRecord[];
@@ -2267,6 +2338,15 @@ export const createLeadAtomically = async (
     JSON.stringify(response),
     timestamp,
   );
+  // Recipient selection runs inside the same atomic batch as the lead, so a
+  // rollback can never lose the durable intent and a replay can never create
+  // a second set of rows. Intake has no authenticated actor.
+  const notificationStatements = notificationIntentStatements(
+    environment,
+    leadId,
+    null,
+    timestamp,
+  );
 
   // A concurrent writer can create the same scope/tag between the plan read
   // and the batch, which aborts the whole batch on the unique index. Because
@@ -2281,6 +2361,7 @@ export const createLeadAtomically = async (
       ...leadTagStatements(environment, leadId, plan.assignments, timestamp),
       activityStatement,
       idempotencyStatement,
+      ...notificationStatements,
     ];
     try {
       await executeAtomically(environment.DB, statements);
@@ -2311,6 +2392,7 @@ export const createLead = async (
   environment: Env,
   input: CreateLeadRequest,
   tagSpecs: readonly TagSpec[] = [],
+  actorUserId: null | string = null,
 ): Promise<LeadRecord> => {
   const ms = now().getTime();
   const leadId = id();
@@ -2346,6 +2428,10 @@ export const createLead = async (
       ...tagPlanStatements(environment, plan, ms),
       leadStatement,
       ...leadTagStatements(environment, leadId, plan.assignments, ms),
+      // A manual creator never receives an alert for their own creation, but
+      // every other enabled subscriber does; selection happens inside the
+      // same atomic batch as the lead insert.
+      ...notificationIntentStatements(environment, leadId, actorUserId, ms),
     ];
     try {
       await executeAtomically(environment.DB, statements);
@@ -2539,4 +2625,1151 @@ export const createLeadActivity = async (
   };
   await getDatabase(environment).insert(activities).values(record);
   return record;
+};
+
+// --- New-lead email notifications -------------------------------------------
+//
+// Persistence for personal preferences, the durable outbox, encrypted
+// installation settings, the narrow administration capability, test attempts,
+// bounded dispatch health, and the fenced delivery state machine. Drizzle
+// stays inside this module per the repository boundary; selection, retry, and
+// provider policy live in src/application/notification-commands.ts.
+
+export type EmailCredentialRecord = typeof emailCredentials.$inferSelect;
+export type EmailSettingsRecord = typeof emailSettings.$inferSelect;
+export type NotificationDispatchStateRecord =
+  typeof notificationDispatchState.$inferSelect;
+export type NotificationOutboxRecord = typeof notificationOutbox.$inferSelect;
+export type NotificationPreferenceRecord =
+  typeof notificationPreferences.$inferSelect;
+export type NotificationTestAttemptRecord =
+  typeof notificationTestAttempts.$inferSelect;
+
+// --- Personal preferences and history ---------------------------------------
+
+export const getNotificationPreference = async (
+  environment: Env,
+  userId: string,
+): Promise<NotificationPreferenceRecord | null> => {
+  const row = await getDatabase(environment)
+    .select()
+    .from(notificationPreferences)
+    .where(
+      and(
+        eq(notificationPreferences.workspaceId, DEFAULT_WORKSPACE_ID),
+        eq(notificationPreferences.userId, userId),
+      ),
+    )
+    .get();
+  return row ?? null;
+};
+
+export const upsertNotificationPreference = async (
+  environment: Env,
+  userId: string,
+  newLeadEmail: boolean,
+  timestamp: Date,
+): Promise<void> => {
+  await getDatabase(environment)
+    .insert(notificationPreferences)
+    .values({
+      newLeadEmail,
+      updatedAt: timestamp,
+      userId,
+      workspaceId: DEFAULT_WORKSPACE_ID,
+    })
+    .onConflictDoUpdate({
+      set: { newLeadEmail, updatedAt: timestamp },
+      target: [
+        notificationPreferences.workspaceId,
+        notificationPreferences.userId,
+      ],
+    });
+};
+
+export type NotificationHistoryItem = {
+  createdAt: Date;
+  id: string;
+  leadId: string;
+  reasonCode: null | string;
+  status: NotificationStatus;
+};
+
+export type NotificationHistoryPage = {
+  items: NotificationHistoryItem[];
+  nextCursor: null | string;
+};
+
+/**
+ * Keyset history for one recipient. The caller's session user id is bound by
+ * the repository, so a cursor can never address another staff member's rows.
+ */
+export const listNotificationHistory = async (
+  environment: Env,
+  userId: string,
+  cursor: Keyset | null,
+  limit: number,
+): Promise<NotificationHistoryPage> => {
+  const database = getDatabase(environment);
+  const keyset =
+    cursor === null
+      ? undefined
+      : or(
+          lt(notificationOutbox.createdAt, new Date(cursor.createdAt)),
+          and(
+            eq(notificationOutbox.createdAt, new Date(cursor.createdAt)),
+            lt(notificationOutbox.id, cursor.id),
+          ),
+        );
+  const rows = await database
+    .select({
+      createdAt: notificationOutbox.createdAt,
+      id: notificationOutbox.id,
+      leadId: notificationOutbox.leadId,
+      reasonCode: notificationOutbox.reasonCode,
+      status: notificationOutbox.status,
+    })
+    .from(notificationOutbox)
+    .where(
+      and(
+        eq(notificationOutbox.workspaceId, DEFAULT_WORKSPACE_ID),
+        eq(notificationOutbox.recipientUserId, userId),
+        keyset,
+      ),
+    )
+    .orderBy(desc(notificationOutbox.createdAt), desc(notificationOutbox.id))
+    .limit(limit + 1);
+
+  const items = rows.slice(0, limit);
+  const last = items.at(-1);
+  return {
+    items,
+    nextCursor:
+      rows.length > limit && last !== undefined
+        ? encodeKeysetCursor({
+            createdAt: last.createdAt.toISOString(),
+            id: last.id,
+          })
+        : null,
+  };
+};
+
+// --- Installation settings and credentials ----------------------------------
+
+export const getEmailSettings = async (
+  environment: Env,
+): Promise<EmailSettingsRecord | null> => {
+  const row = await getDatabase(environment)
+    .select()
+    .from(emailSettings)
+    .where(eq(emailSettings.workspaceId, DEFAULT_WORKSPACE_ID))
+    .get();
+  return row ?? null;
+};
+
+export const getEmailCredential = async (
+  environment: Env,
+  provider: 'resend' = 'resend',
+): Promise<EmailCredentialRecord | null> => {
+  const row = await getDatabase(environment)
+    .select()
+    .from(emailCredentials)
+    .where(
+      and(
+        eq(emailCredentials.workspaceId, DEFAULT_WORKSPACE_ID),
+        eq(emailCredentials.provider, provider),
+      ),
+    )
+    .get();
+  return row ?? null;
+};
+
+export type EmailCredentialChange =
+  | { envelope: EncryptedCredential; operation: 'replace' }
+  | { operation: 'keep' }
+  | { operation: 'remove' };
+
+export type SaveEmailSettingsInput = {
+  actorUserId: null | string;
+  canonicalOrigin: string;
+  credentialChange: EmailCredentialChange;
+  enabled: boolean;
+  expectedRevision: number;
+  fromEmail: null | string;
+  fromName: null | string;
+  now: Date;
+  provider: EmailSettingsProvider;
+};
+
+export type SaveEmailSettingsOutcome =
+  { kind: 'conflict' } | { kind: 'saved'; settings: EmailSettingsRecord };
+
+const credentialGate = `EXISTS (
+  SELECT 1 FROM email_settings
+  WHERE workspace_id = ? AND write_token = ?
+)`;
+
+export const saveEmailSettings = async (
+  environment: Env,
+  input: SaveEmailSettingsInput,
+): Promise<SaveEmailSettingsOutcome> => {
+  const current = await getEmailSettings(environment);
+  if (current === null && input.expectedRevision !== 0) {
+    return { kind: 'conflict' };
+  }
+
+  if (current !== null && current.revision !== input.expectedRevision) {
+    return { kind: 'conflict' };
+  }
+
+  const nowMs = input.now.getTime();
+  const nextRevision = input.expectedRevision + 1;
+  const writeToken = randomToken('settings-');
+
+  // Removing the credential that backs the selected provider disables that
+  // provider in the same transaction instead of leaving an unroutable
+  // configuration enabled.
+  let effectiveProvider = input.provider;
+  let effectiveEnabled = input.enabled;
+  if (
+    input.credentialChange.operation === 'remove' &&
+    input.provider === 'resend'
+  ) {
+    effectiveProvider = 'disabled';
+    effectiveEnabled = false;
+  }
+
+  const credentialStatements: Statement[] =
+    input.credentialChange.operation === 'remove'
+      ? [
+          prepare(
+            environment.DB,
+            `DELETE FROM email_credentials
+              WHERE workspace_id = ? AND provider = ? AND ${credentialGate}`,
+          ).bind(
+            DEFAULT_WORKSPACE_ID,
+            'resend',
+            DEFAULT_WORKSPACE_ID,
+            writeToken,
+          ),
+        ]
+      : input.credentialChange.operation === 'replace'
+        ? [
+            prepare(
+              environment.DB,
+              `DELETE FROM email_credentials
+                WHERE workspace_id = ? AND provider = ? AND ${credentialGate}`,
+            ).bind(
+              DEFAULT_WORKSPACE_ID,
+              'resend',
+              DEFAULT_WORKSPACE_ID,
+              writeToken,
+            ),
+            prepare(
+              environment.DB,
+              `INSERT INTO email_credentials (
+                  workspace_id, provider, ciphertext, nonce, key_version,
+                  updated_at, updated_by_user_id
+                )
+                SELECT ?, ?, ?, ?, ?, ?, ?
+                WHERE ${credentialGate}`,
+            ).bind(
+              DEFAULT_WORKSPACE_ID,
+              'resend',
+              input.credentialChange.envelope.ciphertext,
+              input.credentialChange.envelope.nonce,
+              input.credentialChange.envelope.keyVersion,
+              nowMs,
+              input.actorUserId,
+              DEFAULT_WORKSPACE_ID,
+              writeToken,
+            ),
+          ]
+        : [];
+
+  const action =
+    input.credentialChange.operation === 'remove'
+      ? 'credential_removed'
+      : input.credentialChange.operation === 'replace'
+        ? 'credential_replaced'
+        : 'settings_saved';
+  const auditStatement = prepare(
+    environment.DB,
+    `INSERT INTO email_settings_audit (
+        id, workspace_id, actor_user_id, action, revision, test_outcome,
+        reason_code, created_at
+      )
+      SELECT ?, ?, ?, ?, ?, NULL, NULL, ?
+      WHERE EXISTS (SELECT 1 FROM email_settings
+        WHERE workspace_id = ? AND write_token = ?)`,
+  ).bind(
+    crypto.randomUUID(),
+    DEFAULT_WORKSPACE_ID,
+    input.actorUserId,
+    action,
+    nextRevision,
+    nowMs,
+    DEFAULT_WORKSPACE_ID,
+    writeToken,
+  );
+
+  try {
+    if (current === null) {
+      const insertStatement = prepare(
+        environment.DB,
+        `INSERT INTO email_settings (
+            workspace_id, provider, enabled, from_email, from_name,
+            canonical_origin, revision, paused_revision, paused_reason_code,
+            paused_at, updated_by_user_id, updated_at, write_token
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?, ?)`,
+      ).bind(
+        DEFAULT_WORKSPACE_ID,
+        effectiveProvider,
+        effectiveEnabled ? 1 : 0,
+        input.fromEmail,
+        input.fromName,
+        input.canonicalOrigin,
+        nextRevision,
+        input.actorUserId,
+        nowMs,
+        writeToken,
+      );
+      await executeAtomicallyWithResults(environment.DB, [
+        insertStatement,
+        ...credentialStatements,
+        auditStatement,
+      ]);
+    } else {
+      const updateStatement = prepare(
+        environment.DB,
+        `UPDATE email_settings SET
+            provider = ?, enabled = ?, from_email = ?, from_name = ?,
+            canonical_origin = ?, revision = ?, paused_revision = NULL,
+            paused_reason_code = NULL, paused_at = NULL,
+            updated_by_user_id = ?, updated_at = ?, write_token = ?
+          WHERE workspace_id = ? AND revision = ?`,
+      ).bind(
+        effectiveProvider,
+        effectiveEnabled ? 1 : 0,
+        input.fromEmail,
+        input.fromName,
+        input.canonicalOrigin,
+        nextRevision,
+        input.actorUserId,
+        nowMs,
+        writeToken,
+        DEFAULT_WORKSPACE_ID,
+        input.expectedRevision,
+      );
+      const results = await executeAtomicallyWithResults(environment.DB, [
+        updateStatement,
+        ...credentialStatements,
+        auditStatement,
+      ]);
+      if ((results[0]?.meta?.changes ?? 0) === 0) {
+        return { kind: 'conflict' };
+      }
+    }
+  } catch (error) {
+    if (isUniqueViolation(error)) {
+      return { kind: 'conflict' };
+    }
+
+    throw error;
+  }
+
+  const settings = await getEmailSettings(environment);
+  if (settings === null) {
+    return { kind: 'conflict' };
+  }
+
+  return { kind: 'saved', settings };
+};
+
+export const recordEmailSettingsConfigError = async (
+  environment: Env,
+  input: { now: Date; reasonCode: string; revision: number },
+): Promise<void> => {
+  const nowMs = input.now.getTime();
+  await prepare(
+    environment.DB,
+    `UPDATE email_settings
+      SET paused_revision = ?, paused_reason_code = ?, paused_at = ?,
+          updated_at = ?
+      WHERE workspace_id = ? AND revision = ?`,
+  )
+    .bind(
+      input.revision,
+      input.reasonCode,
+      nowMs,
+      nowMs,
+      DEFAULT_WORKSPACE_ID,
+      input.revision,
+    )
+    .run();
+};
+
+export const clearEmailSettingsPause = async (
+  environment: Env,
+  revision: number,
+  timestamp: Date,
+): Promise<void> => {
+  await prepare(
+    environment.DB,
+    `UPDATE email_settings
+      SET paused_revision = NULL, paused_reason_code = NULL, paused_at = NULL,
+          updated_at = ?
+      WHERE workspace_id = ? AND revision = ?`,
+  )
+    .bind(timestamp.getTime(), DEFAULT_WORKSPACE_ID, revision)
+    .run();
+};
+
+export const recordEmailSettingsAudit = async (
+  environment: Env,
+  input: {
+    action: string;
+    actorUserId: null | string;
+    now: Date;
+    reasonCode: null | string;
+    revision: number;
+    testOutcome: null | string;
+  },
+): Promise<void> => {
+  await getDatabase(environment).insert(emailSettingsAudit).values({
+    action: input.action,
+    actorUserId: input.actorUserId,
+    createdAt: input.now,
+    id: crypto.randomUUID(),
+    reasonCode: input.reasonCode,
+    revision: input.revision,
+    testOutcome: input.testOutcome,
+    workspaceId: DEFAULT_WORKSPACE_ID,
+  });
+};
+
+// --- Administration capability ----------------------------------------------
+
+export const hasEmailSettingsPermission = async (
+  environment: Env,
+  userId: string,
+): Promise<boolean> => {
+  const row = await getDatabase(environment)
+    .select({ userId: emailSettingsPermissions.userId })
+    .from(emailSettingsPermissions)
+    .where(
+      and(
+        eq(emailSettingsPermissions.workspaceId, DEFAULT_WORKSPACE_ID),
+        eq(emailSettingsPermissions.userId, userId),
+      ),
+    )
+    .get();
+  return row !== undefined;
+};
+
+export const hasAnyEmailSettingsPermission = async (
+  environment: Env,
+): Promise<boolean> => {
+  const row = await getDatabase(environment)
+    .select({ count: sql<number>`count(*)` })
+    .from(emailSettingsPermissions)
+    .where(eq(emailSettingsPermissions.workspaceId, DEFAULT_WORKSPACE_ID))
+    .get();
+  return Number(row?.count ?? 0) > 0;
+};
+
+export type GrantEmailSettingsOutcome = 'disabled' | 'granted' | 'not-found';
+
+/**
+ * Grants the narrow manageEmailSettings capability to one explicit, enabled
+ * account. Used by the operator recovery command and (for the bootstrap
+ * registrant) by the atomic registration batch; it never promotes an
+ * arbitrary or first account on its own.
+ */
+export const grantEmailSettingsPermission = async (
+  environment: Env,
+  userId: string,
+  grantedByUserId: null | string = null,
+): Promise<GrantEmailSettingsOutcome> => {
+  const database = getDatabase(environment);
+  const account = await database
+    .select({ disabledAt: user.disabledAt })
+    .from(user)
+    .where(eq(user.id, userId))
+    .get();
+  if (account === undefined) {
+    return 'not-found';
+  }
+
+  if (account.disabledAt !== null) {
+    return 'disabled';
+  }
+
+  await database
+    .insert(emailSettingsPermissions)
+    .values({
+      grantedAt: now(),
+      grantedByUserId,
+      userId,
+      workspaceId: DEFAULT_WORKSPACE_ID,
+    })
+    .onConflictDoNothing();
+  return 'granted';
+};
+
+// --- Administrator test attempts --------------------------------------------
+
+export type ReserveNotificationTestOutcome =
+  'daily_limited' | 'duplicate' | 'rate_limited' | 'reserved';
+
+export const getNotificationTestAttempt = async (
+  environment: Env,
+  requestId: string,
+): Promise<NotificationTestAttemptRecord | null> => {
+  const row = await getDatabase(environment)
+    .select()
+    .from(notificationTestAttempts)
+    .where(
+      and(
+        eq(notificationTestAttempts.workspaceId, DEFAULT_WORKSPACE_ID),
+        eq(notificationTestAttempts.id, requestId),
+      ),
+    )
+    .get();
+  return row ?? null;
+};
+
+export const getLatestNotificationTestAttempt = async (
+  environment: Env,
+): Promise<NotificationTestAttemptRecord | null> => {
+  const row = await getDatabase(environment)
+    .select()
+    .from(notificationTestAttempts)
+    .where(eq(notificationTestAttempts.workspaceId, DEFAULT_WORKSPACE_ID))
+    .orderBy(desc(notificationTestAttempts.createdAt))
+    .limit(1)
+    .get();
+  return row ?? null;
+};
+
+/**
+ * Atomically reserves one test attempt before any external call. A single
+ * INSERT ... SELECT enforces the one-per-minute and five-per-24-hours limits
+ * and the durable request-id dedup under concurrency, so two simultaneous
+ * requests cannot both win.
+ */
+export const reserveNotificationTestAttempt = async (
+  environment: Env,
+  input: {
+    configRevision: number;
+    now: Date;
+    provider: NotificationProvider;
+    requestId: string;
+    userId: string;
+  },
+): Promise<ReserveNotificationTestOutcome> => {
+  const nowMs = input.now.getTime();
+  const minuteAgo = nowMs - 60_000;
+  const dayAgo = nowMs - 24 * 60 * 60 * 1_000;
+  const result = await prepare(
+    environment.DB,
+    `INSERT INTO notification_test_attempts (
+        id, workspace_id, user_id, config_revision, provider, status,
+        created_at, updated_at
+      )
+      SELECT ?, ?, ?, ?, ?, 'sending', ?, ?
+      WHERE NOT EXISTS (
+          SELECT 1 FROM notification_test_attempts
+          WHERE workspace_id = ? AND id = ?)
+        AND NOT EXISTS (
+          SELECT 1 FROM notification_test_attempts
+          WHERE workspace_id = ? AND created_at > ?)
+        AND (
+          SELECT COUNT(*) FROM notification_test_attempts
+          WHERE workspace_id = ? AND created_at > ?) < 5`,
+  )
+    .bind(
+      input.requestId,
+      DEFAULT_WORKSPACE_ID,
+      input.userId,
+      input.configRevision,
+      input.provider,
+      nowMs,
+      nowMs,
+      DEFAULT_WORKSPACE_ID,
+      input.requestId,
+      DEFAULT_WORKSPACE_ID,
+      minuteAgo,
+      DEFAULT_WORKSPACE_ID,
+      dayAgo,
+    )
+    .run();
+
+  if ((result.meta?.changes ?? 0) > 0) {
+    return 'reserved';
+  }
+
+  const existing = await getNotificationTestAttempt(
+    environment,
+    input.requestId,
+  );
+  if (existing !== null) {
+    return 'duplicate';
+  }
+
+  const recent = await getLatestNotificationTestAttempt(environment);
+  if (recent !== null && recent.createdAt.getTime() > minuteAgo) {
+    return 'rate_limited';
+  }
+
+  return 'daily_limited';
+};
+
+export const freezeNotificationTestAttempt = async (
+  environment: Env,
+  input: {
+    configRevision: number;
+    deliveryKey: string;
+    envelopeJson: string;
+    now: Date;
+    provider: NotificationProvider;
+    requestId: string;
+  },
+): Promise<boolean> => {
+  const result = await prepare(
+    environment.DB,
+    `UPDATE notification_test_attempts
+      SET provider = ?, config_revision = ?, delivery_key = ?,
+          frozen_envelope_json = ?, updated_at = ?
+      WHERE id = ? AND workspace_id = ? AND status = 'sending'`,
+  )
+    .bind(
+      input.provider,
+      input.configRevision,
+      input.deliveryKey,
+      input.envelopeJson,
+      input.now.getTime(),
+      input.requestId,
+      DEFAULT_WORKSPACE_ID,
+    )
+    .run();
+  return (result.meta?.changes ?? 0) > 0;
+};
+
+export const completeNotificationTestAttempt = async (
+  environment: Env,
+  input: {
+    completedAt: Date;
+    providerMessageId: null | string;
+    reasonCode: null | string;
+    requestId: string;
+    status: NotificationTestStatus;
+  },
+): Promise<void> => {
+  await prepare(
+    environment.DB,
+    `UPDATE notification_test_attempts
+      SET status = ?, reason_code = ?, provider_message_id = ?,
+          completed_at = ?, updated_at = ?
+      WHERE id = ? AND workspace_id = ?`,
+  )
+    .bind(
+      input.status,
+      input.reasonCode,
+      input.providerMessageId,
+      input.completedAt.getTime(),
+      input.completedAt.getTime(),
+      input.requestId,
+      DEFAULT_WORKSPACE_ID,
+    )
+    .run();
+};
+
+// --- Durable delivery state machine -----------------------------------------
+
+export const getNotificationOutboxRow = async (
+  environment: Env,
+  outboxId: string,
+): Promise<NotificationOutboxRecord | null> => {
+  const row = await getDatabase(environment)
+    .select()
+    .from(notificationOutbox)
+    .where(
+      and(
+        eq(notificationOutbox.workspaceId, DEFAULT_WORKSPACE_ID),
+        eq(notificationOutbox.id, outboxId),
+      ),
+    )
+    .get();
+  return row ?? null;
+};
+
+export type NotificationEligibility = {
+  currentEmail: null | string;
+  disabledAt: Date | null;
+  leadDeletedAt: Date | null;
+  leadExists: boolean;
+  newLeadEmail: boolean | null;
+  userExists: boolean;
+};
+
+export const getNotificationEligibility = async (
+  environment: Env,
+  row: NotificationOutboxRecord,
+): Promise<NotificationEligibility | null> => {
+  const result = await getDatabase(environment)
+    .select({
+      currentEmail: user.email,
+      disabledAt: user.disabledAt,
+      leadDeletedAt: leads.deletedAt,
+      leadId: leads.id,
+      newLeadEmail: notificationPreferences.newLeadEmail,
+      userId: user.id,
+    })
+    .from(notificationOutbox)
+    .leftJoin(user, eq(user.id, notificationOutbox.recipientUserId))
+    .leftJoin(leads, eq(leads.id, notificationOutbox.leadId))
+    .leftJoin(
+      notificationPreferences,
+      and(
+        eq(notificationPreferences.workspaceId, notificationOutbox.workspaceId),
+        eq(notificationPreferences.userId, notificationOutbox.recipientUserId),
+      ),
+    )
+    .where(eq(notificationOutbox.id, row.id))
+    .get();
+  if (result === undefined) {
+    return null;
+  }
+
+  return {
+    currentEmail: result.currentEmail,
+    disabledAt: result.disabledAt,
+    leadDeletedAt: result.leadDeletedAt,
+    leadExists: result.leadId !== null,
+    newLeadEmail: result.newLeadEmail,
+    userExists: result.userId !== null,
+  };
+};
+
+/**
+ * Recovers leases abandoned by a suspended or crashed invocation. Claimed
+ * rows are safe to release (no external call happened yet). Expired sending
+ * rows follow the provider-specific ambiguity policy: a Resend row is
+ * eligible to repeat the identical keyed request only inside its recorded
+ * idempotency deadline; everything else becomes an honest unknown.
+ */
+export const recoverExpiredNotificationLeases = async (
+  environment: Env,
+  timestamp: Date,
+): Promise<number> => {
+  const database = getDatabase(environment);
+  const results = await database.batch([
+    database
+      .update(notificationOutbox)
+      .set({
+        leaseExpiresAt: null,
+        leaseToken: null,
+        status: 'pending',
+        updatedAt: timestamp,
+      })
+      .where(
+        and(
+          eq(notificationOutbox.status, 'claimed'),
+          isNotNull(notificationOutbox.leaseExpiresAt),
+          lte(notificationOutbox.leaseExpiresAt, timestamp),
+        ),
+      ),
+    database
+      .update(notificationOutbox)
+      .set({
+        leaseExpiresAt: null,
+        leaseToken: null,
+        nextAttemptAt: timestamp,
+        reasonCode: 'ambiguous_lease',
+        status: 'retry',
+        updatedAt: timestamp,
+      })
+      .where(
+        and(
+          eq(notificationOutbox.status, 'sending'),
+          isNotNull(notificationOutbox.leaseExpiresAt),
+          lte(notificationOutbox.leaseExpiresAt, timestamp),
+          eq(notificationOutbox.provider, 'resend'),
+          isNotNull(notificationOutbox.idempotencyDeadline),
+          gt(notificationOutbox.idempotencyDeadline, timestamp),
+        ),
+      ),
+    database
+      .update(notificationOutbox)
+      .set({
+        leaseExpiresAt: null,
+        leaseToken: null,
+        reasonCode: 'lease_expired',
+        status: 'unknown',
+        updatedAt: timestamp,
+      })
+      .where(
+        and(
+          eq(notificationOutbox.status, 'sending'),
+          isNotNull(notificationOutbox.leaseExpiresAt),
+          lte(notificationOutbox.leaseExpiresAt, timestamp),
+        ),
+      ),
+  ]);
+  return results.reduce(
+    (total, result) => total + (result.meta?.changes ?? 0),
+    0,
+  );
+};
+
+/**
+ * Expires stale events so a long provider outage cannot deliver a backlog of
+ * day-old alerts. Never-attempted rows are skipped; ambiguous retries remain
+ * unknown because acceptance cannot be ruled out; definite rejections are
+ * skipped. Accepted rows are untouched.
+ */
+export const expireStaleNotificationIntents = async (
+  environment: Env,
+  cutoff: Date,
+  timestamp: Date,
+): Promise<number> => {
+  const database = getDatabase(environment);
+  const results = await database.batch([
+    database
+      .update(notificationOutbox)
+      .set({ reasonCode: 'expired', status: 'skipped', updatedAt: timestamp })
+      .where(
+        and(
+          eq(notificationOutbox.status, 'pending'),
+          lte(notificationOutbox.createdAt, cutoff),
+        ),
+      ),
+    database
+      .update(notificationOutbox)
+      .set({
+        reasonCode: 'expired_ambiguous',
+        status: 'unknown',
+        updatedAt: timestamp,
+      })
+      .where(
+        and(
+          eq(notificationOutbox.status, 'retry'),
+          lte(notificationOutbox.createdAt, cutoff),
+          sql`${notificationOutbox.reasonCode} IN ('ambiguous', 'ambiguous_lease')`,
+        ),
+      ),
+    database
+      .update(notificationOutbox)
+      .set({ reasonCode: 'expired', status: 'skipped', updatedAt: timestamp })
+      .where(
+        and(
+          eq(notificationOutbox.status, 'retry'),
+          lte(notificationOutbox.createdAt, cutoff),
+          or(
+            isNull(notificationOutbox.reasonCode),
+            sql`${notificationOutbox.reasonCode} NOT IN ('ambiguous', 'ambiguous_lease')`,
+          ),
+        ),
+      ),
+  ]);
+  return results.reduce(
+    (total, result) => total + (result.meta?.changes ?? 0),
+    0,
+  );
+};
+
+/**
+ * Claims exactly one due row with a fresh lease token and returns it. The
+ * subquery picks the oldest due row; the UPDATE applies only to that id, so
+ * two concurrent claimers can match the same candidate but only one observes
+ * a `changes` value of one.
+ */
+type RawNotificationOutboxRow = {
+  accepted_at: null | number;
+  attempt_count: number;
+  config_revision: null | number;
+  created_at: number;
+  delivery_key: null | string;
+  event_key: string;
+  event_kind: string;
+  first_attempt_at: null | number;
+  frozen_envelope_json: null | string;
+  id: string;
+  idempotency_deadline: null | number;
+  lead_id: string;
+  lease_expires_at: null | number;
+  lease_token: null | string;
+  next_attempt_at: number;
+  payload_hash: null | string;
+  provider: NotificationProvider | null;
+  provider_message_id: null | string;
+  reason_code: null | string;
+  recipient_email: string;
+  recipient_user_id: null | string;
+  status: NotificationStatus;
+  template_version: number;
+  updated_at: number;
+  workspace_id: string;
+};
+
+const mapRawNotificationOutbox = (
+  row: RawNotificationOutboxRow,
+): NotificationOutboxRecord => ({
+  acceptedAt: row.accepted_at === null ? null : new Date(row.accepted_at),
+  attemptCount: row.attempt_count,
+  configRevision: row.config_revision,
+  createdAt: new Date(row.created_at),
+  deliveryKey: row.delivery_key,
+  eventKey: row.event_key,
+  eventKind: row.event_kind,
+  firstAttemptAt:
+    row.first_attempt_at === null ? null : new Date(row.first_attempt_at),
+  frozenEnvelopeJson: row.frozen_envelope_json,
+  id: row.id,
+  idempotencyDeadline:
+    row.idempotency_deadline === null
+      ? null
+      : new Date(row.idempotency_deadline),
+  leadId: row.lead_id,
+  leaseExpiresAt:
+    row.lease_expires_at === null ? null : new Date(row.lease_expires_at),
+  leaseToken: row.lease_token,
+  nextAttemptAt: new Date(row.next_attempt_at),
+  payloadHash: row.payload_hash,
+  provider: row.provider,
+  providerMessageId: row.provider_message_id,
+  reasonCode: row.reason_code,
+  recipientEmail: row.recipient_email,
+  recipientUserId: row.recipient_user_id,
+  status: row.status,
+  templateVersion: row.template_version,
+  updatedAt: new Date(row.updated_at),
+  workspaceId: row.workspace_id,
+});
+
+export const claimNextNotification = async (
+  environment: Env,
+  timestamp: Date,
+  leaseToken: string,
+  leaseMs: number,
+): Promise<NotificationOutboxRecord | null> => {
+  const claimed = await prepare(
+    environment.DB,
+    `UPDATE notification_outbox
+      SET status = 'claimed', lease_token = ?, lease_expires_at = ?,
+          updated_at = ?
+      WHERE id = (
+        SELECT id FROM notification_outbox
+        WHERE status IN ('pending', 'retry') AND next_attempt_at <= ?
+        ORDER BY next_attempt_at ASC, id ASC
+        LIMIT 1)
+        AND status IN ('pending', 'retry')
+      RETURNING *`,
+  )
+    .bind(
+      leaseToken,
+      timestamp.getTime() + leaseMs,
+      timestamp.getTime(),
+      timestamp.getTime(),
+    )
+    .first<RawNotificationOutboxRow>();
+
+  return claimed === null ? null : mapRawNotificationOutbox(claimed);
+};
+
+/**
+ * Moves a claimed row into `sending` immediately before the external call and
+ * freezes the provider, configuration revision, envelope, hash, delivery key,
+ * first-attempt time, and idempotency deadline. Frozen values are never
+ * rewritten on retry. Increments attempt_count exactly on this transition.
+ */
+export const freezeNotificationAttempt = async (
+  environment: Env,
+  input: {
+    configRevision: number;
+    deliveryKey: string;
+    envelopeJson: string;
+    idempotencyDeadline: Date | null;
+    leaseMs: number;
+    leaseToken: string;
+    outboxId: string;
+    payloadHash: string;
+    provider: NotificationProvider;
+    timestamp: Date;
+  },
+): Promise<boolean> => {
+  const result = await prepare(
+    environment.DB,
+    `UPDATE notification_outbox SET
+        status = 'sending',
+        attempt_count = attempt_count + 1,
+        provider = COALESCE(provider, ?),
+        config_revision = COALESCE(config_revision, ?),
+        delivery_key = COALESCE(delivery_key, ?),
+        frozen_envelope_json = COALESCE(frozen_envelope_json, ?),
+        payload_hash = COALESCE(payload_hash, ?),
+        first_attempt_at = COALESCE(first_attempt_at, ?),
+        idempotency_deadline = COALESCE(idempotency_deadline, ?),
+        lease_expires_at = ?,
+        updated_at = ?
+      WHERE id = ? AND lease_token = ? AND status = 'claimed'`,
+  )
+    .bind(
+      input.provider,
+      input.configRevision,
+      input.deliveryKey,
+      input.envelopeJson,
+      input.payloadHash,
+      input.timestamp.getTime(),
+      input.idempotencyDeadline?.getTime() ?? null,
+      input.timestamp.getTime() + input.leaseMs,
+      input.timestamp.getTime(),
+      input.outboxId,
+      input.leaseToken,
+    )
+    .run();
+  return (result.meta?.changes ?? 0) > 0;
+};
+
+export type NotificationCompletion = {
+  acceptedAt?: Date | null;
+  nextAttemptAt?: Date;
+  providerMessageId?: null | string;
+  reasonCode: null | string;
+  status: NotificationStatus;
+};
+
+/**
+ * Applies one terminal or retry transition fenced by the lease token. A stale
+ * holder whose lease was recovered cannot overwrite its successor's state.
+ */
+export const completeNotificationAttempt = async (
+  environment: Env,
+  input: {
+    completion: NotificationCompletion;
+    leaseToken: string;
+    outboxId: string;
+    timestamp: Date;
+  },
+): Promise<boolean> => {
+  const database = getDatabase(environment);
+  const result = await database
+    .update(notificationOutbox)
+    .set({
+      ...(input.completion.acceptedAt === undefined
+        ? {}
+        : { acceptedAt: input.completion.acceptedAt }),
+      ...(input.completion.nextAttemptAt === undefined
+        ? {}
+        : { nextAttemptAt: input.completion.nextAttemptAt }),
+      ...(input.completion.providerMessageId === undefined
+        ? {}
+        : { providerMessageId: input.completion.providerMessageId }),
+      leaseExpiresAt: null,
+      leaseToken: null,
+      reasonCode: input.completion.reasonCode,
+      status: input.completion.status,
+      updatedAt: input.timestamp,
+    })
+    .where(
+      and(
+        eq(notificationOutbox.id, input.outboxId),
+        eq(notificationOutbox.leaseToken, input.leaseToken),
+        sql`${notificationOutbox.status} IN ('claimed', 'sending')`,
+      ),
+    )
+    .run();
+  return (result.meta?.changes ?? 0) > 0;
+};
+
+/**
+ * Extends a held lease while the delivery command performs its external call,
+ * so a slow provider does not let the lease expire mid-flight.
+ */
+export const renewNotificationLease = async (
+  environment: Env,
+  input: {
+    leaseMs: number;
+    leaseToken: string;
+    outboxId: string;
+    timestamp: Date;
+  },
+): Promise<boolean> => {
+  const result = await prepare(
+    environment.DB,
+    `UPDATE notification_outbox SET lease_expires_at = ?, updated_at = ?
+      WHERE id = ? AND lease_token = ? AND status = 'sending'`,
+  )
+    .bind(
+      input.timestamp.getTime() + input.leaseMs,
+      input.timestamp.getTime(),
+      input.outboxId,
+      input.leaseToken,
+    )
+    .run();
+  return (result.meta?.changes ?? 0) > 0;
+};
+
+// --- Bounded dispatch health ------------------------------------------------
+
+export const recordNotificationDispatchTick = async (
+  environment: Env,
+  timestamp: Date,
+): Promise<void> => {
+  const nowMs = timestamp.getTime();
+  await prepare(
+    environment.DB,
+    `INSERT INTO notification_dispatch_state (
+        workspace_id, last_tick_at, updated_at
+      ) VALUES (?, ?, ?)
+      ON CONFLICT(workspace_id) DO UPDATE SET
+        last_tick_at = excluded.last_tick_at,
+        updated_at = excluded.updated_at`,
+  )
+    .bind(DEFAULT_WORKSPACE_ID, nowMs, nowMs)
+    .run();
+};
+
+export const recordNotificationDispatchConfigError = async (
+  environment: Env,
+  input: { code: string; revision: null | number; timestamp: Date },
+): Promise<void> => {
+  const nowMs = input.timestamp.getTime();
+  await prepare(
+    environment.DB,
+    `UPDATE notification_dispatch_state
+      SET config_error_code = ?, config_error_at = ?, config_error_revision = ?,
+          updated_at = ?
+      WHERE workspace_id = ?`,
+  )
+    .bind(input.code, nowMs, input.revision, nowMs, DEFAULT_WORKSPACE_ID)
+    .run();
+};
+
+export const recordNotificationDispatchSuccess = async (
+  environment: Env,
+  timestamp: Date,
+): Promise<void> => {
+  const nowMs = timestamp.getTime();
+  await prepare(
+    environment.DB,
+    `UPDATE notification_dispatch_state
+      SET last_success_at = ?, config_error_code = NULL, config_error_at = NULL,
+          config_error_revision = NULL, updated_at = ?
+      WHERE workspace_id = ?`,
+  )
+    .bind(nowMs, nowMs, DEFAULT_WORKSPACE_ID)
+    .run();
+};
+
+export const getNotificationDispatchState = async (
+  environment: Env,
+): Promise<NotificationDispatchStateRecord | null> => {
+  const row = await getDatabase(environment)
+    .select()
+    .from(notificationDispatchState)
+    .where(eq(notificationDispatchState.workspaceId, DEFAULT_WORKSPACE_ID))
+    .get();
+  return row ?? null;
 };
