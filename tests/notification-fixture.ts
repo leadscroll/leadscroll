@@ -1,4 +1,10 @@
 import { DEFAULT_WORKSPACE_ID, type Env } from '@/db/repository';
+import {
+  decodeInstallationConfig,
+  DEFAULT_INSTALLATION_CONFIG,
+  type InstallationConfig,
+  type InstallationEmailConfig,
+} from '@/domain/schemas';
 import { convertV4MiniflareOptions, Miniflare } from 'miniflare';
 import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -13,29 +19,54 @@ export const TEST_ENCRYPTION_KEY = Buffer.from(
   Uint8Array.from({ length: 32 }, (_, index) => index + 1),
 ).toString('base64');
 
+export type ConfigSeed = {
+  canonicalOrigin?: string;
+  credential?: string;
+  credentialRemove?: boolean;
+  emailTest?: InstallationConfig['emailTest'];
+  enabled?: boolean;
+  fromEmail?: string;
+  fromName?: string;
+  provider?: 'cloudflare' | 'disabled' | 'resend';
+  revision?: number;
+  writeVersion?: number;
+};
+
 export type NotificationFixture = {
   count: (table: string) => Promise<number>;
   db: D1Database;
   dispose: () => Promise<void>;
-  enableProvider: (input?: {
-    canonicalOrigin?: string;
-    enabled?: boolean;
-    fromEmail?: string;
-    fromName?: string;
-    provider?: 'cloudflare' | 'disabled' | 'resend';
-    revision?: number;
-  }) => Promise<number>;
+  enableProvider: (input?: ConfigSeed) => Promise<number>;
   env: Env;
   insertCredential: (value: string) => Promise<void>;
   optIn: (userId: string, newLeadEmail?: boolean) => Promise<void>;
+  readAuditRows: () => Promise<
+    Array<{
+      action: string;
+      actorUserId: null | string;
+      changesJson: string;
+      createdAt: Date;
+      id: string;
+      resourceId: null | string;
+      resourceType: string;
+    }>
+  >;
+  readConfig: () => Promise<InstallationConfig>;
+  readConfigRow: () => Promise<RawConfigRow>;
   seedLead: (leadId: string, email?: string) => Promise<void>;
   setEmailBinding: (binding: Env['EMAIL']) => void;
   setEncryptionKey: (value: string | undefined) => void;
+  setRawConfig: (json: string, writeVersion?: number) => Promise<void>;
   user: (input: {
     disabled?: boolean;
     email: string;
     id: string;
   }) => Promise<string>;
+};
+
+export type RawConfigRow = {
+  documentJson: string;
+  writeVersion: number;
 };
 
 const migrationNames = async (): Promise<string[]> =>
@@ -142,6 +173,86 @@ export const startNotificationFixture = async (
     } as unknown as Env;
 
     const now = () => Date.now();
+
+    const readConfigRow = async (): Promise<RawConfigRow> => {
+      const row = await database
+        .prepare(
+          'SELECT document_json, write_version FROM installation_config WHERE workspace_id = ?',
+        )
+        .bind(DEFAULT_WORKSPACE_ID)
+        .first<{ document_json: string; write_version: number }>();
+      if (row === null) {
+        return {
+          documentJson: JSON.stringify(DEFAULT_INSTALLATION_CONFIG),
+          writeVersion: 0,
+        };
+      }
+
+      return {
+        documentJson: row.document_json,
+        writeVersion: Number(row.write_version),
+      };
+    };
+
+    const writeDocument = async (
+      document: InstallationConfig,
+      writeVersion: number,
+    ): Promise<void> => {
+      await database
+        .prepare(
+          `INSERT INTO installation_config (
+            workspace_id, document_json, write_version, updated_at, updated_by_user_id
+          ) VALUES (?, ?, ?, ?, NULL)
+          ON CONFLICT(workspace_id) DO UPDATE SET
+            document_json = excluded.document_json,
+            write_version = excluded.write_version,
+            updated_at = excluded.updated_at`,
+        )
+        .bind(
+          DEFAULT_WORKSPACE_ID,
+          JSON.stringify(document),
+          writeVersion,
+          now(),
+        )
+        .run();
+    };
+
+    const applySeed = async (input: ConfigSeed = {}) => {
+      const row = await readConfigRow();
+      const current =
+        decodeInstallationConfig(row.documentJson) ??
+        DEFAULT_INSTALLATION_CONFIG;
+      let credential = current.email.credential;
+      if (input.credentialRemove === true) {
+        credential = null;
+      } else if (input.credential !== undefined) {
+        const { encryptCredential } =
+          await import('@/notifications/credential-crypto');
+        credential = await encryptCredential(TEST_ENCRYPTION_KEY, {
+          provider: 'resend',
+          value: input.credential,
+          workspaceId: DEFAULT_WORKSPACE_ID,
+        });
+      }
+
+      const email: InstallationEmailConfig = {
+        canonicalOrigin: input.canonicalOrigin ?? 'https://crm.example.test',
+        credential,
+        enabled: input.enabled ?? true,
+        fromEmail: input.fromEmail ?? 'notifications@example.test',
+        fromName: input.fromName ?? 'LeadScroll',
+        provider: input.provider ?? 'cloudflare',
+      };
+      const document: InstallationConfig = {
+        ...current,
+        email,
+        emailTest: input.emailTest ?? current.emailTest,
+        revision: input.revision ?? Math.max(current.revision, 1),
+      };
+      await writeDocument(document, input.writeVersion ?? row.writeVersion + 1);
+      return document.revision;
+    };
+
     return {
       count: async (table) => {
         const row = await database
@@ -151,68 +262,24 @@ export const startNotificationFixture = async (
       },
       db: database,
       dispose,
-      enableProvider: async (input = {}) => {
-        const revision = input.revision ?? 1;
-        await database
-          .prepare(
-            `INSERT INTO email_settings (
-              workspace_id, provider, enabled, from_email, from_name,
-              canonical_origin, revision, updated_by_user_id, updated_at,
-              write_token
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
-            ON CONFLICT(workspace_id) DO UPDATE SET
-              provider = excluded.provider,
-              enabled = excluded.enabled,
-              from_email = excluded.from_email,
-              from_name = excluded.from_name,
-              canonical_origin = excluded.canonical_origin,
-              revision = excluded.revision,
-              updated_at = excluded.updated_at,
-              write_token = excluded.write_token`,
-          )
-          .bind(
-            DEFAULT_WORKSPACE_ID,
-            input.provider ?? 'cloudflare',
-            input.enabled === false ? 0 : 1,
-            input.fromEmail ?? 'notifications@example.test',
-            input.fromName ?? 'LeadScroll',
-            input.canonicalOrigin ?? 'https://crm.example.test',
-            revision,
-            now(),
-            `seed-${revision}`,
-          )
-          .run();
-        return revision;
-      },
+      enableProvider: applySeed,
       env: environment,
       insertCredential: async (value) => {
+        const row = await readConfigRow();
+        const current =
+          decodeInstallationConfig(row.documentJson) ??
+          DEFAULT_INSTALLATION_CONFIG;
         const { encryptCredential } =
           await import('@/notifications/credential-crypto');
-        const envelope = await encryptCredential(TEST_ENCRYPTION_KEY, {
+        const credential = await encryptCredential(TEST_ENCRYPTION_KEY, {
           provider: 'resend',
           value,
           workspaceId: DEFAULT_WORKSPACE_ID,
         });
-        await database
-          .prepare(
-            `INSERT INTO email_credentials (
-              workspace_id, provider, ciphertext, nonce, key_version,
-              updated_at, updated_by_user_id
-            ) VALUES (?, 'resend', ?, ?, ?, ?, NULL)
-            ON CONFLICT(workspace_id, provider) DO UPDATE SET
-              ciphertext = excluded.ciphertext,
-              nonce = excluded.nonce,
-              key_version = excluded.key_version,
-              updated_at = excluded.updated_at`,
-          )
-          .bind(
-            DEFAULT_WORKSPACE_ID,
-            envelope.ciphertext,
-            envelope.nonce,
-            envelope.keyVersion,
-            now(),
-          )
-          .run();
+        await writeDocument(
+          { ...current, email: { ...current.email, credential } },
+          row.writeVersion + 1,
+        );
       },
       optIn: async (userId, newLeadEmail = true) => {
         await database
@@ -226,6 +293,44 @@ export const startNotificationFixture = async (
           .bind(DEFAULT_WORKSPACE_ID, userId, newLeadEmail ? 1 : 0, now())
           .run();
       },
+      readAuditRows: async () => {
+        const rows = await database
+          .prepare(
+            `SELECT id, action, actor_user_id, changes_json, resource_type,
+                    resource_id, created_at
+             FROM audit_log WHERE workspace_id = ?
+             ORDER BY created_at ASC, id ASC`,
+          )
+          .bind(DEFAULT_WORKSPACE_ID)
+          .all<{
+            action: string;
+            actor_user_id: null | string;
+            changes_json: string;
+            created_at: number;
+            id: string;
+            resource_id: null | string;
+            resource_type: string;
+          }>();
+        return rows.results.map((row) => ({
+          action: row.action,
+          actorUserId: row.actor_user_id,
+          changesJson: row.changes_json,
+          createdAt: new Date(Number(row.created_at)),
+          id: row.id,
+          resourceId: row.resource_id,
+          resourceType: row.resource_type,
+        }));
+      },
+      readConfig: async () => {
+        const row = await readConfigRow();
+        const document = decodeInstallationConfig(row.documentJson);
+        if (document === null) {
+          throw new Error('The fixture configuration is invalid.');
+        }
+
+        return document;
+      },
+      readConfigRow,
       seedLead: async (leadId, email = 'lead@example.test') => {
         await database
           .prepare(
@@ -246,6 +351,20 @@ export const startNotificationFixture = async (
       },
       setEncryptionKey: (value) => {
         environment.EMAIL_SETTINGS_ENCRYPTION_KEY = value;
+      },
+      setRawConfig: async (json, writeVersion = 1) => {
+        await database
+          .prepare(
+            `INSERT INTO installation_config (
+              workspace_id, document_json, write_version, updated_at, updated_by_user_id
+            ) VALUES (?, ?, ?, ?, NULL)
+            ON CONFLICT(workspace_id) DO UPDATE SET
+              document_json = excluded.document_json,
+              write_version = excluded.write_version,
+              updated_at = excluded.updated_at`,
+          )
+          .bind(DEFAULT_WORKSPACE_ID, json, writeVersion, now())
+          .run();
       },
       user: async (input) => {
         await database

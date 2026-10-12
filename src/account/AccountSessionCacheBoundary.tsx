@@ -25,9 +25,7 @@ export const AccountSessionCacheBoundary = ({
           return keyUserId !== userId || keySessionId !== sessionId;
         }
 
-        return root === 'account-capabilities' ||
-          root === 'email-settings' ||
-          root === 'notification-preference'
+        return root === 'email-settings' || root === 'notification-preference'
           ? keyUserId !== userId
           : false;
       },

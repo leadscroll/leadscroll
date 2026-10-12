@@ -2,11 +2,10 @@
  * Browser-side calls for the notification APIs. View types are derived from
  * the authoritative Effect schemas (type-only imports, so no server module is
  * bundled) and query keys are scoped by the signed-in user so two identities
- * in the same SPA can never share cached settings or capabilities.
+ * in the same SPA can never share cached settings or preferences.
  */
 
 import {
-  type AccountCapabilities,
   type EmailSettingsView,
   type EmailTestView,
   type NotificationPreferenceView,
@@ -17,7 +16,6 @@ import { request } from '@/lib/http';
 export type UpdateEmailSettingsInput = UpdateEmailSettingsRequest;
 
 export {
-  accountCapabilitiesQueryKey,
   emailSettingsQueryKey,
   notificationPreferenceQueryKey,
   type SavedConfigurationTest,
@@ -32,7 +30,6 @@ export type {
 } from '@/domain/schemas';
 
 export const notificationsApi = {
-  capabilities: () => request<AccountCapabilities>('/v1/account/capabilities'),
   getPreference: () =>
     request<NotificationPreferenceView>('/v1/account/notifications'),
   getSettings: () => request<EmailSettingsView>('/v1/settings/email'),

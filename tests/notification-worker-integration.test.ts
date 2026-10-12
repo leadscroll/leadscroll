@@ -159,30 +159,27 @@ const startIntegrationFixture = async (): Promise<IntegrationFixture> => {
       value: 're_integration_key',
       workspaceId: WORKSPACE,
     });
+    const { DEFAULT_INSTALLATION_CONFIG } = await import('@/domain/schemas');
+    const document = {
+      ...DEFAULT_INSTALLATION_CONFIG,
+      email: {
+        canonicalOrigin: APP_ORIGIN,
+        credential: envelope,
+        enabled: true,
+        fromEmail: 'notifications@example.test',
+        fromName: 'LeadScroll',
+        provider: 'resend',
+      },
+      revision: 1,
+    };
     await database
       .prepare(
-        `INSERT INTO email_settings (
-          workspace_id, provider, enabled, from_email, from_name,
-          canonical_origin, revision, updated_by_user_id, updated_at, write_token
-        ) VALUES (?, 'resend', 1, 'notifications@example.test', 'LeadScroll',
-          ?, 1, NULL, ?, 'integration-token')`,
-      )
-      .bind(WORKSPACE, APP_ORIGIN, now)
-      .run();
-    await database
-      .prepare(
-        `INSERT INTO email_credentials (
-          workspace_id, provider, ciphertext, nonce, key_version, updated_at,
+        `INSERT INTO installation_config (
+          workspace_id, document_json, write_version, updated_at,
           updated_by_user_id
-        ) VALUES (?, 'resend', ?, ?, ?, ?, NULL)`,
+        ) VALUES (?, ?, 1, ?, NULL)`,
       )
-      .bind(
-        WORKSPACE,
-        envelope.ciphertext,
-        envelope.nonce,
-        envelope.keyVersion,
-        now,
-      )
+      .bind(WORKSPACE, JSON.stringify(document), now)
       .run();
 
     const fixture: IntegrationFixture = {

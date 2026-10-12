@@ -3,7 +3,18 @@ import {
   type NotificationFixture,
   startNotificationFixture,
 } from './notification-fixture';
-import { DEFAULT_WORKSPACE_ID } from '@/db/repository';
+import {
+  appendAuditLog,
+  DEFAULT_WORKSPACE_ID,
+  listAuditLog,
+  readInstallationConfig,
+} from '@/db/repository';
+import { decodeKeysetCursor } from '@/domain/pagination';
+import {
+  decodeInstallationConfig,
+  DEFAULT_INSTALLATION_CONFIG,
+  type InstallationConfig,
+} from '@/domain/schemas';
 import { afterEach, describe, expect, test } from 'vitest';
 
 const fixtures: NotificationFixture[] = [];
@@ -46,8 +57,9 @@ describe('notification schema migration', () => {
     ).rejects.toThrow(/UNIQUE constraint/iu);
   });
 
-  test('migration 0004 is additive: existing baselines and claims survive', async () => {
+  test('migration 0004 creates exactly the three new tables', async () => {
     const fx = await fixture({ through: '0003' });
+    const now = Date.now();
     await fx.user({ email: 'bootstrap@example.test', id: 'bootstrap-user' });
     await fx.seedLead('01ARZ3NDEKTSV4RRFFQ69G5FAV');
     await fx.db
@@ -55,94 +67,155 @@ describe('notification schema migration', () => {
         `INSERT INTO registration_claims (id, grant_kind, grant_ref, claim_key, user_id, created_at)
           VALUES (?, 'bootstrap', 'bootstrap', 'bootstrap', ?, ?)`,
       )
-      .bind('claim-1', 'bootstrap-user', Date.now())
+      .bind('claim-1', 'bootstrap-user', now)
       .run();
 
     await applyMigrationsFrom(fx.db, '0004');
 
+    const tables = await fx.db
+      .prepare(
+        `SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (
+          'installation_config', 'audit_log', 'notification_preferences',
+          'email_settings', 'email_credentials', 'email_settings_permissions',
+          'email_settings_audit', 'notification_test_attempts'
+        ) ORDER BY name`,
+      )
+      .all<{ name: string }>();
+    expect(tables.results.map((row) => row.name)).toEqual([
+      'audit_log',
+      'installation_config',
+      'notification_preferences',
+    ]);
+
+    // Existing CRM data and claims survive; no permission backfill exists.
     expect(await fx.count('leads')).toBe(1);
     expect(await fx.count('user')).toBe(1);
     expect(await fx.count('registration_claims')).toBe(1);
-    const granted = await fx.db
+    expect(await fx.count('installation_config')).toBe(0);
+  });
+
+  test('the configuration document is a validated singleton', async () => {
+    const fx = await fixture();
+    await fx.enableProvider({ provider: 'resend', revision: 3 });
+
+    expect(await fx.count('installation_config')).toBe(1);
+    const stored = await fx.db
       .prepare(
-        'SELECT user_id FROM email_settings_permissions WHERE workspace_id = ?',
+        'SELECT document_json, write_version FROM installation_config WHERE workspace_id = ?',
       )
       .bind(DEFAULT_WORKSPACE_ID)
-      .first<{ user_id: string }>();
-    expect(granted?.user_id).toBe('bootstrap-user');
+      .first<{ document_json: string; write_version: number }>();
+    const document = decodeInstallationConfig(String(stored?.document_json));
+    expect(document?.email.provider).toBe('resend');
+    expect(document?.revision).toBe(3);
+    expect(Number(stored?.write_version)).toBe(1);
+
+    await expect(
+      fx.db
+        .prepare(
+          `INSERT INTO installation_config (workspace_id, document_json, write_version, updated_at, updated_by_user_id)
+            VALUES (?, '{}', 1, ?, NULL)`,
+        )
+        .bind(DEFAULT_WORKSPACE_ID, Date.now())
+        .run(),
+    ).rejects.toThrow(/UNIQUE constraint/iu);
   });
 
-  test('the migration backfill does not grant the capability to a disabled bootstrap owner', async () => {
-    const fx = await fixture({ through: '0003' });
-    await fx.user({
-      disabled: true,
-      email: 'bootstrap@example.test',
-      id: 'bootstrap-user',
-    });
-    await fx.db
-      .prepare(
-        `INSERT INTO registration_claims (id, grant_kind, grant_ref, claim_key, user_id, created_at)
-          VALUES (?, 'bootstrap', 'bootstrap', 'bootstrap', ?, ?)`,
-      )
-      .bind('claim-2', 'bootstrap-user', Date.now())
-      .run();
-
-    await applyMigrationsFrom(fx.db, '0004');
-    expect(await fx.count('email_settings_permissions')).toBe(0);
-  });
-
-  test('fresh installs create only the final notification schema', async () => {
+  test('a corrupt or unsupported document fails closed and is not reset', async () => {
     const fx = await fixture();
-    for (const table of [
-      'email_credentials',
-      'email_settings',
-      'email_settings_audit',
-      'email_settings_permissions',
-      'notification_preferences',
-      'notification_test_attempts',
-    ]) {
-      expect(await fx.count(table)).toBe(0);
-    }
 
-    for (const table of [
-      'notification_outbox',
-      'notification_dispatch_state',
-    ]) {
-      await expect(
-        fx.db.prepare(`SELECT 1 FROM ${table}`).first(),
-      ).rejects.toThrow(/no such table/iu);
-    }
+    await fx.setRawConfig('not json at all');
+    await expect(readInstallationConfig(fx.env)).rejects.toThrow(
+      /configuration document is invalid/iu,
+    );
 
-    const settingsColumns = await fx.db
-      .prepare('PRAGMA table_info(email_settings)')
-      .all<{ name: string }>();
-    expect(settingsColumns.results.map((column) => column.name)).toEqual([
-      'canonical_origin',
-      'enabled',
-      'from_email',
-      'from_name',
-      'provider',
-      'revision',
-      'updated_at',
-      'updated_by_user_id',
-      'workspace_id',
-      'write_token',
-    ]);
-    const testColumns = await fx.db
-      .prepare('PRAGMA table_info(notification_test_attempts)')
-      .all<{ name: string }>();
-    expect(testColumns.results.map((column) => column.name)).toEqual([
-      'completed_at',
-      'config_revision',
-      'created_at',
-      'id',
-      'provider',
-      'provider_message_id',
-      'reason_code',
-      'status',
-      'updated_at',
-      'user_id',
-      'workspace_id',
-    ]);
+    const unsupported: InstallationConfig = {
+      ...DEFAULT_INSTALLATION_CONFIG,
+      version: 99,
+    } as unknown as InstallationConfig;
+    await fx.setRawConfig(JSON.stringify(unsupported));
+    await expect(readInstallationConfig(fx.env)).rejects.toThrow(
+      /configuration document is invalid/iu,
+    );
+
+    // The invalid raw document is preserved for operator recovery.
+    const row = await fx.readConfigRow();
+    expect(row.documentJson).toBe(JSON.stringify(unsupported));
+  });
+
+  test('audit helpers append bounded entries and page newest first', async () => {
+    const fx = await fixture();
+    await fx.user({ email: 'actor@example.test', id: 'audit-actor' });
+    const base = Date.now();
+    await appendAuditLog(fx.env, {
+      actorUserId: 'audit-actor',
+      now: new Date(base - 2_000),
+      records: [
+        {
+          action: 'email.settings_updated',
+          changes: [
+            { after: 'resend', before: 'disabled', field: 'email.provider' },
+          ],
+          resourceId: null,
+          resourceType: 'installation.email',
+        },
+      ],
+    });
+    await appendAuditLog(fx.env, {
+      actorUserId: null,
+      now: new Date(base - 1_000),
+      records: [
+        {
+          action: 'email.test_sent',
+          changes: [
+            { after: 'accepted', before: 'sending', field: 'test.outcome' },
+          ],
+          resourceId: null,
+          resourceType: 'installation.email_test',
+        },
+      ],
+    });
+
+    const first = await listAuditLog(fx.env, { cursor: null, limit: 1 });
+    expect(first.items).toHaveLength(1);
+    expect(first.items[0]).toMatchObject({
+      action: 'email.test_sent',
+      actorUserId: null,
+      changes: [
+        { after: 'accepted', before: 'sending', field: 'test.outcome' },
+      ],
+      resourceType: 'installation.email_test',
+    });
+    expect(first.nextCursor).not.toBeNull();
+
+    const second = await listAuditLog(fx.env, {
+      cursor:
+        first.nextCursor === null ? null : decodeKeysetCursor(first.nextCursor),
+      limit: 1,
+    });
+    expect(second.items).toHaveLength(1);
+    expect(second.items[0]).toMatchObject({
+      action: 'email.settings_updated',
+      actorUserId: 'audit-actor',
+    });
+  });
+
+  test('audit entries are validated before they reach storage', async () => {
+    const fx = await fixture();
+    await expect(
+      appendAuditLog(fx.env, {
+        actorUserId: null,
+        now: new Date(),
+        records: [
+          {
+            action: 'Not Bounded',
+            changes: [],
+            resourceId: null,
+            resourceType: 'installation.email',
+          },
+        ],
+      }),
+    ).rejects.toThrow();
+    expect(await fx.count('audit_log')).toBe(0);
   });
 });

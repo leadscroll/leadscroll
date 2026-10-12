@@ -295,147 +295,50 @@ export const notificationPreferences = sqliteTable(
   (table) => [primaryKey({ columns: [table.workspaceId, table.userId] })],
 );
 
-export const NOTIFICATION_PROVIDERS = ['cloudflare', 'resend'] as const;
-export type NotificationProvider = (typeof NOTIFICATION_PROVIDERS)[number];
+// Installation-wide singleton configuration document. The JSON document is
+// validated against the versioned Effect Schema in src/domain/schemas.ts on
+// every read and before every write; Drizzle never types the document shape.
+// `write_version` is the internal compare-and-swap token bumped on every
+// write (including test-state updates), separate from the user-visible
+// `revision` inside the JSON so a test completion cannot invalidate a
+// settings draft or overwrite a concurrent configuration change.
+export const installationConfig = sqliteTable('installation_config', {
+  documentJson: text('document_json').notNull(),
+  updatedAt: timestampMs('updated_at').notNull(),
+  updatedByUserId: text('updated_by_user_id').references(() => user.id, {
+    onDelete: 'set null',
+  }),
+  workspaceId: text('workspace_id').primaryKey(),
+  // Random token written by every successful save. Audit statements in the
+  // same batch are gated on it, so a compare-and-swap loser whose UPDATE
+  // matched no rows cannot slip its audit rows into the winner's write.
+  writeToken: text('write_token'),
+  writeVersion: integer('write_version').notNull().default(1),
+});
 
-// Explicit administrator test messages. One row is one attempt: the request
-// id is the durable dedup key and the saved configuration revision tells the
-// UI whether the result still applies. There is no frozen payload, automatic
-// retry, or replay; an ambiguous result is reported as unknown and left alone.
-export const NOTIFICATION_TEST_STATUSES = [
-  'sending',
-  'accepted',
-  'rejected',
-  'ambiguous',
-  'configuration_error',
-] as const;
-export type NotificationTestStatus =
-  (typeof NOTIFICATION_TEST_STATUSES)[number];
-
-export const notificationTestAttempts = sqliteTable(
-  'notification_test_attempts',
-  {
-    completedAt: timestampMs('completed_at'),
-    configRevision: integer('config_revision').notNull(),
-    createdAt: timestampMs('created_at').notNull(),
-    id: text('id').primaryKey(),
-    provider: text('provider', { enum: NOTIFICATION_PROVIDERS }),
-    providerMessageId: text('provider_message_id'),
-    reasonCode: text('reason_code'),
-    status: text('status', { enum: NOTIFICATION_TEST_STATUSES })
-      .notNull()
-      .default('sending'),
-    updatedAt: timestampMs('updated_at').notNull(),
-    userId: text('user_id')
-      .notNull()
-      .references(() => user.id, { onDelete: 'cascade' }),
-    workspaceId: text('workspace_id')
-      .notNull()
-      .references(() => workspaces.id),
-  },
-  (table) => [
-    index('notification_test_attempts_workspace_created_idx').on(
-      table.workspaceId,
-      table.createdAt,
-    ),
-  ],
-);
-
-// Notification delivery is best-effort event work, with no persisted delivery
-// state; see docs/email-notifications.md.
-
-// Installation-level email configuration singleton per workspace. `revision`
-// is server-generated and compare-and-swap guarded, so concurrent
-// administrator edits cannot silently overwrite each other.
-export const EMAIL_SETTINGS_PROVIDERS = [
-  'disabled',
-  'cloudflare',
-  'resend',
-] as const;
-export type EmailSettingsProvider = (typeof EMAIL_SETTINGS_PROVIDERS)[number];
-
-export const emailSettings = sqliteTable(
-  'email_settings',
-  {
-    canonicalOrigin: text('canonical_origin'),
-    enabled: integer('enabled', { mode: 'boolean' }).notNull().default(false),
-    fromEmail: text('from_email'),
-    fromName: text('from_name'),
-    provider: text('provider', { enum: EMAIL_SETTINGS_PROVIDERS })
-      .notNull()
-      .default('disabled'),
-    revision: integer('revision').notNull().default(0),
-    updatedAt: timestampMs('updated_at').notNull(),
-    updatedByUserId: text('updated_by_user_id').references(() => user.id, {
-      onDelete: 'set null',
-    }),
-    workspaceId: text('workspace_id').primaryKey(),
-    // Random token written by every successful save. Credential and audit
-    // statements in the same batch are gated on it, so a compare-and-swap loser
-    // whose UPDATE matched no rows cannot slip its writes into a concurrent
-    // winner's revision.
-    writeToken: text('write_token'),
-  },
-  () => [],
-);
-
-// Encrypted provider credentials. The plaintext value is never stored; the
-// AES-256-GCM envelope binds the workspace, provider, and key version through
-// authenticated additional data. Removing the row is the only delete path.
-export const emailCredentials = sqliteTable(
-  'email_credentials',
-  {
-    ciphertext: text('ciphertext').notNull(),
-    keyVersion: integer('key_version').notNull(),
-    nonce: text('nonce').notNull(),
-    provider: text('provider', { enum: ['resend'] }).notNull(),
-    updatedAt: timestampMs('updated_at').notNull(),
-    updatedByUserId: text('updated_by_user_id').references(() => user.id, {
-      onDelete: 'set null',
-    }),
-    workspaceId: text('workspace_id')
-      .notNull()
-      .references(() => workspaces.id),
-  },
-  (table) => [primaryKey({ columns: [table.workspaceId, table.provider] })],
-);
-
-// Narrow installation-level capability. Presence of a row grants
-// manageEmailSettings. Nothing else is editable here: there is no general
-// roles editor in this release.
-export const emailSettingsPermissions = sqliteTable(
-  'email_settings_permissions',
-  {
-    grantedAt: timestampMs('granted_at').notNull(),
-    grantedByUserId: text('granted_by_user_id'),
-    userId: text('user_id')
-      .notNull()
-      .references(() => user.id, { onDelete: 'cascade' }),
-    workspaceId: text('workspace_id')
-      .notNull()
-      .references(() => workspaces.id),
-  },
-  (table) => [primaryKey({ columns: [table.workspaceId, table.userId] })],
-);
-
-// Redacted audit trail: actor, action, revision, safe outcome, and time. Key
-// material, message bodies, and recipient addresses are never recorded here.
-export const emailSettingsAudit = sqliteTable(
-  'email_settings_audit',
+// Generic, append-only who-changed-what log. `changes_json` is a bounded
+// array of field-level safe values validated by code schemas; producers must
+// redact secrets at the source. There is no user-facing audit editor in this
+// release. Configuration changes are the initial producer; the lifecycle is
+// independent of the configuration document.
+export const auditLog = sqliteTable(
+  'audit_log',
   {
     action: text('action').notNull(),
-    actorUserId: text('actor_user_id'),
+    actorUserId: text('actor_user_id').references(() => user.id, {
+      onDelete: 'set null',
+    }),
+    changesJson: text('changes_json').notNull(),
     createdAt: timestampMs('created_at').notNull(),
     id: text('id').primaryKey(),
-    reasonCode: text('reason_code'),
-    revision: integer('revision').notNull(),
-    testOutcome: text('test_outcome'),
+    resourceId: text('resource_id'),
+    resourceType: text('resource_type').notNull(),
     workspaceId: text('workspace_id')
       .notNull()
       .references(() => workspaces.id),
   },
   (table) => [
-    index('email_settings_audit_workspace_created_idx').on(
+    index('audit_log_workspace_created_idx').on(
       table.workspaceId,
       table.createdAt,
     ),

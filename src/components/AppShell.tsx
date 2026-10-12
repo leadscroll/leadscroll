@@ -4,11 +4,6 @@ import { signOut, useSession } from '@/lib/auth-client';
 import { releaseLabel } from '@/lib/release';
 import { cn } from '@/lib/styles';
 import {
-  accountCapabilitiesQueryKey,
-  notificationsApi,
-} from '@/notifications/api';
-import { useQuery } from '@tanstack/react-query';
-import {
   ArrowUpRight,
   KeyRound,
   LayoutList,
@@ -24,7 +19,6 @@ type NavigationItem = {
   href: string;
   icon: typeof LayoutList;
   label: string;
-  requiresEmailSettings?: boolean;
   section: 'Manage' | 'Workspace';
 };
 
@@ -58,7 +52,6 @@ const navigation: NavigationItem[] = [
     href: '/settings/email',
     icon: Send,
     label: 'Email',
-    requiresEmailSettings: true,
     section: 'Manage',
   },
 ];
@@ -80,22 +73,10 @@ export const AppShell = ({
   const [location] = useLocation();
   const { data: session } = useSession();
   const name = session?.user.name || 'Your account';
-  const userId = session?.user.id ?? null;
-  // Capability visibility is cosmetic; every settings route re-checks the
-  // server-side grant before reading or writing. The query is scoped to the
-  // signed-in user, and the entry stays hidden until that user's capability
-  // is known, so signing in as another account cannot flash the admin entry.
-  const capabilities = useQuery({
-    enabled: userId !== null,
-    queryFn: () => notificationsApi.capabilities(),
-    queryKey: accountCapabilitiesQueryKey(userId ?? 'anonymous'),
-    staleTime: 60_000,
-  });
-  const visibleNavigation = navigation.filter(
-    (item) =>
-      item.requiresEmailSettings !== true ||
-      capabilities.data?.manageEmailSettings === true,
-  );
+  // Every enabled authenticated staff account can manage installation email
+  // settings, so the entry is always visible; server routes still enforce
+  // authentication and disabled-account rules.
+  const visibleNavigation = navigation;
 
   return (
     <div className="app-shell">

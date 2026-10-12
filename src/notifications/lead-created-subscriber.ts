@@ -30,12 +30,8 @@ import {
   senderFailureReason,
   type SenderOverrides,
 } from '@/application/notification-commands';
-import {
-  type EmailSettingsRecord,
-  type Env,
-  getLead,
-  listLeadCreatedRecipients,
-} from '@/db/repository';
+import { type Env, getLead, listLeadCreatedRecipients } from '@/db/repository';
+import { type InstallationEmailConfig } from '@/domain/schemas';
 import {
   type EmailEnvelope,
   type EmailSender,
@@ -69,7 +65,7 @@ export type LeadCreatedSubscriberOverrides = SenderOverrides & {
 };
 
 const buildLeadEnvelope = (
-  settings: EmailSettingsRecord,
+  settings: InstallationEmailConfig,
   origin: string,
   leadId: string,
   recipientEmail: string,

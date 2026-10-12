@@ -12,9 +12,6 @@ export const notificationPreferenceQueryKey = (userId: string) =>
 export const emailSettingsQueryKey = (userId: string) =>
   ['email-settings', userId] as const;
 
-export const accountCapabilitiesQueryKey = (userId: string) =>
-  ['account-capabilities', userId] as const;
-
 export type SavedConfigurationTest =
   { message: string; ok: false } | { ok: true };
 

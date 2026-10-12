@@ -15,7 +15,7 @@ import {
 } from '@/application/commands';
 import { type DomainError, type PersistenceError } from '@/application/errors';
 import {
-  getEmailSettingsView,
+  getEmailSettingsViewCommand,
   getNotificationPreferenceView,
   sendTestEmailCommand,
   updateEmailSettingsCommand,
@@ -57,8 +57,6 @@ import {
   createStaffInvite,
   type Env,
   getLead,
-  hasAnyEmailSettingsPermission,
-  hasEmailSettingsPermission,
   isBootstrapGrantAvailable,
   isBrowserIntakeToken,
   isIntakeToken,
@@ -153,6 +151,9 @@ const UNSAFE_METHODS = new Set(['DELETE', 'PATCH', 'POST', 'PUT']);
  * Domain codes that map to a non-422 status; everything else is 422.
  */
 const DOMAIN_ERROR_STATUS: Record<string, number> = {
+  // A corrupt installation configuration fails closed and is never echoed or
+  // silently reset; the operator restores it out of band.
+  config_unavailable: 500,
   conflict: 409,
   not_found: 404,
   revision_conflict: 409,
@@ -367,37 +368,20 @@ const requireAdmin = async (
   }
 };
 
-// Installation email administration is a narrow capability: authentication
-// alone is not enough, and an installation with no designated administrator
-// reports an explicit owner-setup state instead of promoting the caller.
-const requireEmailAdministrator = async (
-  environment: Env,
+// Installation email administration is open to every enabled authenticated
+// staff account. Authentication, disabled-account enforcement, origin, and
+// content-type checks still apply; public intake and API tokens are not staff
+// sessions and cannot reach these routes.
+const requireRealStaffSession = (
   userId: null | string,
-): Promise<{ error: Response } | { userId: string }> => {
+): { error: Response } | { userId: string } => {
   if (userId === null) {
     return {
       error: errorResponse(401, 'unauthorized', 'A real session is required.'),
     };
   }
 
-  if (await hasEmailSettingsPermission(environment, userId)) {
-    return { userId };
-  }
-
-  const anyPermission = await hasAnyEmailSettingsPermission(environment);
-  return {
-    error: anyPermission
-      ? errorResponse(
-          403,
-          'forbidden',
-          'You do not have permission to manage email settings.',
-        )
-      : errorResponse(
-          403,
-          'email_settings_owner_required',
-          'No email settings administrator exists on this installation. An operator must grant the capability to an enabled account.',
-        ),
-  };
+  return { userId };
 };
 
 // The public intake route is unauthenticated and cookie-free, so it answers
@@ -1183,19 +1167,6 @@ const createAppWithAuth = (
       // Self-service notification preference. The session user id is
       // authoritative; no path or body field can address another staff
       // member's row.
-      .get('/v1/account/capabilities', async ({ adminUserId }) => {
-        // Cosmetic only: the settings routes re-check the server capability.
-        // This lets the sidebar hide the Manage -> Email entry from ordinary
-        // staff without granting anything.
-        return {
-          data: {
-            manageEmailSettings:
-              adminUserId === null
-                ? false
-                : await hasEmailSettingsPermission(environment, adminUserId),
-          },
-        };
-      })
       .get('/v1/account/notifications', async ({ adminUserId }) => {
         if (adminUserId === null) {
           return errorResponse(
@@ -1239,25 +1210,34 @@ const createAppWithAuth = (
           return 'error' in result ? result.error : { data: result.data };
         },
       )
-      // Installation email settings. Every route below requires the narrow
-      // manageEmailSettings capability on top of the staff session guard.
+      // Installation email settings. The shared staff session guard above
+      // already enforces authentication, disabled accounts, trusted writes,
+      // and JSON bodies; every enabled staff account may manage the
+      // installation's email configuration.
       .get('/v1/settings/email', async ({ adminUserId, request }) => {
-        const admin = await requireEmailAdministrator(environment, adminUserId);
+        const admin = requireRealStaffSession(adminUserId);
         if ('error' in admin) {
           return withNoStore(admin.error);
         }
 
-        const view = await getEmailSettingsView(
-          environment,
-          resolveAuthOrigin(environment, request),
+        const result = await run(
+          request,
+          getEmailSettingsViewCommand(
+            environment,
+            resolveAuthOrigin(environment, request),
+          ),
         );
+        if ('error' in result) {
+          return withNoStore(result.error);
+        }
+
         return Response.json(
-          { data: view },
+          { data: result.data },
           { headers: { 'Cache-Control': 'no-store' } },
         );
       })
       .put('/v1/settings/email', async ({ adminUserId, body, request }) => {
-        const admin = await requireEmailAdministrator(environment, adminUserId);
+        const admin = requireRealStaffSession(adminUserId);
         if ('error' in admin) {
           return withNoStore(admin.error);
         }
@@ -1295,10 +1275,7 @@ const createAppWithAuth = (
       .post(
         '/v1/settings/email/test',
         async ({ adminEmail, adminUserId, body, request }) => {
-          const admin = await requireEmailAdministrator(
-            environment,
-            adminUserId,
-          );
+          const admin = requireRealStaffSession(adminUserId);
           if ('error' in admin) {
             return withNoStore(admin.error);
           }

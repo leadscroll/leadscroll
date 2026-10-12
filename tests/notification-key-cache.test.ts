@@ -5,7 +5,6 @@ import {
   toUpdateRequest,
 } from '@/notifications/ManageEmailPage/saveVariables';
 import {
-  accountCapabilitiesQueryKey,
   emailSettingsQueryKey,
   notificationPreferenceQueryKey,
   savedConfigurationTestable,
@@ -121,12 +120,9 @@ describe('secret-free mutation variables', () => {
 });
 
 describe('identity-scoped query keys', () => {
-  test('admin and preference keys differ per user', () => {
+  test('settings and preference keys differ per user', () => {
     expect(emailSettingsQueryKey('user-a')).not.toEqual(
       emailSettingsQueryKey('user-b'),
-    );
-    expect(accountCapabilitiesQueryKey('user-a')).not.toEqual(
-      accountCapabilitiesQueryKey('user-b'),
     );
     expect(notificationPreferenceQueryKey('user-a')).not.toEqual(
       notificationPreferenceQueryKey('user-b'),

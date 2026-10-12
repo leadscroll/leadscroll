@@ -16,7 +16,6 @@ const repoRoot = process.cwd();
 const APP_ORIGIN = 'https://notify-test.example';
 const ADMIN_EMAIL = 'notify-admin@example.test';
 const ADMIN_ID = 'notify-admin-id';
-const WORKSPACE = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
 
 const workerScripts = new Map<string, string>();
 const bundleWorker = async (): Promise<string> => {
@@ -62,7 +61,7 @@ type ApiFixture = {
 const fixtures: ApiFixture[] = [];
 
 const startApiFixture = async (
-  options: { identity?: boolean; permission?: boolean } = {},
+  options: { identity?: boolean } = {},
 ): Promise<ApiFixture> => {
   const script = await bundleWorker();
   const mf = new Miniflare(
@@ -147,15 +146,6 @@ const startApiFixture = async (
       )
       .bind(ADMIN_ID, 'Notify Admin', ADMIN_EMAIL, now, now)
       .run();
-    if (options.permission !== false) {
-      await fixture.db
-        .prepare(
-          `INSERT INTO email_settings_permissions (workspace_id, user_id, granted_at, granted_by_user_id)
-            VALUES (?, ?, ?, NULL)`,
-        )
-        .bind(WORKSPACE, ADMIN_ID, now)
-        .run();
-    }
   }
 
   return fixture;
@@ -193,31 +183,29 @@ describe('email settings API guards', () => {
     expect(bearer.status).toBe(401);
   });
 
-  test('authenticated staff without the capability are denied with an explicit owner state', async () => {
-    const fx = await startApiFixture({ permission: false });
-    const noOwner = await fx.request('/v1/settings/email');
-    expect(noOwner.status).toBe(403);
-    expect(noOwner.json).toMatchObject({
-      code: 'email_settings_owner_required',
-    });
+  test('the capability endpoint is removed and every enabled staff account can manage settings', async () => {
+    const fx = await startApiFixture();
+    expect((await fx.request('/v1/account/capabilities')).status).toBe(404);
 
+    const settings = await fx.request('/v1/settings/email');
+    expect(settings.status).toBe(200);
+    expect(settings.json.data).toMatchObject({ provider: 'disabled' });
+
+    // An ordinary (non-bootstrap) staff account has the same access; there is
+    // no per-account permission state to lack.
+    const otherId = 'other-staff-id';
     await fx.db
       .prepare(
         `INSERT INTO user (id, name, email, email_verified, created_at, updated_at)
-          VALUES ('other-id', 'Other', 'other@example.test', 0, ?, ?)`,
+          VALUES (?, 'Other', 'other@example.test', 0, ?, ?)`,
       )
-      .bind(Date.now(), Date.now())
+      .bind(otherId, Date.now(), Date.now())
       .run();
-    await fx.db
-      .prepare(
-        `INSERT INTO email_settings_permissions (workspace_id, user_id, granted_at, granted_by_user_id)
-          VALUES (?, 'other-id', ?, NULL)`,
-      )
-      .bind(WORKSPACE, Date.now())
-      .run();
-    const denied = await fx.request('/v1/settings/email');
-    expect(denied.status).toBe(403);
-    expect(denied.json).toMatchObject({ code: 'forbidden' });
+    const saved = await fx.request('/v1/settings/email', {
+      body: saveBody(),
+      method: 'PUT',
+    });
+    expect(saved.status).toBe(200);
   });
 
   test('a disabled bypass account is rejected like a disabled session', async () => {
@@ -246,7 +234,7 @@ describe('email settings API guards', () => {
     expect(form.status).toBe(415);
     expect(
       await fx.db
-        .prepare('SELECT COUNT(*) AS total FROM email_settings')
+        .prepare('SELECT COUNT(*) AS total FROM installation_config')
         .first(),
     ).toMatchObject({ total: 0 });
   });
@@ -270,9 +258,11 @@ describe('email settings API behavior', () => {
 
     expect(
       await fx.db
-        .prepare('SELECT COUNT(*) AS total FROM notification_test_attempts')
+        .prepare(
+          "SELECT json_extract(document_json, '$.emailTest.last') AS last_test FROM installation_config",
+        )
         .first(),
-    ).toMatchObject({ total: 0 });
+    ).toMatchObject({ last_test: null });
   });
 
   test('stores a write-only Resend key, reports hasApiKey, and never leaks it', async () => {
@@ -308,11 +298,12 @@ describe('email settings API behavior', () => {
     expect(JSON.stringify(fetched.json)).not.toContain('ciphertext');
 
     const stored = await fx.db
-      .prepare('SELECT ciphertext FROM email_credentials WHERE provider = ?')
-      .bind('resend')
+      .prepare(
+        "SELECT json_extract(document_json, '$.email.credential.ciphertext') AS ciphertext FROM installation_config",
+      )
       .first<{ ciphertext: string }>();
     expect(stored?.ciphertext).not.toContain('re_super_secret');
-    expect(stored?.ciphertext.length).toBeGreaterThan(20);
+    expect(String(stored?.ciphertext).length).toBeGreaterThan(20);
   });
 
   test('removing the key disables Resend and stale revisions conflict', async () => {
@@ -414,9 +405,11 @@ describe('email settings API behavior', () => {
 
     expect(
       await fx.db
-        .prepare('SELECT COUNT(*) AS total FROM notification_test_attempts')
+        .prepare(
+          "SELECT json_extract(document_json, '$.emailTest.last') AS last_test FROM installation_config",
+        )
         .first(),
-    ).toMatchObject({ total: 0 });
+    ).toMatchObject({ last_test: null });
   });
 
   test('validation failures never echo submitted credential material', async () => {
@@ -475,11 +468,12 @@ describe('email settings API behavior', () => {
     expect(malformed.status).toBe(422);
     expect(JSON.stringify(malformed.json)).not.toContain('SENTINEL');
 
-    expect(
-      await fx.db
-        .prepare('SELECT COUNT(*) AS total FROM email_credentials')
-        .first(),
-    ).toMatchObject({ total: 0 });
+    const stored = await fx.db
+      .prepare(
+        "SELECT json_extract(document_json, '$.email.credential') AS credential FROM installation_config",
+      )
+      .first<{ credential: null | string }>();
+    expect(stored?.credential ?? null).toBeNull();
   });
 
   test('the settings view reports readiness without delivery machinery', async () => {
@@ -492,11 +486,10 @@ describe('email settings API behavior', () => {
     expect(data).not.toHaveProperty('paused');
   });
 
-  test('forged permission or provider override fields are ignored by the schema', async () => {
+  test('forged capability or provider override fields are ignored by the schema', async () => {
     const fx = await startApiFixture();
     const response = await fx.request('/v1/settings/email', {
       body: saveBody({
-        manageEmailSettings: true,
         providerBaseUrl: 'https://evil.example',
       }),
       method: 'PUT',

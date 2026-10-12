@@ -1,37 +1,46 @@
 /**
  * Application commands for new-lead email notifications.
  *
- * Business rules live here per the repository boundary: installation email
- * settings, credential decryption, the optional administrator test send, and
- * self-service preferences. Notification delivery itself is a best-effort
- * event subscriber (src/notifications/lead-created-subscriber.ts); there is no
- * outbox, scheduler, retry engine, or delivery history.
+ * Business rules live here per the repository boundary: the installation-wide
+ * configuration document, credential encryption/decryption, the optional
+ * administrator test send, and self-service preferences. Notification
+ * delivery itself is a best-effort event subscriber
+ * (src/notifications/lead-created-subscriber.ts); there is no outbox,
+ * scheduler, retry engine, or delivery history.
+ *
+ * The configuration document is validated on every read and before every
+ * write. User-visible settings changes use the document `revision`; internal
+ * test-state updates use the table `write_version` through ordinary
+ * compare-and-swap retries, so a test completion cannot invalidate a settings
+ * draft or overwrite a concurrent key change.
  */
 
 import { DomainError, PersistenceError } from '@/application/errors';
 import {
-  completeNotificationTestAttempt,
-  type EmailCredentialRecord,
-  type EmailSettingsRecord,
-  type EmailSettingsSnapshot,
   type Env,
-  getEmailCredential,
-  getEmailSettingsSnapshot,
-  getLatestNotificationTestAttempt,
   getNotificationPreference,
-  getNotificationTestAttempt,
-  getOwnedNotificationTestAttempt,
-  type NotificationTestAttemptRecord,
-  recordEmailSettingsAudit,
-  reserveNotificationTestAttempt,
-  saveEmailSettings,
+  InstallationConfigDecodeError,
+  type InstallationConfigRow,
+  readInstallationConfig,
   upsertNotificationPreference,
+  writeInstallationConfig,
 } from '@/db/repository';
 import {
+  type AuditChange,
+  type AuditWrite,
+  EMAIL_TEST_MIN_INTERVAL_MS,
+  EMAIL_TEST_ROLLING_LIMIT,
+  EMAIL_TEST_WINDOW_MS,
   type EmailSettingsView,
+  type EmailTestState,
   type EmailTestView,
+  type EncryptedCredential,
+  type InstallationConfig,
+  type InstallationEmailConfig,
+  type NotificationAvailability,
   type NotificationPreferenceView,
 } from '@/domain/schemas';
+import { DEFAULT_WORKSPACE_ID } from '@/domain/workspace';
 import {
   CredentialCryptoError,
   decryptCredential,
@@ -64,38 +73,40 @@ const persist = <A>(operation: () => Promise<A>) =>
 const domainError = (code: string, message: string, details?: unknown) =>
   new DomainError({ code, details, message });
 
+/**
+ * Bounded ordinary CAS retries for read/validate/mutate/write.
+ */
+const MAX_CONFIG_CAS_ATTEMPTS = 3;
+
 // --- Settings availability ---------------------------------------------------
 
 export type EmailSettingsState = {
   availability: NotificationAvailability;
-  credential: EmailCredentialRecord | null;
+  credential: EncryptedCredential | null;
   hasCloudflareBinding: boolean;
   hasEncryptionKey: boolean;
   hasResendCredential: boolean;
   provider: EmailProvider | null;
   readinessReason: null | string;
-  settings: EmailSettingsRecord | null;
+  settings: InstallationEmailConfig | null;
 };
-
-export type NotificationAvailability =
-  'configured' | 'disabled' | 'misconfigured';
 
 const hasConfiguredEncryptionKey = (environment: Env): boolean =>
   (environment.EMAIL_SETTINGS_ENCRYPTION_KEY?.trim() ?? '') !== '';
 
 const configuredReadiness = (
   state: {
-    credential: EmailCredentialRecord | null;
+    credential: EncryptedCredential | null;
     hasCloudflareBinding: boolean;
     hasEncryptionKey: boolean;
   },
-  settings: EmailSettingsRecord,
+  email: InstallationEmailConfig,
 ): null | string => {
-  if (settings.fromEmail === null || settings.fromEmail.length === 0) {
+  if (email.fromEmail === null || email.fromEmail.length === 0) {
     return 'from_email_missing';
   }
 
-  if (settings.provider === 'cloudflare') {
+  if (email.provider === 'cloudflare') {
     return state.hasCloudflareBinding ? null : 'cloudflare_binding_missing';
   }
 
@@ -107,20 +118,20 @@ const configuredReadiness = (
 };
 
 /**
- * Derives local readiness from one coherent settings/credential snapshot.
+ * Derives local readiness from one coherent configuration document.
  * `configured` means the saved selection has the resources it needs as far as
  * this deployment can tell; it is never evidence of remote entitlement or an
  * accepted test message.
  */
-const stateFromSnapshot = (
+const stateFromDocument = (
   environment: Env,
-  snapshot: EmailSettingsSnapshot,
+  document: InstallationConfig,
 ): EmailSettingsState => {
-  const { credential, settings } = snapshot;
+  const email = document.email;
   const hasCloudflareBinding = environment.EMAIL !== undefined;
   const hasEncryptionKey = hasConfiguredEncryptionKey(environment);
 
-  if (settings === null || settings.provider === 'disabled') {
+  if (email.provider === 'disabled') {
     return {
       availability: 'disabled',
       credential: null,
@@ -129,18 +140,18 @@ const stateFromSnapshot = (
       hasResendCredential: false,
       provider: null,
       readinessReason: null,
-      settings,
+      settings: email,
     };
   }
 
-  const selectedCredential = settings.provider === 'resend' ? credential : null;
+  const credential = email.provider === 'resend' ? email.credential : null;
   const readinessReason = configuredReadiness(
-    { credential: selectedCredential, hasCloudflareBinding, hasEncryptionKey },
-    settings,
+    { credential, hasCloudflareBinding, hasEncryptionKey },
+    email,
   );
 
   let availability: NotificationAvailability;
-  if (!settings.enabled) {
+  if (!email.enabled) {
     availability = 'disabled';
   } else if (readinessReason === null) {
     availability = 'configured';
@@ -150,20 +161,46 @@ const stateFromSnapshot = (
 
   return {
     availability,
-    credential: selectedCredential,
+    credential,
     hasCloudflareBinding,
     hasEncryptionKey,
-    hasResendCredential: selectedCredential !== null,
-    provider: settings.provider,
+    hasResendCredential: credential !== null,
+    provider: email.provider,
     readinessReason,
-    settings,
+    settings: email,
   };
 };
 
+/**
+ * Lenient state for self-service preference reads and the email subscriber.
+ * A corrupt document is reported as misconfigured with a redacted reason so
+ * those paths fail closed instead of throwing; settings routes use the strict
+ * read below and refuse to display or overwrite corrupt data.
+ */
 export const loadEmailSettingsState = async (
   environment: Env,
-): Promise<EmailSettingsState> =>
-  stateFromSnapshot(environment, await getEmailSettingsSnapshot(environment));
+): Promise<EmailSettingsState> => {
+  try {
+    const row = await readInstallationConfig(environment);
+    return stateFromDocument(environment, row.document);
+  } catch (error) {
+    if (error instanceof InstallationConfigDecodeError) {
+      const hasCloudflareBinding = environment.EMAIL !== undefined;
+      return {
+        availability: 'misconfigured',
+        credential: null,
+        hasCloudflareBinding,
+        hasEncryptionKey: hasConfiguredEncryptionKey(environment),
+        hasResendCredential: false,
+        provider: null,
+        readinessReason: 'config_invalid',
+        settings: null,
+      };
+    }
+
+    throw error;
+  }
+};
 
 export type SavedConfigurationTest =
   { code: string; message: string; ok: false } | { ok: true };
@@ -171,8 +208,7 @@ export type SavedConfigurationTest =
 /**
  * Whether the *saved* provider configuration can produce a test message.
  * The installation enable switch being off does not block an explicit test:
- * testing is how an administrator confirms setup without turning live alerts
- * on.
+ * testing is how setup is confirmed without turning live alerts on.
  */
 export const savedConfigurationTestable = (
   state: EmailSettingsState,
@@ -267,8 +303,7 @@ export const createSenderFromState = async (
     return createCloudflareEmailSender(environment.EMAIL);
   }
 
-  const credential =
-    state.credential ?? (await getEmailCredential(environment, 'resend'));
+  const credential = state.credential;
   if (credential === null) {
     throw new CredentialCryptoError(
       'missing_key',
@@ -285,7 +320,7 @@ export const createSenderFromState = async (
         nonce: credential.nonce,
       },
       provider: 'resend',
-      workspaceId: credential.workspaceId,
+      workspaceId: DEFAULT_WORKSPACE_ID,
     },
   );
   return createResendEmailSender(
@@ -293,6 +328,34 @@ export const createSenderFromState = async (
     overrides.fetchImplementation ?? fetch,
   );
 };
+
+// --- Strict configuration reads ----------------------------------------------
+
+/**
+ * Reads the configuration and maps an unreadable document to a redacted
+ * domain error. Settings routes use this so corrupt data is never echoed,
+ * silently reset, or overwritten by a default-revision save.
+ */
+const readConfigOrFail = (environment: Env) =>
+  Effect.gen(function* () {
+    const outcome = yield* Effect.either(
+      persist(() => readInstallationConfig(environment)),
+    );
+    if (Either.isLeft(outcome)) {
+      if (outcome.left.cause instanceof InstallationConfigDecodeError) {
+        return yield* Effect.fail(
+          domainError(
+            'config_unavailable',
+            'The installation configuration is unreadable. Restore it from a backup or ask an operator to repair it.',
+          ),
+        );
+      }
+
+      return yield* Effect.fail(outcome.left);
+    }
+
+    return outcome.right;
+  });
 
 // --- Self-service preference -------------------------------------------------
 
@@ -332,50 +395,66 @@ export const updateNotificationPreferenceCommand = (
 
 // --- Administrator settings view ---------------------------------------------
 
-const testViewForAttempt = (
-  attempt: NotificationTestAttemptRecord,
-): EmailTestView => ({
-  at: (attempt.completedAt ?? attempt.createdAt).toISOString(),
-  outcome: attempt.status,
-  providerMessageId: attempt.providerMessageId,
-  reasonCode: attempt.reasonCode,
-  revision: attempt.configRevision,
+const testViewForState = (last: EmailTestState): EmailTestView => ({
+  at: new Date(last.at).toISOString(),
+  outcome: last.outcome,
+  providerMessageId: last.providerMessageId,
+  reasonCode: last.reasonCode,
+  revision: last.configRevision,
 });
 
-const testView = (
-  attempt: NotificationTestAttemptRecord | null,
-): EmailTestView | null =>
-  attempt === null ? null : testViewForAttempt(attempt);
+const testView = (last: EmailTestState | null): EmailTestView | null =>
+  last === null ? null : testViewForState(last);
+
+const emailSettingsView = (
+  environment: Env,
+  canonicalOriginFallback: string,
+  document: InstallationConfig,
+): EmailSettingsView => {
+  const state = stateFromDocument(environment, document);
+  return {
+    canonicalOrigin: document.email.canonicalOrigin ?? canonicalOriginFallback,
+    enabled: document.email.enabled,
+    environment: {
+      hasCloudflareBinding: state.hasCloudflareBinding,
+      hasEncryptionKey: state.hasEncryptionKey,
+    },
+    fromEmail: document.email.fromEmail,
+    fromName: document.email.fromName,
+    hasApiKey:
+      document.email.provider === 'resend'
+        ? document.email.credential !== null
+        : false,
+    provider: document.email.provider,
+    readiness: {
+      availability: state.availability,
+      reasonCode: state.readinessReason,
+    },
+    revision: document.revision,
+    test: testView(document.emailTest.last),
+  };
+};
 
 export const getEmailSettingsView = async (
   environment: Env,
   canonicalOriginFallback: string,
 ): Promise<EmailSettingsView> => {
-  const [latestTest, state] = await Promise.all([
-    getLatestNotificationTestAttempt(environment),
-    loadEmailSettingsState(environment),
-  ]);
-  const settings = state.settings;
-
-  return {
-    canonicalOrigin: settings?.canonicalOrigin ?? canonicalOriginFallback,
-    enabled: settings?.enabled ?? false,
-    environment: {
-      hasCloudflareBinding: state.hasCloudflareBinding,
-      hasEncryptionKey: state.hasEncryptionKey,
-    },
-    fromEmail: settings?.fromEmail ?? null,
-    fromName: settings?.fromName ?? null,
-    hasApiKey: state.hasResendCredential,
-    provider: settings?.provider ?? 'disabled',
-    readiness: {
-      availability: state.availability,
-      reasonCode: state.readinessReason,
-    },
-    revision: settings?.revision ?? 0,
-    test: testView(latestTest),
-  };
+  const row = await readInstallationConfig(environment);
+  return emailSettingsView(environment, canonicalOriginFallback, row.document);
 };
+
+export const getEmailSettingsViewCommand = (
+  environment: Env,
+  canonicalOriginFallback: string,
+) =>
+  Effect.gen(function* () {
+    const row = yield* readConfigOrFail(environment);
+    return emailSettingsView(
+      environment,
+      canonicalOriginFallback,
+      row.document,
+    );
+  });
 
 // --- Administrator settings commands -----------------------------------------
 
@@ -466,30 +545,89 @@ const replaceCredentialEnvelope = (
         encryptCredential(secret, {
           provider: 'resend',
           value,
-          workspaceId: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
+          workspaceId: DEFAULT_WORKSPACE_ID,
         }),
     });
   });
 
-const viewAfterSave = (
-  environment: Env,
-  input: UpdateEmailSettingsInput,
-  outcome: Awaited<ReturnType<typeof saveEmailSettings>>,
-) =>
-  Effect.gen(function* () {
-    if (outcome.kind === 'conflict') {
-      return yield* Effect.fail(
-        domainError(
-          'revision_conflict',
-          'Email settings changed in another session. Reload and try again.',
-        ),
-      );
-    }
+type CredentialChange =
+  | { envelope: EncryptedCredential; kind: 'replace' }
+  | { kind: 'keep' }
+  | { kind: 'remove' };
 
-    return yield* persist(() =>
-      getEmailSettingsView(environment, input.canonicalOrigin),
-    );
-  });
+const nextEmailConfig = (
+  current: InstallationEmailConfig,
+  input: UpdateEmailSettingsInput,
+  change: CredentialChange,
+): InstallationEmailConfig => {
+  let credential = current.credential;
+  if (change.kind === 'replace') {
+    credential = change.envelope;
+  } else if (change.kind === 'remove') {
+    credential = null;
+  }
+
+  // Removing the credential that backs the selected provider disables that
+  // provider instead of leaving an unroutable configuration enabled.
+  if (change.kind === 'remove' && input.provider === 'resend') {
+    return {
+      canonicalOrigin: input.canonicalOrigin,
+      credential,
+      enabled: false,
+      fromEmail: input.fromEmail,
+      fromName: input.fromName,
+      provider: 'disabled',
+    };
+  }
+
+  return {
+    canonicalOrigin: input.canonicalOrigin,
+    credential,
+    enabled: input.enabled,
+    fromEmail: input.fromEmail,
+    fromName: input.fromName,
+    provider: input.provider,
+  };
+};
+
+/**
+ * Redacted audit changes for one settings save. Credential changes are
+ * recorded as safe markers (`stored`, `replaced`, `removed`) and never as
+ * ciphertext, nonces, or plaintext.
+ */
+const settingsAuditChanges = (
+  current: InstallationEmailConfig,
+  next: InstallationEmailConfig,
+  change: CredentialChange,
+): AuditChange[] => {
+  const changes: AuditChange[] = [];
+  const push = (
+    field: string,
+    before: AuditChange['before'],
+    after: AuditChange['after'],
+  ) => {
+    if (before !== after) {
+      changes.push({ after, before, field });
+    }
+  };
+
+  push('email.provider', current.provider, next.provider);
+  push('email.enabled', current.enabled, next.enabled);
+  push('email.fromEmail', current.fromEmail, next.fromEmail);
+  push('email.fromName', current.fromName, next.fromName);
+  push('email.canonicalOrigin', current.canonicalOrigin, next.canonicalOrigin);
+
+  const credentialBefore = current.credential === null ? null : 'stored';
+  let credentialAfter = credentialBefore;
+  if (change.kind === 'replace') {
+    credentialAfter = current.credential === null ? 'stored' : 'replaced';
+  } else if (change.kind === 'remove') {
+    credentialAfter = current.credential === null ? null : 'removed';
+  }
+
+  push('email.credential', credentialBefore, credentialAfter);
+  return changes;
+};
 
 export const updateEmailSettingsCommand = (
   environment: Env,
@@ -514,41 +652,73 @@ export const updateEmailSettingsCommand = (
       try: () => boundedFromName(input.fromName),
     });
 
+    let change: CredentialChange = { kind: 'keep' };
     if (input.credential.operation === 'replace') {
-      const envelope = yield* replaceCredentialEnvelope(environment, input);
-      const replaced = yield* persist(() =>
-        saveEmailSettings(environment, {
-          actorUserId: input.actorUserId,
-          canonicalOrigin: input.canonicalOrigin,
-          credentialChange: { envelope, operation: 'replace' },
-          enabled: input.enabled,
-          expectedRevision: input.expectedRevision,
-          fromEmail,
-          fromName,
-          now: new Date(),
-          provider: input.provider,
-        }),
-      );
-      return yield* viewAfterSave(environment, input, replaced);
+      change = {
+        envelope: yield* replaceCredentialEnvelope(environment, input),
+        kind: 'replace',
+      };
+    } else if (input.credential.operation === 'remove') {
+      change = { kind: 'remove' };
     }
 
-    const saved = yield* persist(() =>
-      saveEmailSettings(environment, {
-        actorUserId: input.actorUserId,
-        canonicalOrigin: input.canonicalOrigin,
-        credentialChange:
-          input.credential.operation === 'remove'
-            ? { operation: 'remove' }
-            : { operation: 'keep' },
-        enabled: input.enabled,
-        expectedRevision: input.expectedRevision,
-        fromEmail,
-        fromName,
-        now: new Date(),
-        provider: input.provider,
-      }),
+    const normalizedInput: UpdateEmailSettingsInput = {
+      ...input,
+      fromEmail,
+      fromName,
+    };
+
+    for (let attempt = 0; attempt < MAX_CONFIG_CAS_ATTEMPTS; attempt += 1) {
+      const row: InstallationConfigRow = yield* readConfigOrFail(environment);
+      if (row.document.revision !== input.expectedRevision) {
+        return yield* Effect.fail(
+          domainError(
+            'revision_conflict',
+            'Email settings changed in another session. Reload and try again.',
+          ),
+        );
+      }
+
+      const nextEmail = nextEmailConfig(
+        row.document.email,
+        normalizedInput,
+        change,
+      );
+      const nextDocument: InstallationConfig = {
+        ...row.document,
+        email: nextEmail,
+        revision: row.document.revision + 1,
+      };
+      const audit: AuditWrite[] = [
+        {
+          action: 'email.settings_updated',
+          changes: settingsAuditChanges(row.document.email, nextEmail, change),
+          resourceId: null,
+          resourceType: 'installation.email',
+        },
+      ];
+      const wrote = yield* persist(() =>
+        writeInstallationConfig(environment, {
+          actorUserId: input.actorUserId,
+          audit,
+          document: nextDocument,
+          expectedWriteVersion: row.writeVersion,
+          now: new Date(),
+        }),
+      );
+      if (wrote) {
+        return yield* persist(() =>
+          getEmailSettingsView(environment, input.canonicalOrigin),
+        );
+      }
+    }
+
+    return yield* Effect.fail(
+      domainError(
+        'revision_conflict',
+        'Email settings changed in another session. Reload and try again.',
+      ),
     );
-    return yield* viewAfterSave(environment, input, saved);
   });
 
 // --- Administrator test email ------------------------------------------------
@@ -560,6 +730,201 @@ export type SendTestEmailInput = {
   expectedRevision: number;
   requestId: string;
 };
+
+type TestReservation =
+  | { document: InstallationConfig; kind: 'reserved' }
+  | { kind: 'daily_limited' }
+  | { kind: 'duplicate'; last: EmailTestState }
+  | { kind: 'foreign' }
+  | { kind: 'rate_limited' }
+  | { kind: 'revision_conflict' };
+
+/**
+ * Reserves one test attempt inside the configuration document before any
+ * outbound call. The rolling window is pruned here, the one-per-minute and
+ * five-per-24-hours limits are re-evaluated after every lost CAS race, and
+ * only the most recent request id is retained for own-actor duplicate
+ * protection.
+ */
+const reserveTestAttempt = async (
+  environment: Env,
+  input: {
+    actorUserId: string;
+    expectedRevision: number;
+    now: Date;
+    requestId: string;
+  },
+): Promise<TestReservation> => {
+  for (let attempt = 0; attempt < MAX_CONFIG_CAS_ATTEMPTS; attempt += 1) {
+    const row = await readInstallationConfig(environment);
+    const { document } = row;
+    if (document.revision !== input.expectedRevision) {
+      return { kind: 'revision_conflict' };
+    }
+
+    const last = document.emailTest.last;
+    if (last !== null && last.requestId === input.requestId) {
+      return last.actorUserId === input.actorUserId
+        ? { kind: 'duplicate', last }
+        : { kind: 'foreign' };
+    }
+
+    const nowMs = input.now.getTime();
+    const recent = document.emailTest.recent.filter(
+      (entry) => entry.at > nowMs - EMAIL_TEST_WINDOW_MS,
+    );
+    if (recent.some((entry) => entry.at > nowMs - EMAIL_TEST_MIN_INTERVAL_MS)) {
+      return { kind: 'rate_limited' };
+    }
+
+    if (recent.length >= EMAIL_TEST_ROLLING_LIMIT) {
+      return { kind: 'daily_limited' };
+    }
+
+    const provider =
+      document.email.provider === 'disabled' ? null : document.email.provider;
+    const reserved: InstallationConfig = {
+      ...document,
+      emailTest: {
+        last: {
+          actorUserId: input.actorUserId,
+          at: nowMs,
+          configRevision: document.revision,
+          outcome: 'sending',
+          provider,
+          providerMessageId: null,
+          reasonCode: null,
+          requestId: input.requestId,
+        },
+        recent: [...recent, { actorUserId: input.actorUserId, at: nowMs }],
+      },
+    };
+    const wrote = await writeInstallationConfig(environment, {
+      actorUserId: input.actorUserId,
+      document: reserved,
+      expectedWriteVersion: row.writeVersion,
+      now: input.now,
+    });
+    if (wrote) {
+      return { document: reserved, kind: 'reserved' };
+    }
+  }
+
+  throw new Error('The test reservation could not be committed.');
+};
+
+type TestCompletion = {
+  providerMessageId?: null | string;
+  reasonCode: null | string;
+  status: 'accepted' | 'ambiguous' | 'configuration_error' | 'rejected';
+};
+
+/**
+ * Reconciles only the reserved request id. A concurrent reservation or
+ * settings save is never overwritten: the latest document is re-read and only
+ * `emailTest.last` for our exact id is replaced. The outcome audit row is
+ * written in the same atomic batch as the reconciliation, and the
+ * reservation itself is not audited.
+ */
+const reconcileTestOutcome = async (
+  environment: Env,
+  input: {
+    actorUserId: string;
+    completion: TestCompletion;
+    now: Date;
+    requestId: string;
+  },
+): Promise<EmailTestState | null> => {
+  for (let attempt = 0; attempt < MAX_CONFIG_CAS_ATTEMPTS; attempt += 1) {
+    const row = await readInstallationConfig(environment);
+    const last = row.document.emailTest.last;
+    if (
+      last === null ||
+      last.requestId !== input.requestId ||
+      last.actorUserId !== input.actorUserId
+    ) {
+      return last;
+    }
+
+    const nextLast: EmailTestState = {
+      ...last,
+      outcome: input.completion.status,
+      providerMessageId: input.completion.providerMessageId ?? null,
+      reasonCode: input.completion.reasonCode,
+    };
+    const document: InstallationConfig = {
+      ...row.document,
+      emailTest: { ...row.document.emailTest, last: nextLast },
+    };
+    const audit: AuditWrite[] = [
+      {
+        action: 'email.test_sent',
+        changes: [
+          { after: nextLast.outcome, before: 'sending', field: 'test.outcome' },
+          {
+            after: nextLast.provider,
+            before: last.provider,
+            field: 'test.provider',
+          },
+          {
+            after: nextLast.reasonCode,
+            before: last.reasonCode,
+            field: 'test.reason',
+          },
+        ],
+        resourceId: null,
+        resourceType: 'installation.email_test',
+      },
+    ];
+    const wrote = await writeInstallationConfig(environment, {
+      actorUserId: input.actorUserId,
+      audit,
+      document,
+      expectedWriteVersion: row.writeVersion,
+      now: input.now,
+    });
+    if (wrote) {
+      return nextLast;
+    }
+  }
+
+  return null;
+};
+
+/**
+ * Reads the caller's own stored attempt from the current document.
+ */
+const readOwnedTest = async (
+  environment: Env,
+  input: SendTestEmailInput,
+): Promise<EmailTestView | null> => {
+  const row = await readInstallationConfig(environment);
+  const last = row.document.emailTest.last;
+  if (
+    last === null ||
+    last.requestId !== input.requestId ||
+    last.actorUserId !== input.actorUserId
+  ) {
+    return null;
+  }
+
+  return testViewForState(last);
+};
+
+const readOwnedTestOrFail = (environment: Env, input: SendTestEmailInput) =>
+  Effect.gen(function* () {
+    const view = yield* persist(() => readOwnedTest(environment, input));
+    if (view === null) {
+      return yield* Effect.fail(
+        domainError(
+          'test_request_conflict',
+          'This test request belongs to another account. Start a new test.',
+        ),
+      );
+    }
+
+    return view;
+  });
 
 const completionForTestResult = (
   result: SendResult,
@@ -579,7 +944,7 @@ const completionForTestResult = (
 };
 
 const buildTestEnvelope = (
-  settings: EmailSettingsRecord,
+  settings: InstallationEmailConfig,
   input: SendTestEmailInput,
 ): EmailEnvelope => {
   const rendered = renderTestEmail({
@@ -597,75 +962,12 @@ const buildTestEnvelope = (
   };
 };
 
-const recordTestCompletion = (
-  environment: Env,
-  input: SendTestEmailInput,
-  revision: number,
-  now: Date,
-  completion: {
-    providerMessageId?: null | string;
-    reasonCode: null | string;
-    status: 'accepted' | 'ambiguous' | 'configuration_error' | 'rejected';
-  },
-) =>
-  persist(async () => {
-    await completeNotificationTestAttempt(environment, {
-      completedAt: now,
-      providerMessageId: completion.providerMessageId ?? null,
-      reasonCode: completion.reasonCode,
-      requestId: input.requestId,
-      status: completion.status,
-      userId: input.actorUserId,
-    });
-    await recordEmailSettingsAudit(environment, {
-      action: 'test_email',
-      actorUserId: input.actorUserId,
-      now,
-      reasonCode: completion.reasonCode,
-      revision,
-      testOutcome: completion.status,
-    });
-  });
-
-const readOwnedTest = async (
-  environment: Env,
-  input: SendTestEmailInput,
-): Promise<EmailTestView | null> => {
-  const current = await getOwnedNotificationTestAttempt(
-    environment,
-    input.requestId,
-    input.actorUserId,
-  );
-  return current === null ? null : testViewForAttempt(current);
-};
-
-/**
- * Reads the caller's own stored attempt or fails with the same conflict code
- * used for a foreign request id. This closes the duplicate-reservation race:
- * a concurrent winner's row is never returned to a different actor.
- */
-const readOwnedTestOrFail = (environment: Env, input: SendTestEmailInput) =>
-  Effect.gen(function* () {
-    const view = yield* persist(() => readOwnedTest(environment, input));
-    if (view === null) {
-      return yield* Effect.fail(
-        domainError(
-          'test_request_conflict',
-          'This test request belongs to another account. Start a new test.',
-        ),
-      );
-    }
-
-    return view;
-  });
-
 /**
  * Sends one explicit administrator test to the caller's own account email
  * using the saved configuration. One attempt per request id: concurrent
- * double-clicks collide on the durable reservation, and there is no automatic
- * retry or frozen-payload replay. Accepted, rejected, and ambiguous outcomes
- * are reported honestly; a rejected configuration is not persisted as a
- * delivery pause.
+ * double-clicks collide on the reserved id, and there is no automatic retry
+ * or replay. Accepted, rejected, and unknown outcomes are reported honestly.
+ * Test-state writes never change the user-visible settings revision.
  */
 export const sendTestEmailCommand = (
   environment: Env,
@@ -674,11 +976,9 @@ export const sendTestEmailCommand = (
 ) =>
   Effect.gen(function* () {
     const now = overrides.now?.() ?? new Date();
-    const snapshot = yield* persist(() =>
-      getEmailSettingsSnapshot(environment),
-    );
-    const settings = snapshot.settings;
-    if (settings === null || settings.revision !== input.expectedRevision) {
+    const row = yield* readConfigOrFail(environment);
+    const state = stateFromDocument(environment, row.document);
+    if (row.document.revision !== input.expectedRevision) {
       return yield* Effect.fail(
         domainError(
           'revision_conflict',
@@ -687,7 +987,6 @@ export const sendTestEmailCommand = (
       );
     }
 
-    const state = stateFromSnapshot(environment, snapshot);
     const testable = savedConfigurationTestable(state);
     if (!testable.ok) {
       return yield* Effect.fail(domainError(testable.code, testable.message));
@@ -699,36 +998,33 @@ export const sendTestEmailCommand = (
       );
     }
 
-    const provider = state.provider;
-
-    const existing = yield* persist(() =>
-      getNotificationTestAttempt(environment, input.requestId),
-    );
-    if (existing !== null) {
-      if (existing.userId !== input.actorUserId) {
-        return yield* Effect.fail(
-          domainError(
-            'test_request_conflict',
-            'This test request id is already in use. Start a new test.',
-          ),
-        );
-      }
-
-      // Idempotent response: the same request id returns the stored attempt
-      // instead of sending a second message.
-      return testViewForAttempt(existing);
-    }
-
     const reservation = yield* persist(() =>
-      reserveNotificationTestAttempt(environment, {
-        configRevision: settings.revision,
+      reserveTestAttempt(environment, {
+        actorUserId: input.actorUserId,
+        expectedRevision: input.expectedRevision,
         now,
-        provider,
         requestId: input.requestId,
-        userId: input.actorUserId,
       }),
     );
-    if (reservation === 'rate_limited') {
+    if (reservation.kind === 'revision_conflict') {
+      return yield* Effect.fail(
+        domainError(
+          'revision_conflict',
+          'Email settings changed in another session. Reload and try again.',
+        ),
+      );
+    }
+
+    if (reservation.kind === 'foreign') {
+      return yield* Effect.fail(
+        domainError(
+          'test_request_conflict',
+          'This test request id is already in use. Start a new test.',
+        ),
+      );
+    }
+
+    if (reservation.kind === 'rate_limited') {
       return yield* Effect.fail(
         domainError(
           'test_rate_limited',
@@ -738,7 +1034,7 @@ export const sendTestEmailCommand = (
       );
     }
 
-    if (reservation === 'daily_limited') {
+    if (reservation.kind === 'daily_limited') {
       return yield* Effect.fail(
         domainError(
           'test_daily_limited',
@@ -748,47 +1044,69 @@ export const sendTestEmailCommand = (
       );
     }
 
-    if (reservation === 'duplicate') {
-      // A concurrent request with the same id won the reservation. Only the
-      // owner may see the stored result; another actor gets a conflict.
-      return yield* readOwnedTestOrFail(environment, input);
+    if (reservation.kind === 'duplicate') {
+      // Idempotent response: only the owner may see the stored attempt.
+      return testViewForState(reservation.last);
+    }
+
+    // Use the exact document the reservation committed, so a concurrent
+    // settings save after the reservation cannot retarget this send.
+    const reservedState = stateFromDocument(environment, reservation.document);
+    const reservedSettings = reservedState.settings;
+    if (reservedSettings === null || reservedState.provider === null) {
+      return yield* Effect.fail(
+        domainError('email_disabled', 'Choose a provider first.'),
+      );
     }
 
     const senderEither = yield* Effect.either(
-      persist(() => createSenderFromState(environment, state, overrides)),
-    );
-    if (Either.isLeft(senderEither)) {
-      const reasonCode = senderFailureReason(senderEither.left.cause);
-      yield* recordTestCompletion(environment, input, settings.revision, now, {
-        reasonCode,
-        status: 'configuration_error',
-      });
-      return yield* readOwnedTestOrFail(environment, input);
-    }
-
-    const sender = senderEither.right;
-    const resultEither = yield* Effect.either(
       persist(() =>
-        sender.send(buildTestEnvelope(settings, input), {
-          deliveryKey: testDeliveryKeyFor(input.requestId),
-          timeoutMs: DEFAULT_PROVIDER_TIMEOUT_MS,
-        }),
+        createSenderFromState(environment, reservedState, overrides),
       ),
     );
-    const result: SendResult = Either.isLeft(resultEither)
-      ? {
-          kind: 'ambiguous',
-          provider: sender.provider,
-          reason: 'unexpected_error',
-        }
-      : resultEither.right;
+    let completion: TestCompletion;
+    if (Either.isLeft(senderEither)) {
+      completion = {
+        reasonCode: senderFailureReason(senderEither.left.cause),
+        status: 'configuration_error',
+      };
+    } else {
+      const sender = senderEither.right;
+      const resultEither = yield* Effect.either(
+        persist(() =>
+          sender.send(buildTestEnvelope(reservedSettings, input), {
+            deliveryKey: testDeliveryKeyFor(input.requestId),
+            timeoutMs: DEFAULT_PROVIDER_TIMEOUT_MS,
+          }),
+        ),
+      );
+      const result: SendResult = Either.isLeft(resultEither)
+        ? {
+            kind: 'ambiguous',
+            provider: sender.provider,
+            reason: 'unexpected_error',
+          }
+        : resultEither.right;
+      const mapped = completionForTestResult(result);
+      completion = {
+        providerMessageId:
+          result.kind === 'accepted' ? (result.messageId ?? null) : null,
+        reasonCode: mapped.reasonCode,
+        status: mapped.status,
+      };
+    }
 
-    const completion = completionForTestResult(result);
-    yield* recordTestCompletion(environment, input, settings.revision, now, {
-      providerMessageId:
-        result.kind === 'accepted' ? (result.messageId ?? null) : null,
-      reasonCode: completion.reasonCode,
-      status: completion.status,
-    });
+    const last = yield* persist(() =>
+      reconcileTestOutcome(environment, {
+        actorUserId: input.actorUserId,
+        completion,
+        now,
+        requestId: input.requestId,
+      }),
+    );
+    if (last !== null) {
+      return testViewForState(last);
+    }
+
     return yield* readOwnedTestOrFail(environment, input);
   });

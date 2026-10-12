@@ -191,8 +191,10 @@ staff API. Unknown or foreign session ids return `404`; individual success is
 ### Email notifications
 
 Opted-in staff can receive one generic email when a new lead is created.
-Email is disabled until an installation administrator configures a provider in
-Manage → Email; personal opt-in lives under Account → Notifications. Both
+Email is disabled until a staff member configures a provider in
+Manage → Email; every enabled authenticated staff account can manage the
+installation configuration, and personal opt-in lives under Account →
+Notifications. Both
 Cloudflare Email Sending (Workers Paid, sender domain onboarded) and Resend
 (send-only API key, verified domain) are supported; the saved provider is
 authoritative and is never inferred from a binding. Intake never depends on the

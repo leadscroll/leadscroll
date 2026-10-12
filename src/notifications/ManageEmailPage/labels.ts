@@ -11,6 +11,8 @@ export const READINESS_REASON_LABELS: Record<string, string> = {
     'The application URL is missing. Save the settings again from the app.',
   cloudflare_binding_missing:
     'The Cloudflare EMAIL binding is not present in this deployment.',
+  config_invalid:
+    'The installation configuration is unreadable. Restore it from a backup or ask an operator to repair it.',
   decrypt_failed:
     'The stored credential cannot be decrypted with the current encryption key.',
   disabled: 'Email sending is turned off.',

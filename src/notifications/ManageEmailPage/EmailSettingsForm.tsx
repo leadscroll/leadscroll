@@ -55,7 +55,7 @@ export const EmailSettingsForm = ({
   const [conflict, setConflict] = useState(false);
   // The revision the draft is based on. It only advances on a successful save
   // or an explicit reload, so a background refetch can never silently rebase a
-  // draft onto another administrator's changes.
+  // draft onto another staff member's changes.
   const baseRevision = useRef(settings.revision);
 
   useEffect(

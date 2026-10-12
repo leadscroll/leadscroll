@@ -34,7 +34,13 @@ deliberately not built yet.
 ## Provider setup
 
 Provider choice is stored in D1 and managed in **Manage → Email**. No provider
-or sender environment variables are required.
+or sender environment variables are required. Email settings and the
+encrypted provider credential live in one installation-wide JSON
+document (`installation_config`) that the application validates on every read
+and before every write; compact, bounded test state (the last result plus a
+small rolling rate-limit window) lives in the same document. A missing record
+means disabled defaults; a corrupt or unsupported document fails closed and is
+never silently reset.
 
 ### Cloudflare Email Sending
 
@@ -86,12 +92,14 @@ reported as unknown and left alone.
   saved provider configuration is locally complete. Missing local resources
   (no binding, no key, no sender) still block the test with a specific setup
   message.
-- **Send test email** sends one attempt to the signed-in administrator's own
+- **Send test email** sends one attempt to the signed-in staff account's own
   account email using the saved configuration and reports accepted, rejected,
-  or unknown honestly. It is limited to one per minute and five per 24 hours
-  per installation, and the request id deduplicates concurrent double-clicks.
-  There is no automatic retry and no frozen-payload replay: sending another
-  test is always an explicit administrator action with a new request id.
+  or unknown honestly. It is limited to one per minute and five per rolling
+  24 hours per installation; only the most recent request id is retained for
+  own-actor double-click deduplication, so this is finite duplicate protection
+  rather than durable idempotency. There is no automatic retry or
+  frozen-payload replay: sending another test is always an explicit staff
+  action with a new request id.
 - Changing provider, sender, or key increments the settings revision. Previous
   test evidence no longer applies to the new revision, but no test is required
   to save or enable.
@@ -140,34 +148,48 @@ addresses, envelopes, lead payloads, API keys, or provider response bodies are
 ever logged.
 
 Operators can inspect the persisted configuration and the redacted audit trail
-directly:
+directly. The configuration is one JSON document per workspace, validated by
+the application schema on read; never edit it by hand while the Worker is
+serving requests, and never paste a provider key into a SQL command:
 
 ```sh
 pnpm exec wrangler d1 execute DB --remote --command \
-  "SELECT provider, enabled, from_email, revision FROM email_settings"
+  "SELECT json_extract(document_json, '$.revision') AS revision, \
+          json_extract(document_json, '$.email.provider') AS provider, \
+          json_extract(document_json, '$.email.enabled') AS enabled, \
+          json_extract(document_json, '$.email.from_email') AS from_email \
+   FROM installation_config"
 pnpm exec wrangler d1 execute DB --remote --command \
-  "SELECT action, revision, test_outcome, reason_code, created_at FROM email_settings_audit ORDER BY created_at DESC LIMIT 20"
+  "SELECT action, resource_type, created_at FROM audit_log ORDER BY created_at DESC LIMIT 20"
 ```
+
+Every enabled authenticated staff account can manage the installation email
+configuration; there is no per-account permission to grant or recover. The
+generic `audit_log` records configuration changes (who, when, safe before/after
+values) and explicit test outcomes; credentials are recorded only as
+`stored`/`replaced`/`removed` markers, never as ciphertext or plaintext.
 
 There is no scheduler to monitor and no delivery-status table to reconcile.
 
 ## Upgrade note
 
-Migration `0004_email_notifications.sql` adds the email settings, encrypted
-credentials, administration permissions and audit, personal preferences, and
-test-attempt tables. It grants the email-administration capability to an enabled
-bootstrap owner identified by the existing registration claim. Existing CRM data
-and migrations remain unchanged. No outbox, scheduler state, or Cron is needed.
+Migration `0004_email_notifications.sql` creates exactly three tables:
+`installation_config` (the singleton typed JSON document, including the
+document revision, the encrypted provider credential, and compact test state),
+`audit_log` (the reusable who-changed-what log), and the existing
+`notification_preferences` per-user opt-in. Existing CRM data and migrations
+remain unchanged. No outbox, scheduler state, or Cron is needed.
 
 ## Rollback
 
 Disabling sending stops future lead events from starting new sends, but a
 subscriber snapshot that was already running may still finish its in-flight
-sends; the change is not retroactive and does not cancel work. Keep the
-additive schema migration in place when rolling back application code; changing
-the source pin does not reverse database migrations. Provider API
-keys can be revoked at the provider even though old D1 backups may retain
-ciphertext.
+sends; the change is not retroactive and does not cancel work. The schema is
+forward-only: once `0004` has been applied, rolling back to Worker code that
+expected the old email-specific tables requires a version compatible with the
+new schema or restoring the database from a backup taken before the upgrade.
+Provider API keys can be revoked at the provider even though old D1 backups may
+retain ciphertext.
 
 ## Limits and untested assumptions
 

@@ -9,19 +9,13 @@ import {
 import {
   activities,
   apiTokens,
+  auditLog,
   bootstrapState,
-  emailCredentials,
-  emailSettings,
-  emailSettingsAudit,
-  emailSettingsPermissions,
-  type EmailSettingsProvider,
   idempotencyKeys,
+  installationConfig,
   leads,
   leadTags,
   notificationPreferences,
-  type NotificationProvider,
-  notificationTestAttempts,
-  type NotificationTestStatus,
   session,
   staffInvites,
   tags,
@@ -32,7 +26,16 @@ import { type RegistrationGrant } from '@/auth/registration-repository';
 import { type IntakeResponse } from '@/domain/intake';
 import { encodeKeysetCursor, type Keyset } from '@/domain/pagination';
 import {
+  type AuditChange,
+  type AuditRecord,
+  type AuditWrite,
   type CreateLeadRequest,
+  decodeAuditChanges,
+  decodeInstallationConfig,
+  DEFAULT_INSTALLATION_CONFIG,
+  encodeAuditWrite,
+  encodeInstallationConfig,
+  type InstallationConfig,
   type IntakeRequest,
   normalizeEmail,
   type SkippedField,
@@ -41,7 +44,6 @@ import {
 } from '@/domain/schemas';
 import { normalizeSourceTag, tagLabel, type TagSpec } from '@/domain/tags';
 import { DEFAULT_WORKSPACE_ID } from '@/domain/workspace';
-import { type EncryptedCredential } from '@/notifications/credential-crypto';
 import {
   and,
   asc,
@@ -52,6 +54,7 @@ import {
   gt,
   isNotNull,
   isNull,
+  lt,
   ne,
   or,
   sql,
@@ -2566,17 +2569,13 @@ export const createLeadActivity = async (
 
 // --- New-lead email notifications -------------------------------------------
 //
-// Persistence for personal preferences, encrypted installation settings, the
-// narrow administration capability, and explicit test attempts. Drizzle stays
-// inside this module per the repository boundary; recipient selection,
-// provider policy, and delivery live in src/application and src/notifications.
+// Persistence for personal preferences and the installation-wide
+// configuration document. Drizzle stays inside this module per the repository
+// boundary; recipient selection, provider policy, and delivery live in
+// src/application and src/notifications.
 
-export type EmailCredentialRecord = typeof emailCredentials.$inferSelect;
-export type EmailSettingsRecord = typeof emailSettings.$inferSelect;
 export type NotificationPreferenceRecord =
   typeof notificationPreferences.$inferSelect;
-export type NotificationTestAttemptRecord =
-  typeof notificationTestAttempts.$inferSelect;
 
 // --- Personal preferences ---------------------------------------------------
 
@@ -2652,523 +2651,276 @@ export const listLeadCreatedRecipients = async (
   return rows;
 };
 
-// --- Installation settings and credentials ----------------------------------
+// --- Installation configuration ---------------------------------------------
+//
+// One singleton JSON document per workspace, validated against the versioned
+// Effect Schema in src/domain/schemas.ts on every read and before every write.
+// Drizzle never types the document shape; `write_version` is the internal
+// compare-and-swap token. A corrupt or unsupported document throws
+// `InstallationConfigDecodeError` and is never silently replaced.
 
-export const getEmailSettings = async (
-  environment: Env,
-): Promise<EmailSettingsRecord | null> => {
-  const row = await getDatabase(environment)
-    .select()
-    .from(emailSettings)
-    .where(eq(emailSettings.workspaceId, DEFAULT_WORKSPACE_ID))
-    .get();
-  return row ?? null;
+export type InstallationConfigRow = {
+  document: InstallationConfig;
+  writeVersion: number;
 };
 
-export const getEmailCredential = async (
+export class InstallationConfigDecodeError extends Error {
+  constructor() {
+    super('The installation configuration document is invalid.');
+    this.name = 'InstallationConfigDecodeError';
+  }
+}
+
+export const readInstallationConfig = async (
   environment: Env,
-  provider: 'resend' = 'resend',
-): Promise<EmailCredentialRecord | null> => {
+): Promise<InstallationConfigRow> => {
   const row = await getDatabase(environment)
-    .select()
-    .from(emailCredentials)
-    .where(
-      and(
-        eq(emailCredentials.workspaceId, DEFAULT_WORKSPACE_ID),
-        eq(emailCredentials.provider, provider),
-      ),
-    )
+    .select({
+      documentJson: installationConfig.documentJson,
+      writeVersion: installationConfig.writeVersion,
+    })
+    .from(installationConfig)
+    .where(eq(installationConfig.workspaceId, DEFAULT_WORKSPACE_ID))
     .get();
-  return row ?? null;
+  if (row === undefined) {
+    return { document: DEFAULT_INSTALLATION_CONFIG, writeVersion: 0 };
+  }
+
+  const document = decodeInstallationConfig(row.documentJson);
+  if (document === null) {
+    throw new InstallationConfigDecodeError();
+  }
+
+  return { document, writeVersion: row.writeVersion };
 };
 
-export type EmailSettingsSnapshot = {
-  credential: EmailCredentialRecord | null;
-  settings: EmailSettingsRecord | null;
+const auditStatements = (
+  environment: Env,
+  input: {
+    actorUserId: null | string;
+    now: Date;
+    records: readonly AuditWrite[];
+  },
+  writeToken: string,
+): Statement[] =>
+  input.records.map((record) => {
+    const encoded = encodeAuditWrite(record);
+    return prepare(
+      environment.DB,
+      `INSERT INTO audit_log (
+          id, workspace_id, actor_user_id, created_at, action, resource_type,
+          resource_id, changes_json
+        )
+        SELECT ?, ?, ?, ?, ?, ?, ?, ?
+        WHERE EXISTS (
+          SELECT 1 FROM installation_config
+          WHERE workspace_id = ? AND write_token = ?
+        )`,
+    ).bind(
+      crypto.randomUUID(),
+      DEFAULT_WORKSPACE_ID,
+      input.actorUserId,
+      input.now.getTime(),
+      encoded.action,
+      encoded.resourceType,
+      encoded.resourceId,
+      encoded.changesJson,
+      DEFAULT_WORKSPACE_ID,
+      writeToken,
+    );
+  });
+
+export type InstallationConfigWriteInput = {
+  actorUserId: null | string;
+  audit?: readonly AuditWrite[];
+  document: InstallationConfig;
+  expectedWriteVersion: number;
+  now: Date;
 };
 
 /**
- * Reads the settings row and the Resend credential in one D1 batch (a single
- * transaction), so a concurrent save cannot produce a settings revision
- * paired with a credential from a different revision. Every delivery attempt
- * takes its sender configuration from this coherent snapshot.
+ * Compare-and-swap write. Returns false when `expectedWriteVersion` is stale;
+ * the caller re-reads and retries. Audit statements are gated on the write
+ * version produced by this same atomic batch, so a lost race cannot leave a
+ * phantom audit entry and a successful write always has its audit rows.
  */
-export const getEmailSettingsSnapshot = async (
+export const writeInstallationConfig = async (
   environment: Env,
-): Promise<EmailSettingsSnapshot> => {
-  const database = getDatabase(environment);
-  const [settingsRows, credentialRows] = await database.batch([
-    database
-      .select()
-      .from(emailSettings)
-      .where(eq(emailSettings.workspaceId, DEFAULT_WORKSPACE_ID)),
-    database
-      .select()
-      .from(emailCredentials)
-      .where(
-        and(
-          eq(emailCredentials.workspaceId, DEFAULT_WORKSPACE_ID),
-          eq(emailCredentials.provider, 'resend'),
-        ),
-      ),
-  ]);
-  return {
-    credential: credentialRows[0] ?? null,
-    settings: settingsRows[0] ?? null,
-  };
-};
-
-export type EmailCredentialChange =
-  | { envelope: EncryptedCredential; operation: 'replace' }
-  | { operation: 'keep' }
-  | { operation: 'remove' };
-
-export type SaveEmailSettingsInput = {
-  actorUserId: null | string;
-  canonicalOrigin: string;
-  credentialChange: EmailCredentialChange;
-  enabled: boolean;
-  expectedRevision: number;
-  fromEmail: null | string;
-  fromName: null | string;
-  now: Date;
-  provider: EmailSettingsProvider;
-};
-
-export type SaveEmailSettingsOutcome =
-  { kind: 'conflict' } | { kind: 'saved'; settings: EmailSettingsRecord };
-
-const credentialGate = `EXISTS (
-  SELECT 1 FROM email_settings
-  WHERE workspace_id = ? AND write_token = ?
-)`;
-
-export const saveEmailSettings = async (
-  environment: Env,
-  input: SaveEmailSettingsInput,
-): Promise<SaveEmailSettingsOutcome> => {
-  const current = await getEmailSettings(environment);
-  if (current === null && input.expectedRevision !== 0) {
-    return { kind: 'conflict' };
-  }
-
-  if (current !== null && current.revision !== input.expectedRevision) {
-    return { kind: 'conflict' };
-  }
-
+  input: InstallationConfigWriteInput,
+): Promise<boolean> => {
+  const documentJson = encodeInstallationConfig(input.document);
   const nowMs = input.now.getTime();
-  const nextRevision = input.expectedRevision + 1;
-  const writeToken = randomToken('settings-');
-
-  // Removing the credential that backs the selected provider disables that
-  // provider in the same transaction instead of leaving an unroutable
-  // configuration enabled.
-  let effectiveProvider = input.provider;
-  let effectiveEnabled = input.enabled;
-  if (
-    input.credentialChange.operation === 'remove' &&
-    input.provider === 'resend'
-  ) {
-    effectiveProvider = 'disabled';
-    effectiveEnabled = false;
-  }
-
-  const credentialStatements: Statement[] =
-    input.credentialChange.operation === 'remove'
-      ? [
-          prepare(
-            environment.DB,
-            `DELETE FROM email_credentials
-              WHERE workspace_id = ? AND provider = ? AND ${credentialGate}`,
-          ).bind(
-            DEFAULT_WORKSPACE_ID,
-            'resend',
-            DEFAULT_WORKSPACE_ID,
-            writeToken,
-          ),
-        ]
-      : input.credentialChange.operation === 'replace'
-        ? [
-            prepare(
-              environment.DB,
-              `DELETE FROM email_credentials
-                WHERE workspace_id = ? AND provider = ? AND ${credentialGate}`,
-            ).bind(
-              DEFAULT_WORKSPACE_ID,
-              'resend',
-              DEFAULT_WORKSPACE_ID,
-              writeToken,
-            ),
-            prepare(
-              environment.DB,
-              `INSERT INTO email_credentials (
-                  workspace_id, provider, ciphertext, nonce, key_version,
-                  updated_at, updated_by_user_id
-                )
-                SELECT ?, ?, ?, ?, ?, ?, ?
-                WHERE ${credentialGate}`,
-            ).bind(
-              DEFAULT_WORKSPACE_ID,
-              'resend',
-              input.credentialChange.envelope.ciphertext,
-              input.credentialChange.envelope.nonce,
-              input.credentialChange.envelope.keyVersion,
-              nowMs,
-              input.actorUserId,
-              DEFAULT_WORKSPACE_ID,
-              writeToken,
-            ),
-          ]
-        : [];
-
-  const action =
-    input.credentialChange.operation === 'remove'
-      ? 'credential_removed'
-      : input.credentialChange.operation === 'replace'
-        ? 'credential_replaced'
-        : 'settings_saved';
-  const auditStatement = prepare(
-    environment.DB,
-    `INSERT INTO email_settings_audit (
-        id, workspace_id, actor_user_id, action, revision, test_outcome,
-        reason_code, created_at
-      )
-      SELECT ?, ?, ?, ?, ?, NULL, NULL, ?
-      WHERE EXISTS (SELECT 1 FROM email_settings
-        WHERE workspace_id = ? AND write_token = ?)`,
-  ).bind(
-    crypto.randomUUID(),
-    DEFAULT_WORKSPACE_ID,
-    input.actorUserId,
-    action,
-    nextRevision,
-    nowMs,
-    DEFAULT_WORKSPACE_ID,
+  const nextWriteVersion = input.expectedWriteVersion + 1;
+  const writeToken = randomToken('config-');
+  const audit = auditStatements(
+    environment,
+    {
+      actorUserId: input.actorUserId,
+      now: input.now,
+      records: input.audit ?? [],
+    },
     writeToken,
   );
 
-  try {
-    if (current === null) {
-      const insertStatement = prepare(
-        environment.DB,
-        `INSERT INTO email_settings (
-            workspace_id, provider, enabled, from_email, from_name,
-            canonical_origin, revision, updated_by_user_id, updated_at, write_token
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      ).bind(
-        DEFAULT_WORKSPACE_ID,
-        effectiveProvider,
-        effectiveEnabled ? 1 : 0,
-        input.fromEmail,
-        input.fromName,
-        input.canonicalOrigin,
-        nextRevision,
-        input.actorUserId,
-        nowMs,
-        writeToken,
-      );
-      await executeAtomicallyWithResults(environment.DB, [
-        insertStatement,
-        ...credentialStatements,
-        auditStatement,
+  if (input.expectedWriteVersion === 0) {
+    const insert = prepare(
+      environment.DB,
+      `INSERT INTO installation_config (
+          workspace_id, document_json, write_version, updated_at,
+          updated_by_user_id, write_token
+        ) VALUES (?, ?, 1, ?, ?, ?)`,
+    ).bind(
+      DEFAULT_WORKSPACE_ID,
+      documentJson,
+      nowMs,
+      input.actorUserId,
+      writeToken,
+    );
+    try {
+      const inserted = await executeAtomicallyWithResults(environment.DB, [
+        insert,
+        ...audit,
       ]);
-    } else {
-      const updateStatement = prepare(
-        environment.DB,
-        `UPDATE email_settings SET
-            provider = ?, enabled = ?, from_email = ?, from_name = ?,
-            canonical_origin = ?, revision = ?, updated_by_user_id = ?,
-            updated_at = ?, write_token = ?
-          WHERE workspace_id = ? AND revision = ?`,
-      ).bind(
-        effectiveProvider,
-        effectiveEnabled ? 1 : 0,
-        input.fromEmail,
-        input.fromName,
-        input.canonicalOrigin,
-        nextRevision,
-        input.actorUserId,
-        nowMs,
-        writeToken,
-        DEFAULT_WORKSPACE_ID,
-        input.expectedRevision,
-      );
-      const results = await executeAtomicallyWithResults(environment.DB, [
-        updateStatement,
-        ...credentialStatements,
-        auditStatement,
-      ]);
-      if ((results[0]?.meta?.changes ?? 0) === 0) {
-        return { kind: 'conflict' };
+      return (inserted[0]?.meta?.changes ?? 0) > 0;
+    } catch (error) {
+      if (isUniqueViolation(error)) {
+        return false;
       }
-    }
-  } catch (error) {
-    if (isUniqueViolation(error)) {
-      return { kind: 'conflict' };
-    }
 
-    throw error;
+      throw error;
+    }
   }
 
-  const settings = await getEmailSettings(environment);
-  if (settings === null) {
-    return { kind: 'conflict' };
-  }
-
-  return { kind: 'saved', settings };
+  const update = prepare(
+    environment.DB,
+    `UPDATE installation_config
+      SET document_json = ?, write_version = ?, updated_at = ?,
+          updated_by_user_id = ?, write_token = ?
+      WHERE workspace_id = ? AND write_version = ?`,
+  ).bind(
+    documentJson,
+    nextWriteVersion,
+    nowMs,
+    input.actorUserId,
+    writeToken,
+    DEFAULT_WORKSPACE_ID,
+    input.expectedWriteVersion,
+  );
+  const results = await executeAtomicallyWithResults(environment.DB, [
+    update,
+    ...audit,
+  ]);
+  return (results[0]?.meta?.changes ?? 0) > 0;
 };
 
-export const recordEmailSettingsAudit = async (
+// --- Generic audit log ------------------------------------------------------
+
+export type AuditLogPage = {
+  items: AuditRecord[];
+  nextCursor: null | string;
+};
+
+export class AuditLogDecodeError extends Error {
+  constructor() {
+    super('The audit log entry is invalid.');
+    this.name = 'AuditLogDecodeError';
+  }
+}
+
+/**
+ * Append-only audit writer for producers that do not need the atomic
+ * configuration compare-and-swap. Values are validated and bounded by the
+ * shared schemas before they reach D1.
+ */
+export const appendAuditLog = async (
   environment: Env,
   input: {
-    action: string;
     actorUserId: null | string;
     now: Date;
-    reasonCode: null | string;
-    revision: number;
-    testOutcome: null | string;
+    records: readonly AuditWrite[];
   },
 ): Promise<void> => {
-  await getDatabase(environment).insert(emailSettingsAudit).values({
-    action: input.action,
-    actorUserId: input.actorUserId,
-    createdAt: input.now,
-    id: crypto.randomUUID(),
-    reasonCode: input.reasonCode,
-    revision: input.revision,
-    testOutcome: input.testOutcome,
-    workspaceId: DEFAULT_WORKSPACE_ID,
-  });
+  if (input.records.length === 0) {
+    return;
+  }
+
+  await getDatabase(environment)
+    .insert(auditLog)
+    .values(
+      input.records.map((record) => {
+        const encoded = encodeAuditWrite(record);
+        return {
+          action: encoded.action,
+          actorUserId: input.actorUserId,
+          changesJson: encoded.changesJson,
+          createdAt: input.now,
+          id: crypto.randomUUID(),
+          resourceId: encoded.resourceId,
+          resourceType: encoded.resourceType,
+          workspaceId: DEFAULT_WORKSPACE_ID,
+        };
+      }),
+    );
 };
-
-// --- Administration capability ----------------------------------------------
-
-export const hasEmailSettingsPermission = async (
-  environment: Env,
-  userId: string,
-): Promise<boolean> => {
-  const row = await getDatabase(environment)
-    .select({ userId: emailSettingsPermissions.userId })
-    .from(emailSettingsPermissions)
-    .where(
-      and(
-        eq(emailSettingsPermissions.workspaceId, DEFAULT_WORKSPACE_ID),
-        eq(emailSettingsPermissions.userId, userId),
-      ),
-    )
-    .get();
-  return row !== undefined;
-};
-
-export const hasAnyEmailSettingsPermission = async (
-  environment: Env,
-): Promise<boolean> => {
-  const row = await getDatabase(environment)
-    .select({ count: sql<number>`count(*)` })
-    .from(emailSettingsPermissions)
-    .where(eq(emailSettingsPermissions.workspaceId, DEFAULT_WORKSPACE_ID))
-    .get();
-  return Number(row?.count ?? 0) > 0;
-};
-
-export type GrantEmailSettingsOutcome = 'disabled' | 'granted' | 'not-found';
 
 /**
- * Grants the narrow manageEmailSettings capability to one explicit, enabled
- * account. Used by the operator recovery command and (for the bootstrap
- * registrant) by the atomic registration batch; it never promotes an
- * arbitrary or first account on its own.
+ * Keyset query over the audit log, newest first. Row changes are decoded and
+ * validated; a corrupt row fails closed instead of leaking raw JSON.
  */
-export const grantEmailSettingsPermission = async (
+export const listAuditLog = async (
   environment: Env,
-  userId: string,
-  grantedByUserId: null | string = null,
-): Promise<GrantEmailSettingsOutcome> => {
+  options: { cursor: Keyset | null; limit: number },
+): Promise<AuditLogPage> => {
   const database = getDatabase(environment);
-  const account = await database
-    .select({ disabledAt: user.disabledAt })
-    .from(user)
-    .where(eq(user.id, userId))
-    .get();
-  if (account === undefined) {
-    return 'not-found';
-  }
-
-  if (account.disabledAt !== null) {
-    return 'disabled';
-  }
-
-  await database
-    .insert(emailSettingsPermissions)
-    .values({
-      grantedAt: now(),
-      grantedByUserId,
-      userId,
-      workspaceId: DEFAULT_WORKSPACE_ID,
+  const keyset =
+    options.cursor === null
+      ? undefined
+      : or(
+          lt(auditLog.createdAt, new Date(options.cursor.createdAt)),
+          and(
+            eq(auditLog.createdAt, new Date(options.cursor.createdAt)),
+            lt(auditLog.id, options.cursor.id),
+          ),
+        );
+  const rows = await database
+    .select({
+      action: auditLog.action,
+      actorUserId: auditLog.actorUserId,
+      changesJson: auditLog.changesJson,
+      createdAt: auditLog.createdAt,
+      id: auditLog.id,
+      resourceId: auditLog.resourceId,
+      resourceType: auditLog.resourceType,
     })
-    .onConflictDoNothing();
-  return 'granted';
-};
+    .from(auditLog)
+    .where(and(eq(auditLog.workspaceId, DEFAULT_WORKSPACE_ID), keyset))
+    .orderBy(desc(auditLog.createdAt), desc(auditLog.id))
+    .limit(options.limit + 1);
 
-// --- Administrator test attempts --------------------------------------------
+  const items: AuditRecord[] = rows.slice(0, options.limit).map((row) => {
+    const changes: null | readonly AuditChange[] = decodeAuditChanges(
+      row.changesJson,
+    );
+    if (changes === null) {
+      throw new AuditLogDecodeError();
+    }
 
-export type ReserveNotificationTestOutcome =
-  'daily_limited' | 'duplicate' | 'rate_limited' | 'reserved';
-
-export const getNotificationTestAttempt = async (
-  environment: Env,
-  requestId: string,
-): Promise<NotificationTestAttemptRecord | null> => {
-  const row = await getDatabase(environment)
-    .select()
-    .from(notificationTestAttempts)
-    .where(
-      and(
-        eq(notificationTestAttempts.workspaceId, DEFAULT_WORKSPACE_ID),
-        eq(notificationTestAttempts.id, requestId),
-      ),
-    )
-    .get();
-  return row ?? null;
-};
-
-/**
- * Resolves a test attempt only for the actor that created it. Another
- * administrator's request id is treated as unknown by the caller, so an id
- * can never be used to replay or inspect someone else's message.
- */
-export const getOwnedNotificationTestAttempt = async (
-  environment: Env,
-  requestId: string,
-  userId: string,
-): Promise<NotificationTestAttemptRecord | null> => {
-  const row = await getDatabase(environment)
-    .select()
-    .from(notificationTestAttempts)
-    .where(
-      and(
-        eq(notificationTestAttempts.workspaceId, DEFAULT_WORKSPACE_ID),
-        eq(notificationTestAttempts.id, requestId),
-        eq(notificationTestAttempts.userId, userId),
-      ),
-    )
-    .get();
-  return row ?? null;
-};
-
-export const getLatestNotificationTestAttempt = async (
-  environment: Env,
-): Promise<NotificationTestAttemptRecord | null> => {
-  const row = await getDatabase(environment)
-    .select()
-    .from(notificationTestAttempts)
-    .where(eq(notificationTestAttempts.workspaceId, DEFAULT_WORKSPACE_ID))
-    .orderBy(desc(notificationTestAttempts.createdAt))
-    .limit(1)
-    .get();
-  return row ?? null;
-};
-
-/**
- * Atomically reserves one test attempt before any external call. A single
- * INSERT ... SELECT enforces the one-per-minute and five-per-24-hours limits
- * and the durable request-id dedup under concurrency, so two simultaneous
- * requests cannot both win.
- */
-export const reserveNotificationTestAttempt = async (
-  environment: Env,
-  input: {
-    configRevision: number;
-    now: Date;
-    provider: NotificationProvider;
-    requestId: string;
-    userId: string;
-  },
-): Promise<ReserveNotificationTestOutcome> => {
-  const nowMs = input.now.getTime();
-  const minuteAgo = nowMs - 60_000;
-  const dayAgo = nowMs - 24 * 60 * 60 * 1_000;
-  const result = await prepare(
-    environment.DB,
-    `INSERT INTO notification_test_attempts (
-        id, workspace_id, user_id, provider, config_revision, status,
-        created_at, updated_at
-      )
-      SELECT ?, ?, ?, ?, ?, 'sending', ?, ?
-      WHERE NOT EXISTS (
-          SELECT 1 FROM notification_test_attempts
-          WHERE workspace_id = ? AND id = ?)
-        AND NOT EXISTS (
-          SELECT 1 FROM notification_test_attempts
-          WHERE workspace_id = ? AND created_at > ?)
-        AND (
-          SELECT COUNT(*) FROM notification_test_attempts
-          WHERE workspace_id = ? AND created_at > ?) < 5`,
-  )
-    .bind(
-      input.requestId,
-      DEFAULT_WORKSPACE_ID,
-      input.userId,
-      input.provider,
-      input.configRevision,
-      nowMs,
-      nowMs,
-      DEFAULT_WORKSPACE_ID,
-      input.requestId,
-      DEFAULT_WORKSPACE_ID,
-      minuteAgo,
-      DEFAULT_WORKSPACE_ID,
-      dayAgo,
-    )
-    .run();
-
-  if ((result.meta?.changes ?? 0) > 0) {
-    return 'reserved';
-  }
-
-  const existing = await getNotificationTestAttempt(
-    environment,
-    input.requestId,
-  );
-  if (existing !== null) {
-    return 'duplicate';
-  }
-
-  const recent = await getLatestNotificationTestAttempt(environment);
-  if (recent !== null && recent.createdAt.getTime() > minuteAgo) {
-    return 'rate_limited';
-  }
-
-  return 'daily_limited';
-};
-
-export const completeNotificationTestAttempt = async (
-  environment: Env,
-  input: {
-    completedAt: Date;
-    providerMessageId: null | string;
-    reasonCode: null | string;
-    requestId: string;
-    status: NotificationTestStatus;
-    userId: string;
-  },
-): Promise<void> => {
-  await prepare(
-    environment.DB,
-    `UPDATE notification_test_attempts
-      SET status = ?, reason_code = ?, provider_message_id = ?,
-          completed_at = ?, updated_at = ?
-      WHERE id = ? AND workspace_id = ? AND user_id = ?`,
-  )
-    .bind(
-      input.status,
-      input.reasonCode,
-      input.providerMessageId,
-      input.completedAt.getTime(),
-      input.completedAt.getTime(),
-      input.requestId,
-      DEFAULT_WORKSPACE_ID,
-      input.userId,
-    )
-    .run();
+    return {
+      action: row.action,
+      actorUserId: row.actorUserId,
+      changes,
+      createdAt: row.createdAt.toISOString(),
+      id: row.id,
+      resourceId: row.resourceId,
+      resourceType: row.resourceType,
+    };
+  });
+  const last = items.at(-1);
+  return {
+    items,
+    nextCursor:
+      rows.length > options.limit && last !== undefined
+        ? encodeKeysetCursor({ createdAt: last.createdAt, id: last.id })
+        : null,
+  };
 };

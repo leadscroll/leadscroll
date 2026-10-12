@@ -4,11 +4,6 @@ import {
   ensureDatabase,
 } from '../../templates/cloudflare/scripts/deploy.mjs';
 import {
-  buildGrantSql,
-  usage as grantUsage,
-  interpretGrantOutput,
-} from '../../templates/cloudflare/scripts/grantEmailSettings.mjs';
-import {
   assertRuntimeConfig,
   checkInstallation,
 } from '../../templates/cloudflare/scripts/installed.mjs';
@@ -406,37 +401,4 @@ test('ephemeral source fetches disable detached Git maintenance', async () => {
   assert.match(builder, /'--no-auto-maintenance'/u);
   assert.match(builder, /\['config', 'maintenance\.auto', 'false'\]/u);
   assert.match(builder, /\['config', 'gc\.auto', '0'\]/u);
-});
-
-test('standalone grant command is self-contained and safety-guarded', () => {
-  const sql = buildGrantSql('op-user-1', 1_700_000_000_000);
-  assert.match(sql, /INSERT OR IGNORE INTO email_settings_permissions/u);
-  assert.match(sql, /disabled_at IS NULL/u);
-  assert.match(sql, /'op-user-1'/u);
-  assert.match(sql, /01ARZ3NDEKTSV4RRFFQ69G5FAV/u);
-  assert.match(grantUsage, /notifications:grant-admin/u);
-  assert.match(grantUsage, /--local/u);
-});
-
-test('standalone grant output classification is explicit and safe', () => {
-  const row = (values) =>
-    interpretGrantOutput([{ results: [values], success: true }]);
-  assert.deepEqual(row({ enabled_users: 1, grants: 1, inserted: 1 }), {
-    code: 'granted',
-    message: 'Granted manageEmailSettings.',
-    ok: true,
-  });
-  assert.deepEqual(row({ enabled_users: 1, grants: 1, inserted: 0 }), {
-    code: 'already-granted',
-    message: 'manageEmailSettings was already granted; nothing changed.',
-    ok: true,
-  });
-  assert.equal(row({ enabled_users: 0, grants: 0, inserted: 0 }).ok, false);
-  assert.equal(row({ enabled_users: 1, grants: 0, inserted: 0 }).ok, false);
-  assert.deepEqual(interpretGrantOutput([]), {
-    code: 'not-found',
-    message:
-      'No enabled account with that id exists. Grant the permission to a different account.',
-    ok: false,
-  });
 });

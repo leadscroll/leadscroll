@@ -1,5 +1,5 @@
 /**
- * Fixed notification templates for new-lead alerts and administrator test
+ * Fixed notification templates for new-lead alerts and explicit test
  * messages.
  *
  * Content is deliberately generic: no contact fields, custom-field values,

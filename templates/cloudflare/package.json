@@ -20,8 +20,7 @@
     "db:migrate:remote": "wrangler d1 migrations apply DB --remote",
     "deploy": "node scripts/deploy.mjs",
     "deploy:dry-run": "node scripts/preflight.mjs && wrangler deploy --dry-run",
-    "dev": "wrangler dev --local",
-    "notifications:grant-admin": "node scripts/grantEmailSettings.mjs"
+    "dev": "wrangler dev --local"
   },
   "type": "module"
 }
