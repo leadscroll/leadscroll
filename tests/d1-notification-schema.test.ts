@@ -3,18 +3,26 @@ import {
   type NotificationFixture,
   startNotificationFixture,
 } from './notification-fixture';
+import { getEmailSettingsViewCommand } from '@/application/notification-commands';
 import {
   appendAuditLog,
   DEFAULT_WORKSPACE_ID,
   listAuditLog,
   readInstallationConfig,
+  writeInstallationConfig,
 } from '@/db/repository';
 import { decodeKeysetCursor } from '@/domain/pagination';
 import {
+  AuditValidationError,
   decodeInstallationConfig,
   DEFAULT_INSTALLATION_CONFIG,
+  encodeAuditChanges,
+  encodeAuditWrite,
+  encodeInstallationConfig,
   type InstallationConfig,
+  InstallationConfigValidationError,
 } from '@/domain/schemas';
+import { Effect, Either } from 'effect';
 import { afterEach, describe, expect, test } from 'vitest';
 
 const fixtures: NotificationFixture[] = [];
@@ -214,6 +222,182 @@ describe('notification schema migration', () => {
             resourceType: 'installation.email',
           },
         ],
+      }),
+    ).rejects.toThrow();
+    expect(await fx.count('audit_log')).toBe(0);
+  });
+
+  test('unknown properties at any level are rejected, never stripped', async () => {
+    const fx = await fixture();
+    const valid: InstallationConfig = {
+      ...DEFAULT_INSTALLATION_CONFIG,
+      revision: 2,
+    };
+    const withCredential: InstallationConfig = {
+      ...valid,
+      email: {
+        ...valid.email,
+        credential: { ciphertext: 'cipher', keyVersion: 1, nonce: 'nonce' },
+        enabled: true,
+        fromEmail: 'notifications@example.test',
+        provider: 'resend',
+      },
+    };
+
+    const candidates: unknown[] = [
+      { ...valid, extra: 'ROOT_SENTINEL' },
+      { ...valid, email: { ...valid.email, extra: 'EMAIL_SENTINEL' } },
+      {
+        ...withCredential,
+        email: {
+          ...withCredential.email,
+          credential: {
+            ...withCredential.email.credential,
+            extra: 'CREDENTIAL_SENTINEL',
+          },
+        },
+      },
+      { ...valid, emailTest: { ...valid.emailTest, extra: 'TEST_SENTINEL' } },
+      {
+        ...valid,
+        emailTest: {
+          last: {
+            actorUserId: 'actor-1',
+            at: 1,
+            configRevision: 2,
+            extra: 'LAST_SENTINEL',
+            outcome: 'accepted',
+            provider: 'resend',
+            providerMessageId: null,
+            reasonCode: null,
+            requestId: 'req-1',
+          },
+          recent: [],
+        },
+      },
+      {
+        ...valid,
+        emailTest: {
+          last: null,
+          recent: [{ actorUserId: 'actor-1', at: 1, extra: 'RECENT_SENTINEL' }],
+        },
+      },
+    ];
+
+    for (const candidate of candidates) {
+      expect(decodeInstallationConfig(JSON.stringify(candidate))).toBeNull();
+      let caught: unknown;
+      try {
+        encodeInstallationConfig(candidate as InstallationConfig);
+      } catch (error) {
+        caught = error;
+      }
+
+      expect(caught).toBeInstanceOf(InstallationConfigValidationError);
+      expect(String(caught)).not.toContain('SENTINEL');
+    }
+
+    // Unknown-property candidates must never reach storage.
+    await expect(
+      writeInstallationConfig(fx.env, {
+        actorUserId: null,
+        document: {
+          ...valid,
+          email: { ...valid.email, extra: 'WRITE_SENTINEL' },
+        } as unknown as InstallationConfig,
+        expectedWriteVersion: 0,
+        now: new Date(),
+      }),
+    ).rejects.toThrow();
+    expect(await fx.count('installation_config')).toBe(0);
+    expect(await fx.count('audit_log')).toBe(0);
+  });
+
+  test('a stored document with unknown fields stays untouched and redacted', async () => {
+    const fx = await fixture();
+    const invalid = JSON.stringify({
+      ...DEFAULT_INSTALLATION_CONFIG,
+      email: { ...DEFAULT_INSTALLATION_CONFIG.email, extra: 'ROW_SENTINEL' },
+    });
+    await fx.setRawConfig(invalid);
+
+    await expect(readInstallationConfig(fx.env)).rejects.toThrow(
+      /configuration document is invalid/iu,
+    );
+
+    const outcome = await Effect.runPromise(
+      Effect.either(
+        getEmailSettingsViewCommand(fx.env, 'https://crm.example.test'),
+      ),
+    );
+    expect(Either.isLeft(outcome)).toBe(true);
+    if (Either.isLeft(outcome)) {
+      expect(outcome.left).toMatchObject({ code: 'config_unavailable' });
+    }
+
+    expect(JSON.stringify(outcome)).not.toContain('ROW_SENTINEL');
+    expect((await fx.readConfigRow()).documentJson).toBe(invalid);
+    expect(await fx.count('audit_log')).toBe(0);
+  });
+
+  test('invalid audit candidates fail redacted without echoing values', async () => {
+    const fx = await fixture();
+    const candidates = [
+      {
+        action: 'INVALID SENTINEL',
+        changes: [],
+        resourceId: null,
+        resourceType: 'installation.email',
+      },
+      {
+        action: 'email.settings_updated',
+        changes: [
+          {
+            after: null,
+            before: { secret: 'AUDIT_SENTINEL' },
+            field: 'email.provider',
+          },
+        ],
+        resourceId: null,
+        resourceType: 'installation.email',
+      },
+      {
+        action: 'email.settings_updated',
+        changes: [],
+        extra: 'WRITE_AUDIT_SENTINEL',
+        resourceId: null,
+        resourceType: 'installation.email',
+      },
+    ];
+
+    for (const candidate of candidates) {
+      let caught: unknown;
+      try {
+        encodeAuditWrite(candidate as never);
+      } catch (error) {
+        caught = error;
+      }
+
+      expect(caught).toBeInstanceOf(AuditValidationError);
+      expect(String(caught)).not.toContain('SENTINEL');
+    }
+
+    expect(() =>
+      encodeAuditChanges([
+        {
+          after: null,
+          before: 'CHANGES_SENTINEL',
+          extra: 'CHANGES_EXTRA_SENTINEL',
+          field: 'email.provider',
+        } as never,
+      ]),
+    ).toThrow(AuditValidationError);
+
+    await expect(
+      appendAuditLog(fx.env, {
+        actorUserId: null,
+        now: new Date(),
+        records: candidates as never,
       }),
     ).rejects.toThrow();
     expect(await fx.count('audit_log')).toBe(0);

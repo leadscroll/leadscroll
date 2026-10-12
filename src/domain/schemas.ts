@@ -538,6 +538,34 @@ export type InstallationConfig = Schema.Schema.Type<
   typeof InstallationConfigSchema
 >;
 
+/**
+ * Shared parse options for every configuration decode/encode: unknown
+ * properties at any struct level are rejected instead of stripped, so a
+ * document written by a newer schema is never silently rewritten without the
+ * data it carried.
+ */
+const REJECT_EXCESS_PROPERTIES = { onExcessProperty: 'error' } as const;
+
+/**
+ * Fixed, redacted audit validation failure; never carries rejected values.
+ */
+export class AuditValidationError extends Error {
+  constructor() {
+    super('The audit record is invalid.');
+    this.name = 'AuditValidationError';
+  }
+}
+
+/**
+ * Fixed, redacted validation failure; never carries rejected values.
+ */
+export class InstallationConfigValidationError extends Error {
+  constructor() {
+    super('The installation configuration is invalid.');
+    this.name = 'InstallationConfigValidationError';
+  }
+}
+
 export const DEFAULT_INSTALLATION_CONFIG: InstallationConfig = Object.freeze({
   email: Object.freeze({
     canonicalOrigin: null,
@@ -554,15 +582,19 @@ export const DEFAULT_INSTALLATION_CONFIG: InstallationConfig = Object.freeze({
 
 /**
  * Decodes one persisted configuration document. Returns null for malformed
- * JSON, an unknown schema version, or any shape that violates the bounded
- * schema, so callers can fail closed without echoing raw content.
+ * JSON, an unknown schema version, an unknown property at any level, or any
+ * shape that violates the bounded schema, so callers can fail closed without
+ * echoing raw content.
  */
 export const decodeInstallationConfig = (
   json: string,
 ): InstallationConfig | null => {
   try {
     const parsed: unknown = JSON.parse(json);
-    return Schema.decodeUnknownSync(InstallationConfigSchema)(parsed);
+    return Schema.decodeUnknownSync(InstallationConfigSchema)(
+      parsed,
+      REJECT_EXCESS_PROPERTIES,
+    );
   } catch {
     return null;
   }
@@ -570,10 +602,22 @@ export const decodeInstallationConfig = (
 
 /**
  * Serializes a configuration document after validating it against the
- * authoritative schema. Throws only on a programmer error.
+ * authoritative schema, including excess-property rejection at every level.
+ * Throws a fixed redacted error on failure and never includes rejected
+ * values.
  */
-export const encodeInstallationConfig = (value: InstallationConfig): string =>
-  JSON.stringify(Schema.decodeUnknownSync(InstallationConfigSchema)(value));
+export const encodeInstallationConfig = (value: InstallationConfig): string => {
+  try {
+    return JSON.stringify(
+      Schema.decodeUnknownSync(InstallationConfigSchema)(
+        value,
+        REJECT_EXCESS_PROPERTIES,
+      ),
+    );
+  } catch {
+    throw new InstallationConfigValidationError();
+  }
+};
 
 // --- Generic audit log ------------------------------------------------------
 
@@ -627,8 +671,18 @@ export const AuditRecordSchema = Schema.Struct({
 });
 export type AuditRecord = Schema.Schema.Type<typeof AuditRecordSchema>;
 
-export const encodeAuditChanges = (changes: readonly AuditChange[]): string =>
-  JSON.stringify(Schema.encodeSync(AuditChangesSchema)(changes));
+export const encodeAuditChanges = (changes: readonly AuditChange[]): string => {
+  try {
+    return JSON.stringify(
+      Schema.decodeUnknownSync(AuditChangesSchema)(
+        changes,
+        REJECT_EXCESS_PROPERTIES,
+      ),
+    );
+  } catch {
+    throw new AuditValidationError();
+  }
+};
 
 export type EncodedAuditWrite = {
   action: string;
@@ -639,17 +693,24 @@ export type EncodedAuditWrite = {
 
 /**
  * Validates one audit producer record against the bounded schema before it
- * reaches D1. Throws on a programmer error; repository helpers call this for
- * every audited mutation.
+ * reaches D1. Throws a fixed redacted error on failure and never includes
+ * rejected values; repository helpers call this for every audited mutation.
  */
 export const encodeAuditWrite = (record: AuditWrite): EncodedAuditWrite => {
-  const validated = Schema.decodeUnknownSync(AuditWriteSchema)(record);
-  return {
-    action: validated.action,
-    changesJson: encodeAuditChanges(validated.changes),
-    resourceId: validated.resourceId,
-    resourceType: validated.resourceType,
-  };
+  try {
+    const validated = Schema.decodeUnknownSync(AuditWriteSchema)(
+      record,
+      REJECT_EXCESS_PROPERTIES,
+    );
+    return {
+      action: validated.action,
+      changesJson: JSON.stringify(validated.changes),
+      resourceId: validated.resourceId,
+      resourceType: validated.resourceType,
+    };
+  } catch {
+    throw new AuditValidationError();
+  }
 };
 
 export const decodeAuditChanges = (
@@ -657,7 +718,10 @@ export const decodeAuditChanges = (
 ): null | readonly AuditChange[] => {
   try {
     const parsed: unknown = JSON.parse(json);
-    return Schema.decodeUnknownSync(AuditChangesSchema)(parsed);
+    return Schema.decodeUnknownSync(AuditChangesSchema)(
+      parsed,
+      REJECT_EXCESS_PROPERTIES,
+    );
   } catch {
     return null;
   }

@@ -628,6 +628,82 @@ describe('administrator test email command', () => {
     expect(fetchMock).toHaveBeenCalledTimes(5);
   });
 
+  test('a late completion never returns a concurrent reservation to the slower actor', async () => {
+    await configuredResend();
+    let releaseA: () => void = () => {};
+    const gateA = new Promise<void>((resolve) => {
+      releaseA = resolve;
+    });
+    const senderA: EmailSender = {
+      provider: 'resend',
+      send: async (): Promise<SendResult> => {
+        await gateA;
+        return { kind: 'accepted', messageId: 're-a', provider: 'resend' };
+      },
+    };
+    const t0 = Date.now();
+    const aOutcomePromise = run(
+      sendTestEmailCommand(fixture.env, testInput('late-request-a'), {
+        now: () => new Date(t0),
+        sender: senderA,
+      }),
+    );
+
+    // Wait until A has reserved, then let B reserve and finish at t0 + 61s.
+    const deadline = Date.now() + 5_000;
+    for (;;) {
+      const reserved = await readDocument();
+      if (reserved.emailTest.last?.requestId === 'late-request-a') {
+        break;
+      }
+
+      if (Date.now() > deadline) {
+        throw new Error('The A reservation was never written.');
+      }
+
+      await new Promise((resolve) => {
+        setTimeout(resolve, 10);
+      });
+    }
+
+    const bOutcome = await run(
+      sendTestEmailCommand(
+        fixture.env,
+        {
+          ...testInput('late-request-b'),
+          actorEmail: 'other@example.test',
+          actorUserId: OTHER_ID,
+        },
+        {
+          fetchImplementation: acceptedFetch('re-b'),
+          now: () => new Date(t0 + 61_000),
+        },
+      ),
+    );
+    expect(Either.isRight(bOutcome)).toBe(true);
+    if (Either.isRight(bOutcome)) {
+      expect(bOutcome.right.outcome).toBe('accepted');
+    }
+
+    releaseA();
+    const aOutcome = await aOutcomePromise;
+    // A's reservation was replaced by B. A gets a safe conflict, never B's
+    // accepted result.
+    expect(Either.isLeft(aOutcome)).toBe(true);
+    if (Either.isLeft(aOutcome)) {
+      expect(aOutcome.left).toMatchObject({ code: 'test_request_conflict' });
+    }
+
+    expect(aOutcome).not.toMatchObject({ right: { outcome: 'accepted' } });
+
+    const document = await readDocument();
+    expect(document.emailTest.last).toMatchObject({
+      actorUserId: OTHER_ID,
+      outcome: 'accepted',
+      requestId: 'late-request-b',
+    });
+  });
+
   test('a notifications-off installation can still run an explicit test', async () => {
     await fixture.enableProvider({
       credential: 're_test_key',

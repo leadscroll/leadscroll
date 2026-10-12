@@ -819,12 +819,17 @@ type TestCompletion = {
   status: 'accepted' | 'ambiguous' | 'configuration_error' | 'rejected';
 };
 
+type TestReconciliation =
+  { kind: 'reconciled'; last: EmailTestState } | { kind: 'stale' };
+
 /**
  * Reconciles only the reserved request id. A concurrent reservation or
  * settings save is never overwritten: the latest document is re-read and only
- * `emailTest.last` for our exact id is replaced. The outcome audit row is
- * written in the same atomic batch as the reconciliation, and the
- * reservation itself is not audited.
+ * `emailTest.last` for our exact id is replaced. When the reservation is gone
+ * (another actor or request now owns `last`), the current row is reported as
+ * stale and never returned, so a slow completion cannot surface another
+ * actor's result. The outcome audit row is written in the same atomic batch
+ * as the reconciliation, and the reservation itself is not audited.
  */
 const reconcileTestOutcome = async (
   environment: Env,
@@ -834,7 +839,7 @@ const reconcileTestOutcome = async (
     now: Date;
     requestId: string;
   },
-): Promise<EmailTestState | null> => {
+): Promise<TestReconciliation> => {
   for (let attempt = 0; attempt < MAX_CONFIG_CAS_ATTEMPTS; attempt += 1) {
     const row = await readInstallationConfig(environment);
     const last = row.document.emailTest.last;
@@ -843,7 +848,7 @@ const reconcileTestOutcome = async (
       last.requestId !== input.requestId ||
       last.actorUserId !== input.actorUserId
     ) {
-      return last;
+      return { kind: 'stale' };
     }
 
     const nextLast: EmailTestState = {
@@ -884,11 +889,11 @@ const reconcileTestOutcome = async (
       now: input.now,
     });
     if (wrote) {
-      return nextLast;
+      return { kind: 'reconciled', last: nextLast };
     }
   }
 
-  return null;
+  return { kind: 'stale' };
 };
 
 /**
@@ -1096,7 +1101,7 @@ export const sendTestEmailCommand = (
       };
     }
 
-    const last = yield* persist(() =>
+    const reconciliation = yield* persist(() =>
       reconcileTestOutcome(environment, {
         actorUserId: input.actorUserId,
         completion,
@@ -1104,9 +1109,12 @@ export const sendTestEmailCommand = (
         requestId: input.requestId,
       }),
     );
-    if (last !== null) {
-      return testViewForState(last);
+    if (reconciliation.kind === 'reconciled') {
+      return testViewForState(reconciliation.last);
     }
 
+    // Our reservation was replaced by a concurrent actor or request. Never
+    // return that row; only our own stored attempt (if it still exists) or a
+    // safe conflict is acceptable.
     return yield* readOwnedTestOrFail(environment, input);
   });
