@@ -9,16 +9,15 @@
  * request, and never retries.
  *
  * Raw-error logging: the pinned SDK logs raw API errors with `console.error`
- * when `process.env.NODE_ENV !== 'production'`. Deployed Workers set
- * `NODE_ENV=production` as a wrangler var (verified to be visible through
- * `process.env` under `nodejs_compat`), which makes that logger inert without
- * any global runtime mutation. See docs/email-notifications.md and the
- * refactor report.
+ * when `process.env.NODE_ENV !== 'production'`. Worker builds fold that
+ * expression to production (Wrangler deployment defaults and the explicit
+ * source-build define); the local dev scripts use the same setting. This
+ * makes the logger inert without global runtime mutation.
  */
 
 import { type EmailEnvelope, type SendResult } from '../email';
 import { type EmailProviderService } from '../email-provider';
-import { Duration, Effect } from 'effect';
+import { Cause, Duration, Effect, Option, Schema } from 'effect';
 import { type CreateEmailResponse, type ErrorResponse, Resend } from 'resend';
 
 /**
@@ -62,10 +61,11 @@ const RESEND_ERROR_NAMES = new Set([
 export const formatResendFrom = (from: EmailEnvelope['from']): string =>
   from.name === undefined ? from.email : `${from.name} <${from.email}>`;
 
-const isTimeout = (error: unknown): boolean =>
-  typeof error === 'object' &&
-  error !== null &&
-  (error as { _tag?: unknown })._tag === 'TimeoutException';
+const decodeAcceptedResponse = Schema.decodeUnknownOption(
+  Schema.Struct({
+    id: Schema.String.pipe(Schema.minLength(1), Schema.maxLength(256)),
+  }),
+);
 
 const safeErrorName = (error: ErrorResponse): string | undefined =>
   typeof error.name === 'string' && RESEND_ERROR_NAMES.has(error.name)
@@ -94,9 +94,13 @@ export const classifyResendResult = (
   response: CreateEmailResponse,
 ): SendResult => {
   if (response.error === null) {
-    const { id } = response.data;
-    if (typeof id === 'string' && id.length > 0) {
-      return { kind: 'accepted', messageId: id, provider: 'resend' };
+    const accepted = decodeAcceptedResponse(response.data);
+    if (Option.isSome(accepted)) {
+      return {
+        kind: 'accepted',
+        messageId: accepted.value.id,
+        provider: 'resend',
+      };
     }
 
     return {
@@ -179,7 +183,7 @@ export const createResendEmailProvider = (
         Effect.map((response) => classifyResendResult(response)),
         Effect.catchAll((error) =>
           Effect.succeed<SendResult>(
-            isTimeout(error)
+            Cause.isTimeoutException(error)
               ? {
                   kind: 'ambiguous',
                   provider: 'resend',

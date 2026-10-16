@@ -42,6 +42,23 @@ describe('Resend provider classification', () => {
     });
   });
 
+  test.each([null, 'invalid', { id: 'x'.repeat(257) }])(
+    'treats an invalid SDK success body as ambiguous: %j',
+    (data) => {
+      expect(
+        classifyResendResult({
+          data,
+          error: null,
+          headers: {},
+        } as CreateEmailResponse),
+      ).toEqual({
+        kind: 'ambiguous',
+        provider: 'resend',
+        reason: 'malformed_response',
+      });
+    },
+  );
+
   test('classifies documented HTTP rejections', () => {
     expect(classifyResendResult(failure('rate_limit_exceeded', 429))).toEqual({
       kind: 'rejected',

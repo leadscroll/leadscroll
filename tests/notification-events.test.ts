@@ -192,6 +192,9 @@ describe('subscriber isolation', () => {
     await runLeadCreatedSubscribers(
       runtime,
       [
+        () => {
+          throw new Error('construction sentinel');
+        },
         () => Effect.die(new Error('defect sentinel')),
         () => Effect.fail(new Error('typed sentinel')),
         () =>
@@ -203,12 +206,12 @@ describe('subscriber isolation', () => {
     );
 
     expect(completed).toEqual(['third']);
-    expect(errorSpy).toHaveBeenCalledTimes(2);
+    expect(errorSpy).toHaveBeenCalledTimes(3);
     const classes = errorSpy.mock.calls.map(
       (call) =>
         (JSON.parse(String(call[0])) as Record<string, unknown>).errorClass,
     );
-    expect(classes.toSorted()).toEqual(['Defect', 'Error']);
+    expect(classes.toSorted()).toEqual(['Defect', 'Defect', 'Error']);
     for (const call of errorSpy.mock.calls) {
       const line = JSON.parse(String(call[0])) as Record<string, unknown>;
       expect(line).toEqual({

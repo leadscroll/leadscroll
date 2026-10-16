@@ -18,7 +18,7 @@ import { type Deployment } from '@/application/deployment';
 import { type InstallationConfigStore } from '@/application/installation-config-store';
 import { type CredentialCipher } from '@/notifications/credential-cipher';
 import { type EmailProviderResolver } from '@/notifications/email-provider';
-import { Cause, type Effect, Exit } from 'effect';
+import { Cause, Effect } from 'effect';
 import { type ManagedRuntime } from 'effect/ManagedRuntime';
 
 export const LEAD_CREATED_EVENT = 'lead.created' as const;
@@ -72,25 +72,30 @@ const causeErrorClass = (cause: Cause.Cause<unknown>): string => {
  * subscriber has its own fiber; a failing subscriber is logged and never
  * prevents another subscriber from completing.
  */
-export const runLeadCreatedSubscribers = async (
+export const runLeadCreatedSubscribers = (
   runtime: NotificationRuntime,
   subscribers: readonly LeadCreatedSubscriber[],
   event: LeadCreatedEvent,
-): Promise<void> => {
-  await Promise.allSettled(
-    subscribers.map(async (subscriber) => {
-      const exit = await runtime.runPromiseExit(subscriber(event));
-      if (Exit.isFailure(exit)) {
-        logNotificationEventOutcome({
-          errorClass: causeErrorClass(exit.cause),
-          eventKind: LEAD_CREATED_EVENT,
-          leadId: event.leadId,
-          outcome: 'subscriber_failed',
-        });
-      }
-    }),
+): Promise<void> =>
+  runtime.runPromise(
+    Effect.forEach(
+      subscribers,
+      (subscriber) =>
+        Effect.suspend(() => subscriber(event)).pipe(
+          Effect.catchAllCause((cause) =>
+            Effect.sync(() => {
+              logNotificationEventOutcome({
+                errorClass: causeErrorClass(cause),
+                eventKind: LEAD_CREATED_EVENT,
+                leadId: event.leadId,
+                outcome: 'subscriber_failed',
+              });
+            }),
+          ),
+        ),
+      { concurrency: 'unbounded', discard: true },
+    ),
   );
-};
 
 /**
  * Builds the request-scoped publisher. `waitUntil` must be the runtime's

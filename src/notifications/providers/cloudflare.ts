@@ -12,7 +12,7 @@
 
 import { type EmailEnvelope, type SendResult } from '../email';
 import { type EmailProviderService } from '../email-provider';
-import { Duration, Effect } from 'effect';
+import { Cause, Duration, Effect } from 'effect';
 
 /**
  * Binding contract from `@cloudflare/workers-types`. Only the structured
@@ -90,11 +90,6 @@ export const classifyCloudflareError = (error: unknown): SendResult => {
   };
 };
 
-const isTimeout = (error: unknown): boolean =>
-  typeof error === 'object' &&
-  error !== null &&
-  (error as { _tag?: unknown })._tag === 'TimeoutException';
-
 const buildMessage = (envelope: EmailEnvelope) => ({
   from: {
     email: envelope.from.email,
@@ -131,7 +126,7 @@ export const createCloudflareEmailProvider = (
       }),
       Effect.catchAll((error) =>
         Effect.succeed<SendResult>(
-          isTimeout(error)
+          Cause.isTimeoutException(error)
             ? { kind: 'ambiguous', provider: 'cloudflare', reason: 'timeout' }
             : classifyCloudflareError(error),
         ),
