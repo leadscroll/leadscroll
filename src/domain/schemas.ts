@@ -580,21 +580,9 @@ export const DEFAULT_INSTALLATION_CONFIG: InstallationConfig = Object.freeze({
   version: INSTALLATION_CONFIG_VERSION,
 }) as InstallationConfig;
 
-const parseJsonValue = (value: unknown): unknown => {
-  if (typeof value !== 'string') {
-    return value;
-  }
-
-  try {
-    return JSON.parse(value);
-  } catch {
-    return undefined;
-  }
-};
-
 /**
- * Decodes one persisted configuration document from a Drizzle JSON value (an
- * already-parsed object) or a raw TEXT value (artifact tooling and fixtures).
+ * Decodes one persisted configuration document from an already-parsed Drizzle
+ * JSON value. Raw TEXT parsing belongs to the database driver or tooling.
  * Returns null for malformed JSON, an unknown schema version, an unknown
  * property at any level, or any shape that violates the bounded schema, so
  * callers can fail closed without echoing raw content.
@@ -604,7 +592,7 @@ export const decodeInstallationConfig = (
 ): InstallationConfig | null => {
   try {
     return Schema.decodeUnknownSync(InstallationConfigSchema)(
-      parseJsonValue(value),
+      value,
       REJECT_EXCESS_PROPERTIES,
     );
   } catch {
@@ -623,7 +611,7 @@ export const validateInstallationConfig = (
 ): InstallationConfig => {
   try {
     return Schema.decodeUnknownSync(InstallationConfigSchema)(
-      parseJsonValue(value),
+      value,
       REJECT_EXCESS_PROPERTIES,
     );
   } catch {
@@ -692,7 +680,7 @@ export const validateAuditChanges = (
 ): readonly AuditChange[] => {
   try {
     return Schema.decodeUnknownSync(AuditChangesSchema)(
-      parseJsonValue(changes),
+      changes,
       REJECT_EXCESS_PROPERTIES,
     );
   } catch {
@@ -717,8 +705,7 @@ export const validateAuditWrite = (record: unknown): AuditWrite => {
 };
 
 /**
- * Decodes bounded audit changes from a Drizzle JSON value (already parsed) or
- * a raw TEXT value used by artifact tooling. Returns null for malformed data
+ * Decodes bounded audit changes from an already-parsed Drizzle JSON value. Returns null for malformed data
  * instead of echoing it.
  */
 export const decodeAuditChanges = (
@@ -726,7 +713,7 @@ export const decodeAuditChanges = (
 ): null | readonly AuditChange[] => {
   try {
     return Schema.decodeUnknownSync(AuditChangesSchema)(
-      parseJsonValue(value),
+      value,
       REJECT_EXCESS_PROPERTIES,
     );
   } catch {

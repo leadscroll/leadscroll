@@ -118,7 +118,7 @@ describe('installation configuration persistence', () => {
       actorUserId: ADMIN_ID,
       resourceType: 'installation.email',
     });
-    const changes = decodeAuditChanges(rows[0].changesJson);
+    const changes = decodeAuditChanges(JSON.parse(rows[0].changesJson));
     expect(changes).toEqual(
       expect.arrayContaining([
         { after: 'resend', before: 'disabled', field: 'email.provider' },
@@ -209,7 +209,7 @@ describe('installation configuration persistence', () => {
     const rows = await fixture.readAuditRows();
     const markers = rows.flatMap(
       (row) =>
-        decodeAuditChanges(row.changesJson)
+        decodeAuditChanges(JSON.parse(row.changesJson))
           ?.filter((change) => change.field === 'email.credential')
           .map((change) => [change.before, change.after]) ?? [],
     );
@@ -336,7 +336,7 @@ describe('installation configuration persistence', () => {
 
     const rows = await fixture.readAuditRows();
     expect(rows).toHaveLength(1);
-    expect(decodeAuditChanges(rows[0].changesJson)).toEqual([]);
+    expect(decodeAuditChanges(JSON.parse(rows[0].changesJson))).toEqual([]);
   });
 });
 
@@ -857,7 +857,7 @@ describe('administrator test email command', () => {
     await runEffect(runtime, sendTestEmailCommand(testInput('test-version')));
     const after = await fixture.readConfigRow();
     expect(after.writeVersion).toBeGreaterThan(before.writeVersion);
-    const document = decodeInstallationConfig(after.documentJson);
+    const document = decodeInstallationConfig(JSON.parse(after.documentJson));
     expect(document?.revision).toBe(1);
   });
 });

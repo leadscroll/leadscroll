@@ -116,7 +116,9 @@ describe('notification schema migration', () => {
       )
       .bind(DEFAULT_WORKSPACE_ID)
       .first<{ document_json: string; write_version: number }>();
-    const document = decodeInstallationConfig(String(stored?.document_json));
+    const document = decodeInstallationConfig(
+      JSON.parse(String(stored?.document_json)),
+    );
     expect(document?.email.provider).toBe('resend');
     expect(document?.revision).toBe(3);
     expect(Number(stored?.write_version)).toBe(1);
@@ -190,6 +192,34 @@ describe('notification schema migration', () => {
 
     expect(auditError).toBeInstanceOf(AuditLogDecodeError);
     expect(String(auditError)).not.toContain('AUDIT_SENTINEL');
+  });
+
+  test('double-encoded JSON is rejected without rewriting stored values', async () => {
+    const fx = await fixture();
+    const configText = JSON.stringify(
+      JSON.stringify(DEFAULT_INSTALLATION_CONFIG),
+    );
+    await fx.setRawConfig(configText);
+    await expect(readInstallationConfig(fx.env)).rejects.toBeInstanceOf(
+      InstallationConfigDecodeError,
+    );
+    expect((await fx.readConfigRow()).documentJson).toBe(configText);
+
+    const auditText = JSON.stringify(JSON.stringify([]));
+    await fx.db
+      .prepare(
+        `INSERT INTO audit_log (
+          id, workspace_id, actor_user_id, created_at, action, resource_type,
+          resource_id, changes_json
+        ) VALUES ('double-audit', ?, NULL, ?, 'email.settings_updated',
+          'installation.email', NULL, ?)`,
+      )
+      .bind(DEFAULT_WORKSPACE_ID, Date.now(), auditText)
+      .run();
+    await expect(
+      listAuditLog(fx.env, { cursor: null, limit: 10 }),
+    ).rejects.toBeInstanceOf(AuditLogDecodeError);
+    expect((await fx.readAuditRows())[0].changesJson).toBe(auditText);
   });
 
   test('audit helpers append bounded entries and page newest first', async () => {
@@ -326,7 +356,7 @@ describe('notification schema migration', () => {
     ];
 
     for (const candidate of candidates) {
-      expect(decodeInstallationConfig(JSON.stringify(candidate))).toBeNull();
+      expect(decodeInstallationConfig(candidate)).toBeNull();
       let caught: unknown;
       try {
         validateInstallationConfig(candidate);

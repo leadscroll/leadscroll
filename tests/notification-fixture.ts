@@ -215,7 +215,7 @@ export const startNotificationFixture = async (
     const applySeed = async (input: ConfigSeed = {}) => {
       const row = await readConfigRow();
       const current =
-        decodeInstallationConfig(row.documentJson) ??
+        decodeInstallationConfig(JSON.parse(row.documentJson)) ??
         DEFAULT_INSTALLATION_CONFIG;
       let credential = current.email.credential;
       if (input.credentialRemove === true) {
@@ -262,7 +262,7 @@ export const startNotificationFixture = async (
       insertCredential: async (value) => {
         const row = await readConfigRow();
         const current =
-          decodeInstallationConfig(row.documentJson) ??
+          decodeInstallationConfig(JSON.parse(row.documentJson)) ??
           DEFAULT_INSTALLATION_CONFIG;
         const { encryptCredential } =
           await import('@/notifications/credential-crypto');
@@ -318,7 +318,7 @@ export const startNotificationFixture = async (
       },
       readConfig: async () => {
         const row = await readConfigRow();
-        const document = decodeInstallationConfig(row.documentJson);
+        const document = decodeInstallationConfig(JSON.parse(row.documentJson));
         if (document === null) {
           throw new Error('The fixture configuration is invalid.');
         }
