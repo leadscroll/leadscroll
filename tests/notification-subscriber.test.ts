@@ -2,19 +2,23 @@ import {
   type NotificationFixture,
   startNotificationFixture,
 } from './notification-fixture';
-import { type Env } from '@/db/repository';
 import {
-  type EmailEnvelope,
-  type EmailSender,
-  type SendContext,
-  type SendResult,
-} from '@/notifications/email';
+  makeNotificationRuntime,
+  manualClock,
+  recordingProvider,
+  recordingResolver,
+  resolverLayer,
+  runEffect,
+} from './notification-services';
+import { type Env } from '@/db/repository';
+import { type SendResult } from '@/notifications/email';
+import { type EmailProviderService } from '@/notifications/email-provider';
 import {
   createLeadCreatedEmailSubscriber,
   NOTIFICATION_BUDGET_MS,
   NOTIFICATION_PROVIDER_TIMEOUT_MS,
 } from '@/notifications/lead-created-subscriber';
-import { createCloudflareEmailSender } from '@/notifications/providers/cloudflare';
+import { Effect } from 'effect';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 const LEAD_ID = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
@@ -36,28 +40,6 @@ afterEach(async () => {
   await fixture.dispose();
   vi.restoreAllMocks();
 });
-
-type SentMessage = { context: SendContext; envelope: EmailEnvelope };
-
-const recordingSender = (
-  result?: ((call: number) => SendResult) | SendResult,
-) => {
-  const resolvedResult: ((call: number) => SendResult) | SendResult =
-    result ?? { kind: 'accepted', provider: 'cloudflare' };
-  const sent: SentMessage[] = [];
-  const sender: EmailSender = {
-    provider: 'cloudflare',
-    send: async (envelope, context) => {
-      const resolved =
-        typeof resolvedResult === 'function'
-          ? resolvedResult(sent.length)
-          : resolvedResult;
-      sent.push({ context, envelope });
-      return resolved;
-    },
-  };
-  return { sender, sent };
-};
 
 const logLines = (spy: { mock: { calls: unknown[][] } }) =>
   spy.mock.calls.map(
@@ -91,16 +73,23 @@ describe('lead.created email subscriber', () => {
     await seedRecipient('staff-3', 'staff-3@example.test', { disabled: true });
     await fixture.seedLead(LEAD_ID);
 
-    const { sender, sent } = recordingSender();
-    await createLeadCreatedEmailSubscriber({ sender })(fixture.env, {
-      actorUserId: ACTOR_ID,
-      leadId: LEAD_ID,
-    });
+    const { calls, provider } = recordingProvider();
+    const runtime = makeNotificationRuntime(
+      fixture.env,
+      recordingResolver(provider),
+    );
+    await runEffect(
+      runtime,
+      createLeadCreatedEmailSubscriber(fixture.env)({
+        actorUserId: ACTOR_ID,
+        leadId: LEAD_ID,
+      }),
+    );
 
-    expect(sent.map((message) => message.envelope.to)).toEqual([
+    expect(calls.map((call) => call.envelope.to)).toEqual([
       'staff-1@example.test',
     ]);
-    const [sentMessage] = sent;
+    const [sentMessage] = calls;
     expect(sentMessage.envelope.subject).toBe(
       'A new lead is available in LeadScroll',
     );
@@ -111,71 +100,98 @@ describe('lead.created email subscriber', () => {
       email: 'notifications@example.test',
       name: 'LeadScroll',
     });
-    expect(sentMessage.context.deliveryKey).toBe(
+    expect(sentMessage.deliveryKey).toBe(
       `leadscroll-notification:${LEAD_ID}:staff-1`,
     );
     // The creator is excluded, so no message may address the actor.
-    expect(sent.map((entry) => entry.envelope.to)).not.toContain(
+    expect(calls.map((entry) => entry.envelope.to)).not.toContain(
       'creator@example.test',
     );
   });
 
-  test('does not call the provider while disabled or misconfigured', async () => {
-    const { sender, sent } = recordingSender();
+  test('does not resolve a provider while disabled or misconfigured', async () => {
+    const { calls, provider } = recordingProvider();
+    const resolved: string[] = [];
+    const runtime = makeNotificationRuntime(
+      fixture.env,
+      resolverLayer((email) =>
+        Effect.sync(() => {
+          resolved.push(email.provider);
+          return provider;
+        }),
+      ),
+    );
+    const subscriber = createLeadCreatedEmailSubscriber(fixture.env);
+    await fixture.seedLead(LEAD_ID);
 
     // Disabled installation.
-    await fixture.seedLead(LEAD_ID);
-    await createLeadCreatedEmailSubscriber({ sender })(fixture.env, {
-      actorUserId: null,
-      leadId: LEAD_ID,
-    });
-    expect(sent).toHaveLength(0);
+    await runEffect(
+      runtime,
+      subscriber({ actorUserId: null, leadId: LEAD_ID }),
+    );
+    expect(calls).toHaveLength(0);
+    expect(resolved).toHaveLength(0);
 
     // Enabled but the selected Cloudflare provider has no binding.
     await fixture.enableProvider({ provider: 'cloudflare' });
     await seedRecipient('staff-1', 'staff-1@example.test');
-    await createLeadCreatedEmailSubscriber({ sender })(fixture.env, {
-      actorUserId: null,
-      leadId: LEAD_ID,
-    });
-    expect(sent).toHaveLength(0);
+    await runEffect(
+      runtime,
+      subscriber({ actorUserId: null, leadId: LEAD_ID }),
+    );
+    expect(calls).toHaveLength(0);
+    expect(resolved).toHaveLength(0);
   });
 
   test('never falls back to another provider when the selected one is missing', async () => {
     // Resend is selected without a stored credential; a present Cloudflare
-    // binding must not be touched.
+    // binding must not be touched. Uses the real resolver layer.
     const bindingCalls = vi.fn(async () => ({ messageId: 'cf' }));
     fixture.setEmailBinding({ send: bindingCalls });
     await fixture.enableProvider({ provider: 'resend' });
     await seedRecipient('staff-1', 'staff-1@example.test');
     await fixture.seedLead(LEAD_ID);
 
-    await createLeadCreatedEmailSubscriber()(fixture.env, {
-      actorUserId: null,
-      leadId: LEAD_ID,
-    });
+    const runtime = makeNotificationRuntime(fixture.env);
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    await runEffect(
+      runtime,
+      createLeadCreatedEmailSubscriber(fixture.env)({
+        actorUserId: null,
+        leadId: LEAD_ID,
+      }),
+    );
 
     expect(bindingCalls).not.toHaveBeenCalled();
+    expect(logLines(logSpy)[0]).toMatchObject({
+      outcome: 'skipped',
+      reason: 'resend_api_key_missing',
+    });
   });
 
   test('skips when the lead is gone and when no recipient opted in', async () => {
     await enableCloudflare();
     await seedRecipient('staff-1', 'staff-1@example.test');
-    const { sender, sent } = recordingSender();
+    const { calls, provider } = recordingProvider();
+    const runtime = makeNotificationRuntime(
+      fixture.env,
+      recordingResolver(provider),
+    );
+    const subscriber = createLeadCreatedEmailSubscriber(fixture.env);
 
-    await createLeadCreatedEmailSubscriber({ sender })(fixture.env, {
-      actorUserId: null,
-      leadId: LEAD_ID,
-    });
-    expect(sent).toHaveLength(0);
+    await runEffect(
+      runtime,
+      subscriber({ actorUserId: null, leadId: LEAD_ID }),
+    );
+    expect(calls).toHaveLength(0);
 
     await fixture.seedLead(LEAD_ID);
     await fixture.optIn('staff-1', false);
-    await createLeadCreatedEmailSubscriber({ sender })(fixture.env, {
-      actorUserId: null,
-      leadId: LEAD_ID,
-    });
-    expect(sent).toHaveLength(0);
+    await runEffect(
+      runtime,
+      subscriber({ actorUserId: null, leadId: LEAD_ID }),
+    );
+    expect(calls).toHaveLength(0);
   });
 
   test('one recipient failure does not stop the others', async () => {
@@ -185,7 +201,7 @@ describe('lead.created email subscriber', () => {
     await seedRecipient('staff-3', 'staff-3@example.test');
     await fixture.seedLead(LEAD_ID);
 
-    const { sender, sent } = recordingSender((call) =>
+    const { calls, provider } = recordingProvider((_input, call): SendResult =>
       call === 0
         ? {
             kind: 'rejected',
@@ -195,16 +211,23 @@ describe('lead.created email subscriber', () => {
           }
         : { kind: 'accepted', provider: 'cloudflare' },
     );
+    const runtime = makeNotificationRuntime(
+      fixture.env,
+      recordingResolver(provider),
+    );
 
-    await createLeadCreatedEmailSubscriber({ sender })(fixture.env, {
-      actorUserId: null,
-      leadId: LEAD_ID,
-    });
+    await runEffect(
+      runtime,
+      createLeadCreatedEmailSubscriber(fixture.env)({
+        actorUserId: null,
+        leadId: LEAD_ID,
+      }),
+    );
 
-    expect(sent).toHaveLength(3);
+    expect(calls).toHaveLength(3);
   });
 
-  test('respects the bounded concurrency limit', async () => {
+  test('bounds concurrent sends to the configured fan-out', async () => {
     await enableCloudflare();
     for (let index = 0; index < 6; index += 1) {
       await seedRecipient(`staff-${index}`, `staff-${index}@example.test`);
@@ -212,137 +235,64 @@ describe('lead.created email subscriber', () => {
 
     await fixture.seedLead(LEAD_ID);
 
-    let inFlight = 0;
-    let maxInFlight = 0;
-    const releases: Array<() => void> = [];
-    const sender: EmailSender = {
-      provider: 'cloudflare',
-      send: async () => {
-        inFlight += 1;
-        maxInFlight = Math.max(maxInFlight, inFlight);
-        await new Promise<void>((resolve) => {
-          releases.push(() => {
-            inFlight -= 1;
-            resolve();
-          });
-        });
-        return { kind: 'accepted', provider: 'cloudflare' };
-      },
+    const counter = { inFlight: 0, max: 0 };
+    const countingProvider: EmailProviderService = {
+      kind: 'cloudflare',
+      policy: { timeoutIsUncancelable: true },
+      send: () =>
+        Effect.gen(function* () {
+          counter.inFlight += 1;
+          counter.max = Math.max(counter.max, counter.inFlight);
+          yield* Effect.sleep('15 millis');
+          counter.inFlight -= 1;
+          return { kind: 'accepted' as const, provider: 'cloudflare' as const };
+        }),
     };
-
-    const work = createLeadCreatedEmailSubscriber({
-      concurrency: 2,
-      sender,
-    })(fixture.env, { actorUserId: null, leadId: LEAD_ID });
-
-    // Let the first wave start, then release the rest as they arrive.
-    while (releases.length === 0) {
-      await new Promise((resolve) => {
-        setTimeout(resolve, 0);
-      });
-    }
-
-    expect(maxInFlight).toBe(2);
-    for (let index = 0; index < 6; index += 1) {
-      while (releases.length <= index) {
-        await new Promise((resolve) => {
-          setTimeout(resolve, 0);
-        });
-      }
-
-      releases[index]();
-    }
-
-    await work;
-    expect(maxInFlight).toBe(2);
-  });
-
-  test('passes a finite per-send timeout bounded by the background budget', async () => {
-    await enableCloudflare();
-    await seedRecipient('staff-1', 'staff-1@example.test');
-    await fixture.seedLead(LEAD_ID);
-    const { sender, sent } = recordingSender();
-
-    await createLeadCreatedEmailSubscriber({
-      budgetMs: 5_000,
-      sender,
-    })(fixture.env, { actorUserId: null, leadId: LEAD_ID });
-
-    expect(sent).toHaveLength(1);
-    const timeout = sent[0].context.timeoutMs;
-    expect(timeout).toBeGreaterThan(0);
-    expect(timeout).toBeLessThanOrEqual(5_000);
-    expect(timeout).toBeLessThanOrEqual(NOTIFICATION_PROVIDER_TIMEOUT_MS);
-    expect(timeout).toBeLessThanOrEqual(NOTIFICATION_BUDGET_MS);
-  });
-
-  test('reports budget exhaustion instead of silently dropping recipients', async () => {
-    await enableCloudflare();
-    await seedRecipient('staff-1', 'staff-1@example.test');
-    await seedRecipient('staff-2', 'staff-2@example.test');
-    await fixture.seedLead(LEAD_ID);
-    const { sender, sent } = recordingSender();
-    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-
-    await createLeadCreatedEmailSubscriber({
-      budgetMs: 0,
-      sender,
-    })(fixture.env, { actorUserId: null, leadId: LEAD_ID });
-
-    expect(sent).toHaveLength(0);
-    const outcomes = logLines(logSpy).filter(
-      (line) => line.outcome === 'skipped',
+    const runtime = makeNotificationRuntime(
+      fixture.env,
+      recordingResolver(countingProvider),
     );
-    expect(outcomes).toHaveLength(1);
-    expect(outcomes[0]).toMatchObject({
-      reason: 'budget_exhausted',
-      recipients: 2,
-      skipped: 2,
-    });
-  });
-
-  test('honest timeout results are reported as failed and never retried', async () => {
-    await enableCloudflare();
-    await seedRecipient('staff-1', 'staff-1@example.test');
-    await seedRecipient('staff-2', 'staff-2@example.test');
-    await fixture.seedLead(LEAD_ID);
-    const { sender, sent } = recordingSender({
-      kind: 'ambiguous',
-      provider: 'cloudflare',
-      reason: 'timeout',
-    });
-    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-
-    await createLeadCreatedEmailSubscriber({ sender })(fixture.env, {
-      actorUserId: null,
-      leadId: LEAD_ID,
-    });
-
-    expect(sent).toHaveLength(2);
-    const outcome = logLines(errorSpy).find(
-      (line) => line.outcome === 'failed',
+    await runEffect(
+      runtime,
+      createLeadCreatedEmailSubscriber(fixture.env)({
+        actorUserId: null,
+        leadId: LEAD_ID,
+      }),
     );
-    expect(outcome).toMatchObject({ reason: 'cloudflare_timeout', skipped: 0 });
+
+    expect(counter.max).toBe(4);
+    expect(counter.inFlight).toBe(0);
   });
 
   test('preparation time consumes the budget before the first send', async () => {
     await enableCloudflare();
     await seedRecipient('staff-1', 'staff-1@example.test');
     await fixture.seedLead(LEAD_ID);
-    const { sender, sent } = recordingSender();
+    const { calls, provider } = recordingProvider();
+    const clock = manualClock(1_000);
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-    const base = Date.now();
-    let clockCalls = 0;
 
-    await createLeadCreatedEmailSubscriber({
-      budgetMs: 5_000,
-      // The first call records the entry time; every later call simulates a
-      // preparation phase that consumed far more than the budget.
-      now: () => new Date(clockCalls++ === 0 ? base : base + 60_000),
-      sender,
-    })(fixture.env, { actorUserId: null, leadId: LEAD_ID });
+    // Simulate credential/provider preparation consuming 60s of the 20s
+    // budget after the subscriber recorded its entry time.
+    const runtime = makeNotificationRuntime(
+      fixture.env,
+      resolverLayer(() =>
+        Effect.sync(() => {
+          clock.advance(60_000);
+        }).pipe(Effect.as(provider)),
+      ),
+      clock.layer,
+    );
 
-    expect(sent).toHaveLength(0);
+    await runEffect(
+      runtime,
+      createLeadCreatedEmailSubscriber(fixture.env)({
+        actorUserId: null,
+        leadId: LEAD_ID,
+      }),
+    );
+
+    expect(calls).toHaveLength(0);
     const outcomes = logLines(logSpy).filter(
       (line) => line.outcome === 'skipped',
     );
@@ -354,56 +304,128 @@ describe('lead.created email subscriber', () => {
     });
   });
 
-  test('a Cloudflare timeout stops launching new recipients for the event', async () => {
+  test('an uncancelable provider timeout stops launching new recipients', async () => {
     await enableCloudflare();
     for (let index = 0; index < 6; index += 1) {
       await seedRecipient(`staff-${index}`, `staff-${index}@example.test`);
     }
 
     await fixture.seedLead(LEAD_ID);
-    const send = vi.fn(() => new Promise<{ messageId: string }>(() => {}));
-    const sender = createCloudflareEmailSender({
-      send,
-    } as unknown as NonNullable<Env['EMAIL']>);
+    const { calls, provider } = recordingProvider(() =>
+      Effect.sleep('15 millis').pipe(
+        Effect.as({
+          kind: 'ambiguous' as const,
+          provider: 'cloudflare' as const,
+          reason: 'timeout',
+        }),
+      ),
+    );
+    const runtime = makeNotificationRuntime(
+      fixture.env,
+      recordingResolver(provider),
+    );
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
-    await createLeadCreatedEmailSubscriber({
-      budgetMs: 10_000,
-      concurrency: 4,
-      providerTimeoutMs: 20,
-      sender,
-    })(fixture.env, { actorUserId: null, leadId: LEAD_ID });
+    await runEffect(
+      runtime,
+      createLeadCreatedEmailSubscriber(fixture.env)({
+        actorUserId: null,
+        leadId: LEAD_ID,
+      }),
+    );
 
-    // One lane per concurrency slot, and no replacement launches after the
-    // first timeout because the native binding call cannot be canceled.
-    expect(send).toHaveBeenCalledTimes(4);
-    await new Promise((resolve) => {
-      setTimeout(resolve, 100);
-    });
-    expect(send).toHaveBeenCalledTimes(4);
-
+    // One call per concurrency slot, no replacement launches after the first
+    // timeout, and the two unsent recipients are reported.
+    expect(calls).toHaveLength(4);
     const outcomes = logLines(errorSpy);
     expect(outcomes).toHaveLength(1);
     expect(outcomes[0]).toMatchObject({
       failed: 4,
       outcome: 'failed',
-      reason: 'cloudflare_timeout',
+      reason: 'uncancelable_timeout',
       recipients: 6,
       skipped: 2,
     });
+  });
+
+  test('the stop policy is provider-neutral, not Cloudflare-specific', async () => {
+    await fixture.enableProvider({ provider: 'resend' });
+    await fixture.insertCredential('re_test');
+    await seedRecipient('staff-1', 'staff-1@example.test');
+    await seedRecipient('staff-2', 'staff-2@example.test');
+    await fixture.seedLead(LEAD_ID);
+
+    // Delay the timeout so both concurrency lanes start before the first
+    // result lands; the stop decision must come from the neutral policy.
+    const { calls, provider } = recordingProvider(() =>
+      Effect.sleep('15 millis').pipe(
+        Effect.as({
+          kind: 'ambiguous' as const,
+          provider: 'resend' as const,
+          reason: 'timeout',
+        }),
+      ),
+    );
+    const runtime = makeNotificationRuntime(
+      fixture.env,
+      recordingResolver(provider),
+    );
+    await runEffect(
+      runtime,
+      createLeadCreatedEmailSubscriber(fixture.env)({
+        actorUserId: null,
+        leadId: LEAD_ID,
+      }),
+    );
+
+    // Both lanes started before the first timeout landed, and no further
+    // launches occurred; the stop decision came from the neutral policy.
+    expect(calls).toHaveLength(2);
+  });
+
+  test('passes a finite per-send timeout bounded by the background budget', async () => {
+    await enableCloudflare();
+    await seedRecipient('staff-1', 'staff-1@example.test');
+    await fixture.seedLead(LEAD_ID);
+    const { calls, provider } = recordingProvider();
+    const runtime = makeNotificationRuntime(
+      fixture.env,
+      recordingResolver(provider),
+    );
+
+    await runEffect(
+      runtime,
+      createLeadCreatedEmailSubscriber(fixture.env)({
+        actorUserId: null,
+        leadId: LEAD_ID,
+      }),
+    );
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].timeoutMs).toBeLessThanOrEqual(
+      NOTIFICATION_PROVIDER_TIMEOUT_MS,
+    );
+    expect(calls[0].timeoutMs).toBeLessThanOrEqual(NOTIFICATION_BUDGET_MS);
   });
 
   test('outcome logging carries counts and never addresses or payloads', async () => {
     await enableCloudflare();
     await seedRecipient('staff-1', 'private-staff@example.test');
     await fixture.seedLead(LEAD_ID);
-    const { sender } = recordingSender();
+    const { provider } = recordingProvider();
+    const runtime = makeNotificationRuntime(
+      fixture.env,
+      recordingResolver(provider),
+    );
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
-    await createLeadCreatedEmailSubscriber({ sender })(fixture.env, {
-      actorUserId: null,
-      leadId: LEAD_ID,
-    });
+    await runEffect(
+      runtime,
+      createLeadCreatedEmailSubscriber(fixture.env)({
+        actorUserId: null,
+        leadId: LEAD_ID,
+      }),
+    );
 
     const lines = logLines(logSpy);
     expect(lines).toHaveLength(1);

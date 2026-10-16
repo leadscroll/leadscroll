@@ -3,7 +3,8 @@ import {
   type NotificationFixture,
   startNotificationFixture,
 } from './notification-fixture';
-import { getEmailSettingsViewCommand } from '@/application/notification-commands';
+import { makeNotificationRuntime, runEither } from './notification-services';
+import { getEmailSettingsViewCommand } from '@/application/notification-settings';
 import {
   appendAuditLog,
   AuditLogDecodeError,
@@ -24,7 +25,7 @@ import {
   validateAuditWrite,
   validateInstallationConfig,
 } from '@/domain/schemas';
-import { Effect, Either } from 'effect';
+import { Either } from 'effect';
 import { afterEach, describe, expect, test } from 'vitest';
 
 const fixtures: NotificationFixture[] = [];
@@ -365,10 +366,10 @@ describe('notification schema migration', () => {
       /configuration document is invalid/iu,
     );
 
-    const outcome = await Effect.runPromise(
-      Effect.either(
-        getEmailSettingsViewCommand(fx.env, 'https://crm.example.test'),
-      ),
+    const runtime = makeNotificationRuntime(fx.env);
+    const outcome = await runEither(
+      runtime,
+      getEmailSettingsViewCommand('https://crm.example.test'),
     );
     expect(Either.isLeft(outcome)).toBe(true);
     if (Either.isLeft(outcome)) {

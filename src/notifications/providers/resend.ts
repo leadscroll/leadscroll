@@ -1,54 +1,49 @@
 /**
- * Resend HTTPS adapter.
+ * Resend adapter backed by the official `resend` SDK (pinned 6.33.0).
  *
- * Uses the fixed public API host, a server-side decrypted send-only API key,
- * and the caller's namespaced `Idempotency-Key` so an accidental duplicate of
- * the same event/recipient collapses inside Resend's documented 24-hour
- * window. Requests carry a finite timeout; a timeout or transport failure is
- * ambiguous and is reported honestly without automatic retry. Error
- * classification follows the documented Resend error reference (checked
- * 2026-10-11).
+ * The SDK owns request construction, the fixed public API host, provider
+ * parsing, and the `Idempotency-Key` header. This adapter stays small: it
+ * normalizes SDK responses into the app contract, maps provider error names
+ * through an allowlist (raw messages never leave this module), passes an
+ * Effect-managed `AbortSignal` so an interrupted/timeout call aborts the HTTP
+ * request, and never retries.
+ *
+ * Raw-error logging: the pinned SDK logs raw API errors with `console.error`
+ * when `process.env.NODE_ENV !== 'production'`. Deployed Workers set
+ * `NODE_ENV=production` as a wrangler var (verified to be visible through
+ * `process.env` under `nodejs_compat`), which makes that logger inert without
+ * any global runtime mutation. See docs/email-notifications.md and the
+ * refactor report.
  */
 
-import {
-  DEFAULT_PROVIDER_TIMEOUT_MS,
-  type EmailEnvelope,
-  type EmailSender,
-  type SendContext,
-  type SendResult,
-} from '../email';
+import { type EmailEnvelope, type SendResult } from '../email';
+import { type EmailProviderService } from '../email-provider';
+import { Duration, Effect } from 'effect';
+import { type CreateEmailResponse, type ErrorResponse, Resend } from 'resend';
 
-const RESEND_API_URL = 'https://api.resend.com/emails';
-const MAX_IDEMPOTENCY_KEY_LENGTH = 256;
+/**
+ * Fixed public host. Production composition never overrides it; tests may
+ * point the SDK at a local mock server.
+ */
+export const RESEND_API_BASE_URL = 'https://api.resend.com';
 
-export type FetchLike = (
-  input: RequestInfo | URL,
-  init?: RequestInit,
-) => Promise<Response>;
-
-export const formatResendFrom = (from: EmailEnvelope['from']): string =>
-  from.name === undefined ? from.email : `${from.name} <${from.email}>`;
-
-const readRetryAfterSeconds = (response: Response): number | undefined => {
-  const value = response.headers.get('Retry-After');
-  if (value === null) {
-    return undefined;
-  }
-
-  const seconds = Number(value);
-  return Number.isFinite(seconds) && seconds > 0 ? seconds : undefined;
-};
-
+/**
+ * Documented Resend error names; anything else collapses to a status code.
+ */
 const RESEND_ERROR_NAMES = new Set([
   'application_error',
   'concurrent_idempotent_requests',
   'daily_quota_exceeded',
   'email_above_quota',
+  'invalid_access',
+  'invalid_api_key',
   'invalid_attachment',
+  'invalid_from_address',
   'invalid_idempotency_key',
   'invalid_idempotent_request',
   'invalid_parameter',
   'invalid_permission',
+  'invalid_region',
   'method_not_allowed',
   'missing_api_key',
   'missing_required_field',
@@ -58,174 +53,145 @@ const RESEND_ERROR_NAMES = new Set([
   'rate_limit_exceeded',
   'resource_locked',
   'restricted_api_key',
+  'security_error',
   'service_unavailable',
   'suspended_api_key',
   'validation_error',
 ]);
 
-/**
- * Extracts only a documented Resend error name. Unknown or unexpected values
- * collapse to `provider_error`, so an arbitrary provider string can never
- * reach D1, a UI label, or a log line.
- */
-const parseResendErrorCode = async (response: Response): Promise<string> => {
-  try {
-    const payload = (await response.json()) as unknown;
-    if (typeof payload === 'object' && payload !== null) {
-      const record = payload as Record<string, unknown>;
-      if (
-        typeof record.name === 'string' &&
-        RESEND_ERROR_NAMES.has(record.name)
-      ) {
-        return record.name;
-      }
-    }
-  } catch {
-    // The body is not JSON; fall back to a status-derived code.
+export const formatResendFrom = (from: EmailEnvelope['from']): string =>
+  from.name === undefined ? from.email : `${from.name} <${from.email}>`;
+
+const isTimeout = (error: unknown): boolean =>
+  typeof error === 'object' &&
+  error !== null &&
+  (error as { _tag?: unknown })._tag === 'TimeoutException';
+
+const safeErrorName = (error: ErrorResponse): string | undefined =>
+  typeof error.name === 'string' && RESEND_ERROR_NAMES.has(error.name)
+    ? error.name
+    : undefined;
+
+const statusReason = (
+  error: ErrorResponse,
+  name: string | undefined,
+): string => {
+  if (name !== undefined) {
+    return name;
   }
 
-  return `http_${response.status}`;
+  return typeof error.statusCode === 'number'
+    ? `http_${error.statusCode}`
+    : 'provider_error';
 };
 
 /**
- * Maps a definitive HTTP rejection onto the normalized contract.
- * `409 concurrent_idempotent_requests` is a transient rejection;
- * `409 invalid_idempotent_request` means the key was reused with a different
- * payload and is terminal. 5xx responses are ambiguous: the best-effort
- * caller reports the unknown outcome and does not retry.
+ * Maps an SDK response onto the normalized contract. A null status code means
+ * the SDK could not reach the API (including an aborted request), which never
+ * proves non-acceptance and is therefore ambiguous.
  */
-const classifyResendResponse = async (
-  response: Response,
-): Promise<SendResult> => {
-  const status = response.status;
-  if (status === 200 || status === 201 || status === 202) {
-    let messageId: string | undefined;
-    try {
-      const payload = (await response.json()) as unknown;
-      if (
-        typeof payload === 'object' &&
-        payload !== null &&
-        typeof (payload as Record<string, unknown>).id === 'string'
-      ) {
-        messageId = (payload as Record<string, string>).id;
-      }
-    } catch {
-      return {
-        kind: 'ambiguous',
-        provider: 'resend',
-        reason: 'malformed_response',
-      };
+export const classifyResendResult = (
+  response: CreateEmailResponse,
+): SendResult => {
+  if (response.error === null) {
+    const { id } = response.data;
+    if (typeof id === 'string' && id.length > 0) {
+      return { kind: 'accepted', messageId: id, provider: 'resend' };
     }
 
-    if (messageId === undefined || messageId.length === 0) {
-      return {
-        kind: 'ambiguous',
-        provider: 'resend',
-        reason: 'malformed_response',
-      };
-    }
-
-    return { kind: 'accepted', messageId, provider: 'resend' };
+    return {
+      kind: 'ambiguous',
+      provider: 'resend',
+      reason: 'malformed_response',
+    };
   }
 
-  const code = await parseResendErrorCode(response);
-
-  if (status === 429) {
-    const retryAfterSeconds = readRetryAfterSeconds(response);
+  const error: ErrorResponse = response.error;
+  const status = typeof error.statusCode === 'number' ? error.statusCode : null;
+  const name = safeErrorName(error);
+  if (status === null) {
     return {
-      kind: 'rejected',
+      kind: 'ambiguous',
       provider: 'resend',
-      reason: code,
-      retryable: true,
-      ...(retryAfterSeconds === undefined ? {} : { retryAfterSeconds }),
+      reason:
+        name === 'application_error'
+          ? 'transport_error'
+          : statusReason(error, name),
     };
+  }
+
+  const reason = statusReason(error, name);
+  if (status === 429) {
+    return { kind: 'rejected', provider: 'resend', reason, retryable: true };
   }
 
   if (status === 409) {
-    if (code === 'concurrent_idempotent_requests') {
-      return {
-        kind: 'rejected',
-        provider: 'resend',
-        reason: code,
-        retryable: true,
-      };
-    }
-
     return {
       kind: 'rejected',
       provider: 'resend',
-      reason: code === 'provider_error' ? 'provider_error' : code,
-      retryable: false,
+      reason,
+      retryable: name === 'concurrent_idempotent_requests',
     };
   }
 
-  if (status === 500 || status === 503 || status === 502 || status === 504) {
-    return { kind: 'ambiguous', provider: 'resend', reason: code };
+  if (status >= 500) {
+    return { kind: 'ambiguous', provider: 'resend', reason };
   }
 
-  // 400/401/403/404/405/422: a definitive rejection with no acceptance.
-  return {
-    kind: 'rejected',
-    provider: 'resend',
-    reason: code,
-    retryable: false,
-  };
+  return { kind: 'rejected', provider: 'resend', reason, retryable: false };
 };
 
-export const createResendEmailSender = (
-  apiKey: string | undefined,
-  fetchImplementation: FetchLike = fetch,
-): EmailSender => ({
-  provider: 'resend',
-  send: async (
-    envelope: EmailEnvelope,
-    context: SendContext,
-  ): Promise<SendResult> => {
-    if (apiKey === undefined || apiKey.trim().length === 0) {
-      return {
-        kind: 'rejected',
-        provider: 'resend',
-        reason: 'resend_api_key_missing',
-        retryable: false,
-      };
-    }
+export type ResendProviderOptions = {
+  /**
+   * Test-only local mock endpoint; production uses the fixed public host.
+   */
+  readonly baseUrl?: string;
+};
 
-    const idempotencyKey = context.deliveryKey.slice(
-      0,
-      MAX_IDEMPOTENCY_KEY_LENGTH,
-    );
-    const signal = AbortSignal.timeout(
-      context.timeoutMs ?? DEFAULT_PROVIDER_TIMEOUT_MS,
-    );
-    let response: Response;
-    try {
-      response = await fetchImplementation(RESEND_API_URL, {
-        body: JSON.stringify({
-          from: formatResendFrom(envelope.from),
-          html: envelope.html,
-          subject: envelope.subject,
-          text: envelope.text,
-          to: [envelope.to],
-        }),
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          'Content-Type': 'application/json',
-          'Idempotency-Key': idempotencyKey,
-        },
-        method: 'POST',
-        signal,
-      });
-    } catch {
-      // A timeout means acceptance is unknown and the request was aborted. A
-      // transport failure leaves acceptance unknown too; neither is retried
-      // automatically.
-      return {
-        kind: 'ambiguous',
-        provider: 'resend',
-        reason: signal.aborted ? 'timeout' : 'transport_error',
-      };
-    }
+export const createResendEmailProvider = (
+  apiKey: string,
+  options: ResendProviderOptions = {},
+): EmailProviderService => {
+  const client = new Resend(apiKey, {
+    baseUrl: options.baseUrl ?? RESEND_API_BASE_URL,
+  });
 
-    return classifyResendResponse(response);
-  },
-});
+  return {
+    kind: 'resend',
+    // The SDK request is aborted when the Effect is interrupted or timed out.
+    policy: { timeoutIsUncancelable: false },
+    send: ({ deliveryKey, envelope, timeoutMs }) =>
+      Effect.tryPromise({
+        catch: (cause) => cause,
+        try: (signal) =>
+          client.emails.send(
+            {
+              from: formatResendFrom(envelope.from),
+              html: envelope.html,
+              subject: envelope.subject,
+              text: envelope.text,
+              to: [envelope.to],
+            },
+            { idempotencyKey: deliveryKey, signal },
+          ),
+      }).pipe(
+        Effect.timeout(Duration.millis(timeoutMs)),
+        Effect.map((response) => classifyResendResult(response)),
+        Effect.catchAll((error) =>
+          Effect.succeed<SendResult>(
+            isTimeout(error)
+              ? {
+                  kind: 'ambiguous',
+                  provider: 'resend',
+                  reason: 'timeout',
+                }
+              : {
+                  kind: 'ambiguous',
+                  provider: 'resend',
+                  reason: 'transport_error',
+                },
+          ),
+        ),
+      ),
+  };
+};

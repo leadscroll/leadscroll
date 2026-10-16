@@ -31,6 +31,7 @@ const bundleWorker = async (): Promise<string> => {
     const bundled = await build({
       bundle: true,
       conditions: ['workerd'],
+      define: { 'process.env.NODE_ENV': '"production"' },
       entryPoints: [join(repoRoot, 'src/worker-global.ts')],
       external: ['cloudflare:*', 'node:*'],
       format: 'esm',

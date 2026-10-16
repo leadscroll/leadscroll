@@ -2,15 +2,16 @@ import {
   type NotificationFixture,
   startNotificationFixture,
 } from './notification-fixture';
+import { makeNotificationRuntime } from './notification-services';
 import { createIntakeCommand, createLeadCommand } from '@/application/commands';
 import { type IntakeRequest } from '@/domain/schemas';
 import {
   createLeadCreatedPublisher,
-  createRecordingLeadCreatedPublisher,
   type LeadCreatedEvent,
+  type LeadCreatedPublisher,
   runLeadCreatedSubscribers,
 } from '@/notifications/events';
-import { Effect, Either } from 'effect';
+import { Effect } from 'effect';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 let fixture: NotificationFixture;
@@ -40,9 +41,21 @@ const event = (leadId = '01ARZ3NDEKTSV4RRFFQ69G5FAV'): LeadCreatedEvent => ({
   leadId,
 });
 
+const recordingPublisher = (): LeadCreatedPublisher & {
+  events: LeadCreatedEvent[];
+} => {
+  const events: LeadCreatedEvent[] = [];
+  return {
+    events,
+    publishLeadCreated: (published) => {
+      events.push(published);
+    },
+  };
+};
+
 describe('lead.created publication', () => {
   test('manual creation publishes one event for the committed lead', async () => {
-    const events = createRecordingLeadCreatedPublisher(fixture.env);
+    const events = recordingPublisher();
     const lead = await Effect.runPromise(
       createLeadCommand(
         fixture.env,
@@ -58,18 +71,18 @@ describe('lead.created publication', () => {
   });
 
   test('validation failure publishes nothing', async () => {
-    const events = createRecordingLeadCreatedPublisher(fixture.env);
+    const events = recordingPublisher();
     const outcome = await Effect.runPromise(
       Effect.either(createLeadCommand(fixture.env, {}, 'actor-user-1', events)),
     );
 
-    expect(Either.isLeft(outcome)).toBe(true);
+    expect(outcome._tag).toBe('Left');
     expect(events.events).toHaveLength(0);
     expect(await fixture.count('leads')).toBe(0);
   });
 
   test('intake publishes once; replay and conflict publish nothing', async () => {
-    const events = createRecordingLeadCreatedPublisher(fixture.env);
+    const events = recordingPublisher();
     const input = intakeInput('intake@example.test');
 
     const first = await Effect.runPromise(
@@ -113,7 +126,7 @@ describe('lead.created publication', () => {
   });
 
   test('concurrent same-key intake produces one lead and one event', async () => {
-    const events = createRecordingLeadCreatedPublisher(fixture.env);
+    const events = recordingPublisher();
     const input = intakeInput('concurrent@example.test');
 
     const results = await Promise.all(
@@ -139,8 +152,8 @@ describe('lead.created publication', () => {
   });
 
   test('events from concurrent requests stay associated with their own lead', async () => {
-    const firstEvents = createRecordingLeadCreatedPublisher(fixture.env);
-    const secondEvents = createRecordingLeadCreatedPublisher(fixture.env);
+    const firstEvents = recordingPublisher();
+    const secondEvents = recordingPublisher();
 
     const [first, second] = await Promise.all([
       Effect.runPromise(
@@ -171,33 +184,35 @@ describe('lead.created publication', () => {
 });
 
 describe('subscriber isolation', () => {
-  test('sync throws and async rejections do not stop other subscribers', async () => {
+  test('failing subscribers do not stop other subscribers', async () => {
+    const runtime = makeNotificationRuntime(fixture.env);
     const completed: string[] = [];
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
     await runLeadCreatedSubscribers(
-      fixture.env,
+      runtime,
       [
-        () => {
-          throw new Error('sync sentinel');
-        },
-        async () => {
-          await Promise.resolve();
-          throw new Error('async sentinel');
-        },
-        async () => {
-          completed.push('third');
-        },
+        () => Effect.die(new Error('defect sentinel')),
+        () => Effect.fail(new Error('typed sentinel')),
+        () =>
+          Effect.sync(() => {
+            completed.push('third');
+          }),
       ],
       event(),
     );
 
     expect(completed).toEqual(['third']);
     expect(errorSpy).toHaveBeenCalledTimes(2);
+    const classes = errorSpy.mock.calls.map(
+      (call) =>
+        (JSON.parse(String(call[0])) as Record<string, unknown>).errorClass,
+    );
+    expect(classes.toSorted()).toEqual(['Defect', 'Error']);
     for (const call of errorSpy.mock.calls) {
       const line = JSON.parse(String(call[0])) as Record<string, unknown>;
       expect(line).toEqual({
-        errorClass: 'Error',
+        errorClass: line.errorClass,
         event: 'notification.event',
         eventKind: 'lead.created',
         leadId: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
@@ -208,9 +223,10 @@ describe('subscriber isolation', () => {
   });
 
   test('a scheduling failure is logged and never thrown at the caller', async () => {
+    const runtime = makeNotificationRuntime(fixture.env);
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
     const publisher = createLeadCreatedPublisher({
-      environment: fixture.env,
+      runtime,
       subscribers: [],
       waitUntil: () => {
         throw new Error('execution context unavailable');
@@ -233,15 +249,16 @@ describe('subscriber isolation', () => {
   });
 
   test('publish hands the real subscriber promise to waitUntil', async () => {
+    const runtime = makeNotificationRuntime(fixture.env);
     const scheduled: Array<Promise<unknown>> = [];
     const seen: LeadCreatedEvent[] = [];
     const publisher = createLeadCreatedPublisher({
-      environment: fixture.env,
+      runtime,
       subscribers: [
-        async (_environment, published) => {
-          await Promise.resolve();
-          seen.push(published);
-        },
+        (published) =>
+          Effect.sync(() => {
+            seen.push(published);
+          }),
       ],
       waitUntil: (promise) => {
         scheduled.push(promise);

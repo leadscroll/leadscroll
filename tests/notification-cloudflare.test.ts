@@ -1,9 +1,10 @@
-import { type Env } from '@/db/repository';
 import { type EmailEnvelope } from '@/notifications/email';
 import {
   classifyCloudflareError,
-  createCloudflareEmailSender,
+  type CloudflareEmailBinding,
+  createCloudflareEmailProvider,
 } from '@/notifications/providers/cloudflare';
+import { Effect } from 'effect';
 import { describe, expect, test, vi } from 'vitest';
 
 type SendBuilder = {
@@ -16,8 +17,7 @@ type SendBuilder = {
 
 const bindingWith = (
   send: (message: SendBuilder) => Promise<{ messageId: string }>,
-): NonNullable<Env['EMAIL']> =>
-  ({ send }) as unknown as NonNullable<Env['EMAIL']>;
+): CloudflareEmailBinding => ({ send }) as unknown as CloudflareEmailBinding;
 
 const envelope: EmailEnvelope = {
   from: { email: 'notifications@example.test', name: 'LeadScroll' },
@@ -30,38 +30,33 @@ const envelope: EmailEnvelope = {
 const bindingError = (code: string): Error =>
   Object.assign(new Error('provider detail'), { code });
 
-describe('Cloudflare email adapter', () => {
-  test('isolates a missing binding to Cloudflare mode', async () => {
-    const sender = createCloudflareEmailSender(undefined);
-    expect(sender.provider).toBe('cloudflare');
-    await expect(
-      sender.send(envelope, { deliveryKey: 'leadscroll-notification:1' }),
-    ).resolves.toEqual({
-      kind: 'rejected',
-      provider: 'cloudflare',
-      reason: 'cloudflare_binding_missing',
-      retryable: false,
-    });
-  });
+const runSend = (provider: ReturnType<typeof createCloudflareEmailProvider>) =>
+  Effect.runPromise(
+    provider.send({
+      deliveryKey: 'leadscroll-notification:1',
+      envelope,
+      timeoutMs: 1_000,
+    }),
+  );
 
-  test('maps the structured binding call and accepts a message id', async () => {
+describe('Cloudflare email provider', () => {
+  test('maps the structured binding call, accepts a message id, and reports an uncancelable policy', async () => {
     const sent: SendBuilder[] = [];
-    const send = vi.fn(async (message: SendBuilder) => {
+    const bindingSend = vi.fn(async (message: SendBuilder) => {
       sent.push(message);
       return { messageId: 'cf-message-1' };
     });
-    const sender = createCloudflareEmailSender(bindingWith(send));
-    await expect(
-      sender.send(envelope, { deliveryKey: 'ignored-for-cloudflare' }),
-    ).resolves.toEqual({
+    const provider = createCloudflareEmailProvider(bindingWith(bindingSend));
+
+    expect(provider.kind).toBe('cloudflare');
+    expect(provider.policy).toEqual({ timeoutIsUncancelable: true });
+    await expect(runSend(provider)).resolves.toEqual({
       kind: 'accepted',
       messageId: 'cf-message-1',
       provider: 'cloudflare',
     });
 
-    expect(send).toHaveBeenCalledTimes(1);
-    const wire = sent[0];
-    expect(wire).toMatchObject({
+    expect(sent[0]).toMatchObject({
       from: { email: 'notifications@example.test', name: 'LeadScroll' },
       html: '<p>Hi</p>',
       subject: 'A new lead is available in LeadScroll',
@@ -72,14 +67,20 @@ describe('Cloudflare email adapter', () => {
 
   test('falls back to the local part when no display name is set', async () => {
     const sent: SendBuilder[] = [];
-    const send = vi.fn(async (message: SendBuilder) => {
+    const bindingSend = vi.fn(async (message: SendBuilder) => {
       sent.push(message);
       return { messageId: 'cf-message-2' };
     });
-    const sender = createCloudflareEmailSender(bindingWith(send));
-    await sender.send(
-      { ...envelope, from: { email: 'notifications@example.test' } },
-      { deliveryKey: 'leadscroll-notification:2' },
+    const provider = createCloudflareEmailProvider(bindingWith(bindingSend));
+    await Effect.runPromise(
+      provider.send({
+        deliveryKey: 'k',
+        envelope: {
+          ...envelope,
+          from: { email: 'notifications@example.test' },
+        },
+        timeoutMs: 1_000,
+      }),
     );
     expect(sent[0].from).toEqual({
       email: 'notifications@example.test',
@@ -125,14 +126,12 @@ describe('Cloudflare email adapter', () => {
   });
 
   test('a throwing binding never becomes accepted or retried elsewhere', async () => {
-    const sender = createCloudflareEmailSender(
+    const provider = createCloudflareEmailProvider(
       bindingWith(async () => {
         throw bindingError('E_DELIVERY_FAILED');
       }),
     );
-    await expect(
-      sender.send(envelope, { deliveryKey: 'leadscroll-notification:3' }),
-    ).resolves.toEqual({
+    await expect(runSend(provider)).resolves.toEqual({
       kind: 'rejected',
       provider: 'cloudflare',
       reason: 'E_DELIVERY_FAILED',
@@ -141,18 +140,23 @@ describe('Cloudflare email adapter', () => {
   });
 
   test('a binding that never resolves times out honestly without retry', async () => {
-    const send = vi.fn(() => new Promise<{ messageId: string }>(() => {}));
-    const sender = createCloudflareEmailSender(bindingWith(send));
+    const bindingSend = vi.fn(
+      () => new Promise<{ messageId: string }>(() => {}),
+    );
+    const provider = createCloudflareEmailProvider(bindingWith(bindingSend));
     await expect(
-      sender.send(envelope, {
-        deliveryKey: 'leadscroll-notification:timeout',
-        timeoutMs: 10,
-      }),
+      Effect.runPromise(
+        provider.send({
+          deliveryKey: 'leadscroll-notification:timeout',
+          envelope,
+          timeoutMs: 20,
+        }),
+      ),
     ).resolves.toEqual({
       kind: 'ambiguous',
       provider: 'cloudflare',
       reason: 'timeout',
     });
-    expect(send).toHaveBeenCalledTimes(1);
+    expect(bindingSend).toHaveBeenCalledTimes(1);
   });
 });

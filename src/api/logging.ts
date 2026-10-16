@@ -94,7 +94,6 @@ const SAFE_NOTIFICATION_REASONS = new Set([
   'budget_exhausted',
   'canonical_origin_missing',
   'cloudflare_binding_missing',
-  'cloudflare_timeout',
   'concurrent_idempotent_requests',
   'daily_quota_exceeded',
   'decrypt_failed',
@@ -148,6 +147,7 @@ const SAFE_NOTIFICATION_REASONS = new Set([
   'suspended_api_key',
   'timeout',
   'transport_error',
+  'uncancelable_timeout',
   'unexpected_error',
   'validation_error',
 ]);

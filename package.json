@@ -73,7 +73,7 @@
     "db:migrate:remote": "wrangler d1 migrations apply DB --remote",
     "deploy": "pnpm run build && wrangler d1 migrations apply DB --remote && wrangler deploy",
     "dev": "vite",
-    "dev:worker": "pnpm run build && wrangler dev",
+    "dev:worker": "pnpm run build && NODE_ENV=production wrangler dev",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "source:build": "node scripts/source/build.mjs",

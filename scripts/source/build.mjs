@@ -112,6 +112,10 @@ await build({
   // This bundle runs inside workerd after installation. Selecting browser
   // exports here would embed Better Auth's shared-slot async-storage polyfill.
   conditions: ['workerd'],
+  // Mirror `wrangler deploy`: production builds fold `process.env.NODE_ENV`
+  // to "production", which keeps the pinned Resend SDK's raw-error logger
+  // inert without any runtime mutation.
+  define: { 'process.env.NODE_ENV': '"production"' },
   external: ['cloudflare:*', 'node:*'],
   format: 'esm',
   legalComments: 'linked',

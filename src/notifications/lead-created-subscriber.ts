@@ -1,48 +1,37 @@
 /**
  * Best-effort email subscriber for the `lead.created` event.
  *
- * Reads the current installation configuration and the current opted-in,
- * enabled staff, excludes the manual creator, verifies the lead still exists,
- * and sends one generic message per recipient through the saved provider. It
- * never falls back to another provider and never touches a provider while the
- * installation is disabled, misconfigured, or has no recipients.
+ * Reads the current installation configuration through the store service and
+ * the current opted-in enabled staff, excludes the manual creator, verifies
+ * the lead still exists, and sends one generic message per recipient through
+ * the resolved provider service.
  *
- * Work is bounded by a small concurrency limit and a background budget below
- * the Worker runtime window; each provider call gets the smaller of its own
- * timeout and the remaining budget. The budget clock starts when the event
- * reaches the subscriber, so configuration, lead, and recipient reads and
- * credential decryption all consume it. Those reads are D1/WebCrypto work that
- * cannot be canceled; a stalled preparation phase therefore exhausts the
- * budget before any send, and the first per-send check reports the remaining
- * recipients as skipped instead of launching work. If the budget runs out, the
- * remaining recipients are reported as skipped rather than silently dropped.
- * A Cloudflare timeout stops new sends for that event (already-running native
- * binding calls cannot be canceled and may still finish); the unsent
- * recipients are counted in the skipped total. There is no retry, replay, or
- * durable delivery state: an interrupted or rejected send is lost, and a
- * timeout is reported as unknown and left alone.
+ * Work is bounded by `Effect.forEach` concurrency and a background budget
+ * measured with `Clock`: the clock starts when the event reaches the
+ * subscriber, so configuration/lead/recipient reads and credential
+ * decryption consume it. Those reads cannot be canceled; if preparation
+ * exhausts the budget, the per-send check reports the remaining recipients as
+ * skipped instead of launching work. A provider whose send policy says a
+ * timeout is uncancelable stops further launches for the batch (the
+ * already-running sends may still finish) and the unsent recipients are
+ * counted. There is no retry, replay, or durable delivery state.
  */
 
 import { logNotificationEventOutcome } from '@/api/logging';
-import {
-  createSenderFromState,
-  loadEmailSettingsState,
-  senderFailureReason,
-  type SenderOverrides,
-} from '@/application/notification-commands';
+import { Deployment } from '@/application/deployment';
+import { persist } from '@/application/errors';
+import { InstallationConfigStore } from '@/application/installation-config-store';
+import { stateFromDocument } from '@/application/notification-settings';
 import { type Env, getLead, listLeadCreatedRecipients } from '@/db/repository';
 import { type InstallationEmailConfig } from '@/domain/schemas';
-import {
-  type EmailEnvelope,
-  type EmailSender,
-  leadDeliveryKey,
-  type SendResult,
-} from '@/notifications/email';
+import { type EmailEnvelope, leadDeliveryKey } from '@/notifications/email';
+import { EmailProviderResolver } from '@/notifications/email-provider';
 import {
   type LeadCreatedEvent,
   type LeadCreatedSubscriber,
 } from '@/notifications/events';
 import { renderNewLeadNotification } from '@/notifications/templates';
+import { Clock, Effect, Either, Exit, Ref } from 'effect';
 
 /**
  * Modest concurrency: provider calls overlap without unbounded fan-out.
@@ -57,12 +46,10 @@ export const NOTIFICATION_BUDGET_MS = 20_000;
  */
 export const NOTIFICATION_PROVIDER_TIMEOUT_MS = 10_000;
 
-export type LeadCreatedSubscriberOverrides = SenderOverrides & {
-  budgetMs?: number;
-  concurrency?: number;
-  now?: () => Date;
-  providerTimeoutMs?: number;
-};
+type RecipientOutcome =
+  | { kind: 'accepted' }
+  | { kind: 'failed'; reason: string }
+  | { kind: 'skipped'; reason: 'budget_exhausted' | 'uncancelable_timeout' };
 
 const buildLeadEnvelope = (
   settings: InstallationEmailConfig,
@@ -83,190 +70,178 @@ const buildLeadEnvelope = (
   };
 };
 
+const skipped = (event: LeadCreatedEvent, reasonCode: string): void => {
+  logNotificationEventOutcome({
+    eventKind: 'lead.created',
+    leadId: event.leadId,
+    outcome: 'skipped',
+    reasonCode,
+  });
+};
+
 export const createLeadCreatedEmailSubscriber = (
-  overrides: LeadCreatedSubscriberOverrides = {},
+  environment: Env,
 ): LeadCreatedSubscriber => {
-  const now = overrides.now ?? (() => new Date());
-  return async (environment: Env, event: LeadCreatedEvent) => {
-    // The overall budget starts here, before configuration/lead/recipient
-    // reads and credential decryption, so preparation cannot extend it.
-    const budgetMs = overrides.budgetMs ?? NOTIFICATION_BUDGET_MS;
-    const startedAt = now().getTime();
-    const state = await loadEmailSettingsState(environment);
-    const settings = state.settings;
-    if (
-      settings === null ||
-      settings.provider === 'disabled' ||
-      !settings.enabled
-    ) {
-      logNotificationEventOutcome({
-        eventKind: 'lead.created',
-        leadId: event.leadId,
-        outcome: 'skipped',
-        reasonCode:
+  return (event: LeadCreatedEvent) =>
+    Effect.gen(function* () {
+      const store = yield* InstallationConfigStore;
+      const capabilities = yield* Deployment;
+      const resolver = yield* EmailProviderResolver;
+
+      // Entry time: configuration/lead/recipient reads and credential
+      // decryption all consume the budget.
+      const startedAt = yield* Clock.currentTimeMillis;
+      const configExit = yield* Effect.either(store.read);
+      if (Either.isLeft(configExit)) {
+        // The only failure variants are an unreadable document or a database
+        // fault; both are redacted to a skipped configuration outcome.
+        skipped(event, 'config_invalid');
+        return;
+      }
+
+      const state = stateFromDocument(capabilities, configExit.right.document);
+      const settings = state.settings;
+      if (
+        settings === null ||
+        settings.provider === 'disabled' ||
+        !settings.enabled
+      ) {
+        skipped(
+          event,
           settings !== null && settings.provider === 'disabled'
             ? 'disabled'
             : 'not_configured',
-      });
-      return;
-    }
-
-    if (state.availability !== 'configured') {
-      logNotificationEventOutcome({
-        eventKind: 'lead.created',
-        leadId: event.leadId,
-        outcome: 'skipped',
-        reasonCode: state.readinessReason ?? 'not_configured',
-      });
-      return;
-    }
-
-    const origin = settings.canonicalOrigin;
-    if (origin === null || origin.trim().length === 0) {
-      logNotificationEventOutcome({
-        eventKind: 'lead.created',
-        leadId: event.leadId,
-        outcome: 'skipped',
-        reasonCode: 'canonical_origin_missing',
-      });
-      return;
-    }
-
-    const lead = await getLead(environment, event.leadId);
-    if (lead === null || lead.deletedAt !== null) {
-      logNotificationEventOutcome({
-        eventKind: 'lead.created',
-        leadId: event.leadId,
-        outcome: 'skipped',
-        reasonCode: 'lead_missing',
-      });
-      return;
-    }
-
-    const recipients = await listLeadCreatedRecipients(
-      environment,
-      event.actorUserId,
-    );
-    if (recipients.length === 0) {
-      logNotificationEventOutcome({
-        eventKind: 'lead.created',
-        leadId: event.leadId,
-        outcome: 'skipped',
-        reasonCode: 'no_recipients',
-      });
-      return;
-    }
-
-    let sender: EmailSender;
-    try {
-      sender = await createSenderFromState(environment, state, overrides);
-    } catch (error) {
-      logNotificationEventOutcome({
-        eventKind: 'lead.created',
-        leadId: event.leadId,
-        outcome: 'skipped',
-        reasonCode: senderFailureReason(error),
-      });
-      return;
-    }
-
-    const deadline = startedAt + budgetMs;
-    const concurrency = Math.max(
-      1,
-      Math.min(
-        overrides.concurrency ?? NOTIFICATION_CONCURRENCY,
-        recipients.length,
-      ),
-    );
-    let cursor = 0;
-    let accepted = 0;
-    let failed = 0;
-    let skipped = 0;
-    let lastReason: null | string = null;
-    // A native Cloudflare timeout leaves the binding call running and cannot
-    // be canceled, so stop launching new recipients for this event; the
-    // already-running calls finish and the remaining recipients are counted.
-    const stop = { cloudflareTimedOut: false };
-    let unsent = 0;
-    const providerTimeoutMs =
-      overrides.providerTimeoutMs ?? NOTIFICATION_PROVIDER_TIMEOUT_MS;
-
-    const sendTo = async (recipient: {
-      email: string;
-      userId: string;
-    }): Promise<void> => {
-      if (stop.cloudflareTimedOut) {
-        unsent += 1;
+        );
         return;
       }
 
-      const remaining = deadline - now().getTime();
-      if (remaining <= 0) {
-        skipped += 1;
-        lastReason = 'budget_exhausted';
+      if (state.availability !== 'configured') {
+        skipped(event, state.readinessReason ?? 'not_configured');
         return;
       }
 
-      const envelope = buildLeadEnvelope(
-        settings,
-        origin,
-        event.leadId,
-        recipient.email,
+      const origin = settings.canonicalOrigin;
+      if (origin === null || origin.trim().length === 0) {
+        skipped(event, 'canonical_origin_missing');
+        return;
+      }
+
+      const lead = yield* persist(() => getLead(environment, event.leadId));
+      if (lead === null || lead.deletedAt !== null) {
+        skipped(event, 'lead_missing');
+        return;
+      }
+
+      const recipients = yield* persist(() =>
+        listLeadCreatedRecipients(environment, event.actorUserId),
       );
-      let result: SendResult;
-      try {
-        result = await sender.send(envelope, {
-          deliveryKey: leadDeliveryKey(event.leadId, recipient.userId),
-          timeoutMs: Math.max(1, Math.min(providerTimeoutMs, remaining)),
-        });
-      } catch {
-        result = {
-          kind: 'ambiguous',
-          provider: sender.provider,
-          reason: 'unexpected_error',
-        };
+      if (recipients.length === 0) {
+        skipped(event, 'no_recipients');
+        return;
       }
 
-      if (result.kind === 'accepted') {
-        accepted += 1;
-      } else {
-        failed += 1;
-        lastReason = result.reason;
-        if (sender.provider === 'cloudflare' && result.reason === 'timeout') {
-          // Shared by lanes in one single-threaded subscriber run; the rule's
-          // stale-read warning does not apply to this flag across awaits.
-          // eslint-disable-next-line require-atomic-updates
-          stop.cloudflareTimedOut = true;
-        }
+      const providerEither = yield* Effect.either(resolver.resolve(settings));
+      if (Either.isLeft(providerEither)) {
+        skipped(event, providerEither.left.reason);
+        return;
       }
-    };
 
-    await Promise.all(
-      Array.from({ length: concurrency }, async () => {
-        for (;;) {
-          const index = cursor;
-          cursor += 1;
-          if (index >= recipients.length) {
-            return;
+      const provider = providerEither.right;
+      const deadline = startedAt + NOTIFICATION_BUDGET_MS;
+      const stop = yield* Ref.make(false);
+
+      const sendTo = (recipient: {
+        email: string;
+        userId: string;
+      }): Effect.Effect<RecipientOutcome> =>
+        Effect.gen(function* () {
+          if (yield* Ref.get(stop)) {
+            return {
+              kind: 'skipped',
+              reason: 'uncancelable_timeout',
+            } as const;
           }
 
-          await sendTo(recipients[index]);
-        }
-      }),
-    );
+          const remaining = deadline - (yield* Clock.currentTimeMillis);
+          if (remaining <= 0) {
+            return { kind: 'skipped', reason: 'budget_exhausted' } as const;
+          }
 
-    const skippedTotal = skipped + unsent;
-    logNotificationEventOutcome({
-      accepted,
-      eventKind: 'lead.created',
-      failed,
-      leadId: event.leadId,
-      outcome:
-        failed > 0 ? 'failed' : skippedTotal > 0 ? 'skipped' : 'delivered',
-      provider: sender.provider,
-      reasonCode: stop.cloudflareTimedOut ? 'cloudflare_timeout' : lastReason,
-      recipients: recipients.length,
-      skipped: skippedTotal,
+          const sendExit = yield* Effect.exit(
+            provider.send({
+              deliveryKey: leadDeliveryKey(event.leadId, recipient.userId),
+              envelope: buildLeadEnvelope(
+                settings,
+                origin,
+                event.leadId,
+                recipient.email,
+              ),
+              timeoutMs: Math.max(
+                1,
+                Math.min(NOTIFICATION_PROVIDER_TIMEOUT_MS, remaining),
+              ),
+            }),
+          );
+          if (Exit.isFailure(sendExit)) {
+            return { kind: 'failed', reason: 'unexpected_error' } as const;
+          }
+
+          const result = sendExit.value;
+          if (result.kind === 'accepted') {
+            return { kind: 'accepted' } as const;
+          }
+
+          if (
+            result.kind === 'ambiguous' &&
+            result.reason === 'timeout' &&
+            provider.policy.timeoutIsUncancelable
+          ) {
+            yield* Ref.set(stop, true);
+          }
+
+          return { kind: 'failed', reason: result.reason } as const;
+        });
+
+      // Effect.forEach bounds concurrency; an item only starts after the
+      // previous check sees fresh remaining time, so preparation cannot
+      // extend the budget.
+      const outcomes = yield* Effect.forEach(recipients, sendTo, {
+        concurrency: NOTIFICATION_CONCURRENCY,
+      });
+
+      let accepted = 0;
+      let failed = 0;
+      let budgetSkipped = 0;
+      let stoppedSkipped = 0;
+      let lastReason: null | string = null;
+      let stopped = false;
+      for (const outcome of outcomes) {
+        if (outcome.kind === 'accepted') {
+          accepted += 1;
+        } else if (outcome.kind === 'failed') {
+          failed += 1;
+          lastReason = outcome.reason;
+        } else if (outcome.reason === 'budget_exhausted') {
+          budgetSkipped += 1;
+          lastReason = outcome.reason;
+        } else {
+          stoppedSkipped += 1;
+          stopped = true;
+        }
+      }
+
+      const skippedTotal = budgetSkipped + stoppedSkipped;
+      logNotificationEventOutcome({
+        accepted,
+        eventKind: 'lead.created',
+        failed,
+        leadId: event.leadId,
+        outcome:
+          failed > 0 ? 'failed' : skippedTotal > 0 ? 'skipped' : 'delivered',
+        provider: provider.kind,
+        reasonCode: stopped ? 'uncancelable_timeout' : lastReason,
+        recipients: recipients.length,
+        skipped: skippedTotal,
+      });
     });
-  };
 };

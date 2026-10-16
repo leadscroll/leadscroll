@@ -3,18 +3,16 @@
  *
  * The binding exposes no request-level idempotency and cannot be canceled, so
  * a transport/internal failure at the binding boundary is `ambiguous`: the
- * best-effort subscriber never blindly resubmits, and a timeout is recorded
- * honestly without retry. Documented error codes with a definitive meaning are
+ * best-effort application never blindly resubmits, and a timeout is reported
+ * honestly without retry. The provider policy tells the application that a
+ * timed-out binding call may still complete, so no further sends are launched
+ * for the current batch. Documented error codes with a definitive meaning are
  * normalized into permanent or retryable rejections.
  */
 
-import {
-  DEFAULT_PROVIDER_TIMEOUT_MS,
-  type EmailEnvelope,
-  type EmailSender,
-  type SendContext,
-  type SendResult,
-} from '../email';
+import { type EmailEnvelope, type SendResult } from '../email';
+import { type EmailProviderService } from '../email-provider';
+import { Duration, Effect } from 'effect';
 
 /**
  * Binding contract from `@cloudflare/workers-types`. Only the structured
@@ -92,73 +90,51 @@ export const classifyCloudflareError = (error: unknown): SendResult => {
   };
 };
 
-class CloudflareTimeoutError extends Error {
-  constructor() {
-    super('The Cloudflare EMAIL binding did not resolve within the timeout.');
-    this.name = 'CloudflareTimeoutError';
-  }
-}
+const isTimeout = (error: unknown): boolean =>
+  typeof error === 'object' &&
+  error !== null &&
+  (error as { _tag?: unknown })._tag === 'TimeoutException';
 
-export const createCloudflareEmailSender = (
-  binding: CloudflareEmailBinding | undefined,
-): EmailSender => ({
-  provider: 'cloudflare',
-  send: async (
-    envelope: EmailEnvelope,
-    context: SendContext,
-  ): Promise<SendResult> => {
-    if (binding === undefined) {
-      return {
-        kind: 'rejected',
-        provider: 'cloudflare',
-        reason: 'cloudflare_binding_missing',
-        retryable: false,
-      };
-    }
-
-    const from = {
-      email: envelope.from.email,
-      name:
-        envelope.from.name ?? envelope.from.email.split('@')[0] ?? 'LeadScroll',
-    };
-    const timeoutMs = context.timeoutMs ?? DEFAULT_PROVIDER_TIMEOUT_MS;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    try {
-      const result = await Promise.race([
-        binding.send({
-          from,
-          html: envelope.html,
-          subject: envelope.subject,
-          text: envelope.text,
-          to: envelope.to,
-        }),
-        new Promise<never>((_resolve, reject) => {
-          timer = setTimeout(() => {
-            reject(new CloudflareTimeoutError());
-          }, timeoutMs);
-        }),
-      ]);
-      const messageId =
-        typeof result?.messageId === 'string' && result.messageId.length > 0
-          ? result.messageId
-          : undefined;
-      return {
-        kind: 'accepted',
-        ...(messageId === undefined ? {} : { messageId }),
-        provider: 'cloudflare',
-      };
-    } catch (error) {
-      if (error instanceof CloudflareTimeoutError) {
-        // The binding cannot be canceled, so acceptance is unknown. Report it
-        // honestly and let the caller decide; there is no automatic retry.
-        return { kind: 'ambiguous', provider: 'cloudflare', reason: 'timeout' };
-      }
-
-      return classifyCloudflareError(error);
-    } finally {
-      if (timer !== undefined) {
-        clearTimeout(timer);
-      }
-    }
+const buildMessage = (envelope: EmailEnvelope) => ({
+  from: {
+    email: envelope.from.email,
+    name:
+      envelope.from.name ?? envelope.from.email.split('@')[0] ?? 'LeadScroll',
   },
+  html: envelope.html,
+  subject: envelope.subject,
+  text: envelope.text,
+  to: envelope.to,
+});
+
+export const createCloudflareEmailProvider = (
+  binding: CloudflareEmailBinding,
+): EmailProviderService => ({
+  kind: 'cloudflare',
+  policy: { timeoutIsUncancelable: true },
+  send: ({ envelope, timeoutMs }) =>
+    Effect.tryPromise({
+      catch: (cause) => cause,
+      try: () => binding.send(buildMessage(envelope)),
+    }).pipe(
+      Effect.timeout(Duration.millis(timeoutMs)),
+      Effect.map((result): SendResult => {
+        const messageId =
+          typeof result?.messageId === 'string' && result.messageId.length > 0
+            ? result.messageId
+            : undefined;
+        return {
+          kind: 'accepted',
+          ...(messageId === undefined ? {} : { messageId }),
+          provider: 'cloudflare',
+        };
+      }),
+      Effect.catchAll((error) =>
+        Effect.succeed<SendResult>(
+          isTimeout(error)
+            ? { kind: 'ambiguous', provider: 'cloudflare', reason: 'timeout' }
+            : classifyCloudflareError(error),
+        ),
+      ),
+    ),
 });

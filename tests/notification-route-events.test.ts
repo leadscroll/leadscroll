@@ -4,8 +4,9 @@ import {
 } from './notification-fixture';
 import { createApp } from '@/api/app';
 import { registerRequestWaitUntil } from '@/api/execution-context';
-import { createApiToken, type Env } from '@/db/repository';
+import { createApiToken } from '@/db/repository';
 import { type LeadCreatedEvent } from '@/notifications/events';
+import { Effect } from 'effect';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 
 const ORIGIN = 'https://route-events.example';
@@ -37,9 +38,10 @@ afterEach(async () => {
 const buildApp = (events: LeadCreatedEvent[]) =>
   createApp(fixture.env, {
     notificationSubscribers: [
-      (_environment: Env, event: LeadCreatedEvent) => {
-        events.push(event);
-      },
+      (event: LeadCreatedEvent) =>
+        Effect.sync(() => {
+          events.push(event);
+        }),
     ],
   }).compile();
 
