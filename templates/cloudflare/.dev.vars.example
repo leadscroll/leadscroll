@@ -11,4 +11,6 @@ SETUP_TOKEN=
 # saved through Manage -> Email. Leave empty to keep UI credential storage
 # disabled; Cloudflare's native binding does not need it. Generate with:
 #   openssl rand -base64 32
-EMAIL_SETTINGS_ENCRYPTION_KEY=
+# Commented out so the one-click installer keeps BETTER_AUTH_SECRET and
+# SETUP_TOKEN as the only required secrets; remove the leading # to set it.
+# EMAIL_SETTINGS_ENCRYPTION_KEY=

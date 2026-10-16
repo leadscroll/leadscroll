@@ -402,3 +402,23 @@ test('ephemeral source fetches disable detached Git maintenance', async () => {
   assert.match(builder, /\['config', 'maintenance\.auto', 'false'\]/u);
   assert.match(builder, /\['config', 'gc\.auto', '0'\]/u);
 });
+
+test('installer secret template requires only the two auth secrets', async () => {
+  for (const relative of [
+    '.dev.vars.example',
+    'templates/cloudflare/.dev.vars.example',
+  ]) {
+    const contents = await readFile(join(root, relative), 'utf8');
+    const required = contents
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => /^[A-Z][A-Z0-9_]*=/u.test(line))
+      .map((line) => line.slice(0, line.indexOf('=')))
+      .toSorted();
+    assert.deepEqual(required, ['BETTER_AUTH_SECRET', 'SETUP_TOKEN']);
+    // The optional encryption key stays commented with its explanation so the
+    // one-click installer does not prompt for a third required secret.
+    assert.match(contents, /# EMAIL_SETTINGS_ENCRYPTION_KEY=/u);
+    assert.match(contents, /Optional dedicated AES-256-GCM root key/u);
+  }
+});

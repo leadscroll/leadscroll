@@ -81,7 +81,9 @@ reported as unknown and left alone.
    paste the API key. The key is encrypted with AES-256-GCM before storage and
    is never returned by the API. Keep, replace, and remove are explicit
    actions; removing the key that backs the selected provider disables Resend
-   atomically.
+   atomically. Sending uses the official Resend SDK pinned in the lockfile:
+   requests carry a namespaced idempotency key and a finite timeout, are
+   aborted on timeout, and are never retried automatically.
 
 ## Enabling and testing
 
@@ -128,14 +130,16 @@ The subscriber never fans out without limit:
   the per-send check then reports the remaining recipients as skipped rather
   than launching work.
 - Each call gets the smaller of a 10-second provider timeout and the remaining
-  budget. Resend requests are aborted on timeout. The Cloudflare binding cannot
-  be canceled: a timeout is recorded as unknown, and no further recipients are
+  budget. Providers that can abort (Resend) do so on timeout. A provider whose
+  request cannot be canceled (the native Cloudflare binding) reports the
+  timeout as unknown through its send policy, and no further recipients are
   launched for that event (an already-running call may still finish and its
   outcome is unknown).
 - Recipients that were not attempted because the budget ran out are reported as
-  skipped with `budget_exhausted`; recipients not launched after a Cloudflare
-  timeout are included in the skipped count with reason `cloudflare_timeout`.
-  They are not silently dropped and they are not retried.
+  skipped with `budget_exhausted`; recipients not launched after an
+  uncancelable timeout are included in the skipped count with reason
+  `uncancelable_timeout`. They are not silently dropped and they are not
+  retried.
 
 ## Observability
 
@@ -157,7 +161,7 @@ pnpm exec wrangler d1 execute DB --remote --command \
   "SELECT json_extract(document_json, '$.revision') AS revision, \
           json_extract(document_json, '$.email.provider') AS provider, \
           json_extract(document_json, '$.email.enabled') AS enabled, \
-          json_extract(document_json, '$.email.from_email') AS from_email \
+          json_extract(document_json, '$.email.fromEmail') AS from_email \
    FROM installation_config"
 pnpm exec wrangler d1 execute DB --remote --command \
   "SELECT action, resource_type, created_at FROM audit_log ORDER BY created_at DESC LIMIT 20"
