@@ -201,19 +201,14 @@ export const startNotificationFixture = async (
       await database
         .prepare(
           `INSERT INTO installation_config (
-            workspace_id, document_json, write_version, updated_at, updated_by_user_id
-          ) VALUES (?, ?, ?, ?, NULL)
+            workspace_id, document_json, write_version, write_token
+          ) VALUES (?, ?, ?, 'fixture-token')
           ON CONFLICT(workspace_id) DO UPDATE SET
             document_json = excluded.document_json,
             write_version = excluded.write_version,
-            updated_at = excluded.updated_at`,
+            write_token = excluded.write_token`,
         )
-        .bind(
-          DEFAULT_WORKSPACE_ID,
-          JSON.stringify(document),
-          writeVersion,
-          now(),
-        )
+        .bind(DEFAULT_WORKSPACE_ID, JSON.stringify(document), writeVersion)
         .run();
     };
 
@@ -356,14 +351,14 @@ export const startNotificationFixture = async (
         await database
           .prepare(
             `INSERT INTO installation_config (
-              workspace_id, document_json, write_version, updated_at, updated_by_user_id
-            ) VALUES (?, ?, ?, ?, NULL)
+              workspace_id, document_json, write_version, write_token
+            ) VALUES (?, ?, ?, 'fixture-token')
             ON CONFLICT(workspace_id) DO UPDATE SET
               document_json = excluded.document_json,
               write_version = excluded.write_version,
-              updated_at = excluded.updated_at`,
+              write_token = excluded.write_token`,
           )
-          .bind(DEFAULT_WORKSPACE_ID, json, writeVersion, now())
+          .bind(DEFAULT_WORKSPACE_ID, json, writeVersion)
           .run();
       },
       user: async (input) => {

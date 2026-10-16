@@ -580,19 +580,31 @@ export const DEFAULT_INSTALLATION_CONFIG: InstallationConfig = Object.freeze({
   version: INSTALLATION_CONFIG_VERSION,
 }) as InstallationConfig;
 
+const parseJsonValue = (value: unknown): unknown => {
+  if (typeof value !== 'string') {
+    return value;
+  }
+
+  try {
+    return JSON.parse(value);
+  } catch {
+    return undefined;
+  }
+};
+
 /**
- * Decodes one persisted configuration document. Returns null for malformed
- * JSON, an unknown schema version, an unknown property at any level, or any
- * shape that violates the bounded schema, so callers can fail closed without
- * echoing raw content.
+ * Decodes one persisted configuration document from a Drizzle JSON value (an
+ * already-parsed object) or a raw TEXT value (artifact tooling and fixtures).
+ * Returns null for malformed JSON, an unknown schema version, an unknown
+ * property at any level, or any shape that violates the bounded schema, so
+ * callers can fail closed without echoing raw content.
  */
 export const decodeInstallationConfig = (
-  json: string,
+  value: unknown,
 ): InstallationConfig | null => {
   try {
-    const parsed: unknown = JSON.parse(json);
     return Schema.decodeUnknownSync(InstallationConfigSchema)(
-      parsed,
+      parseJsonValue(value),
       REJECT_EXCESS_PROPERTIES,
     );
   } catch {
@@ -601,18 +613,18 @@ export const decodeInstallationConfig = (
 };
 
 /**
- * Serializes a configuration document after validating it against the
- * authoritative schema, including excess-property rejection at every level.
- * Throws a fixed redacted error on failure and never includes rejected
- * values.
+ * Validates a configuration document against the authoritative schema,
+ * including excess-property rejection at every level, and returns the
+ * validated value for Drizzle to serialize. Throws a fixed redacted error on
+ * failure and never includes rejected values.
  */
-export const encodeInstallationConfig = (value: InstallationConfig): string => {
+export const validateInstallationConfig = (
+  value: unknown,
+): InstallationConfig => {
   try {
-    return JSON.stringify(
-      Schema.decodeUnknownSync(InstallationConfigSchema)(
-        value,
-        REJECT_EXCESS_PROPERTIES,
-      ),
+    return Schema.decodeUnknownSync(InstallationConfigSchema)(
+      parseJsonValue(value),
+      REJECT_EXCESS_PROPERTIES,
     );
   } catch {
     throw new InstallationConfigValidationError();
@@ -671,24 +683,21 @@ export const AuditRecordSchema = Schema.Struct({
 });
 export type AuditRecord = Schema.Schema.Type<typeof AuditRecordSchema>;
 
-export const encodeAuditChanges = (changes: readonly AuditChange[]): string => {
+/**
+ * Validates bounded audit changes for a producer. Throws a fixed redacted
+ * error on failure and never includes rejected values.
+ */
+export const validateAuditChanges = (
+  changes: unknown,
+): readonly AuditChange[] => {
   try {
-    return JSON.stringify(
-      Schema.decodeUnknownSync(AuditChangesSchema)(
-        changes,
-        REJECT_EXCESS_PROPERTIES,
-      ),
+    return Schema.decodeUnknownSync(AuditChangesSchema)(
+      parseJsonValue(changes),
+      REJECT_EXCESS_PROPERTIES,
     );
   } catch {
     throw new AuditValidationError();
   }
-};
-
-export type EncodedAuditWrite = {
-  action: string;
-  changesJson: string;
-  resourceId: null | string;
-  resourceType: string;
 };
 
 /**
@@ -696,30 +705,28 @@ export type EncodedAuditWrite = {
  * reaches D1. Throws a fixed redacted error on failure and never includes
  * rejected values; repository helpers call this for every audited mutation.
  */
-export const encodeAuditWrite = (record: AuditWrite): EncodedAuditWrite => {
+export const validateAuditWrite = (record: unknown): AuditWrite => {
   try {
-    const validated = Schema.decodeUnknownSync(AuditWriteSchema)(
+    return Schema.decodeUnknownSync(AuditWriteSchema)(
       record,
       REJECT_EXCESS_PROPERTIES,
     );
-    return {
-      action: validated.action,
-      changesJson: JSON.stringify(validated.changes),
-      resourceId: validated.resourceId,
-      resourceType: validated.resourceType,
-    };
   } catch {
     throw new AuditValidationError();
   }
 };
 
+/**
+ * Decodes bounded audit changes from a Drizzle JSON value (already parsed) or
+ * a raw TEXT value used by artifact tooling. Returns null for malformed data
+ * instead of echoing it.
+ */
 export const decodeAuditChanges = (
-  json: string,
+  value: unknown,
 ): null | readonly AuditChange[] => {
   try {
-    const parsed: unknown = JSON.parse(json);
     return Schema.decodeUnknownSync(AuditChangesSchema)(
-      parsed,
+      parseJsonValue(value),
       REJECT_EXCESS_PROPERTIES,
     );
   } catch {

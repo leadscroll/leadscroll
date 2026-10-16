@@ -33,14 +33,14 @@ import {
   decodeAuditChanges,
   decodeInstallationConfig,
   DEFAULT_INSTALLATION_CONFIG,
-  encodeAuditWrite,
-  encodeInstallationConfig,
   type InstallationConfig,
   type IntakeRequest,
   normalizeEmail,
   type SkippedField,
   type TagColor,
   type UpdateLeadRequest,
+  validateAuditWrite,
+  validateInstallationConfig,
 } from '@/domain/schemas';
 import { normalizeSourceTag, tagLabel, type TagSpec } from '@/domain/tags';
 import { DEFAULT_WORKSPACE_ID } from '@/domain/workspace';
@@ -2674,14 +2674,28 @@ export class InstallationConfigDecodeError extends Error {
 export const readInstallationConfig = async (
   environment: Env,
 ): Promise<InstallationConfigRow> => {
-  const row = await getDatabase(environment)
-    .select({
-      documentJson: installationConfig.documentJson,
-      writeVersion: installationConfig.writeVersion,
-    })
-    .from(installationConfig)
-    .where(eq(installationConfig.workspaceId, DEFAULT_WORKSPACE_ID))
-    .get();
+  let row:
+    undefined | { documentJson: InstallationConfig; writeVersion: number };
+  try {
+    row = await getDatabase(environment)
+      .select({
+        documentJson: installationConfig.documentJson,
+        writeVersion: installationConfig.writeVersion,
+      })
+      .from(installationConfig)
+      .where(eq(installationConfig.workspaceId, DEFAULT_WORKSPACE_ID))
+      .get();
+  } catch (error) {
+    // Drizzle's JSON column mode parses the stored TEXT while mapping the
+    // row, so malformed JSON fails here. Report the redacted decode error and
+    // leave the stored row untouched; other database faults still propagate.
+    if (error instanceof SyntaxError) {
+      throw new InstallationConfigDecodeError();
+    }
+
+    throw error;
+  }
+
   if (row === undefined) {
     return { document: DEFAULT_INSTALLATION_CONFIG, writeVersion: 0 };
   }
@@ -2704,7 +2718,7 @@ const auditStatements = (
   writeToken: string,
 ): Statement[] =>
   input.records.map((record) => {
-    const encoded = encodeAuditWrite(record);
+    const validated = validateAuditWrite(record);
     return prepare(
       environment.DB,
       `INSERT INTO audit_log (
@@ -2721,10 +2735,13 @@ const auditStatements = (
       DEFAULT_WORKSPACE_ID,
       input.actorUserId,
       input.now.getTime(),
-      encoded.action,
-      encoded.resourceType,
-      encoded.resourceId,
-      encoded.changesJson,
+      validated.action,
+      validated.resourceType,
+      validated.resourceId,
+      // The CAS/audit guard is a narrow raw-SQL exception: D1's conditional
+      // batch needs the serialized JSON form here, so serialize once after
+      // schema validation.
+      JSON.stringify(validated.changes),
       DEFAULT_WORKSPACE_ID,
       writeToken,
     );
@@ -2748,8 +2765,10 @@ export const writeInstallationConfig = async (
   environment: Env,
   input: InstallationConfigWriteInput,
 ): Promise<boolean> => {
-  const documentJson = encodeInstallationConfig(input.document);
-  const nowMs = input.now.getTime();
+  // Candidate validation is authoritative even though Drizzle serializes the
+  // JSON column; the raw CAS batch below needs the serialized form.
+  const document = validateInstallationConfig(input.document);
+  const documentJson = JSON.stringify(document);
   const nextWriteVersion = input.expectedWriteVersion + 1;
   const writeToken = randomToken('config-');
   const audit = auditStatements(
@@ -2766,16 +2785,9 @@ export const writeInstallationConfig = async (
     const insert = prepare(
       environment.DB,
       `INSERT INTO installation_config (
-          workspace_id, document_json, write_version, updated_at,
-          updated_by_user_id, write_token
-        ) VALUES (?, ?, 1, ?, ?, ?)`,
-    ).bind(
-      DEFAULT_WORKSPACE_ID,
-      documentJson,
-      nowMs,
-      input.actorUserId,
-      writeToken,
-    );
+          workspace_id, document_json, write_version, write_token
+        ) VALUES (?, ?, 1, ?)`,
+    ).bind(DEFAULT_WORKSPACE_ID, documentJson, writeToken);
     try {
       const inserted = await executeAtomicallyWithResults(environment.DB, [
         insert,
@@ -2794,14 +2806,11 @@ export const writeInstallationConfig = async (
   const update = prepare(
     environment.DB,
     `UPDATE installation_config
-      SET document_json = ?, write_version = ?, updated_at = ?,
-          updated_by_user_id = ?, write_token = ?
+      SET document_json = ?, write_version = ?, write_token = ?
       WHERE workspace_id = ? AND write_version = ?`,
   ).bind(
     documentJson,
     nextWriteVersion,
-    nowMs,
-    input.actorUserId,
     writeToken,
     DEFAULT_WORKSPACE_ID,
     input.expectedWriteVersion,
@@ -2848,15 +2857,15 @@ export const appendAuditLog = async (
     .insert(auditLog)
     .values(
       input.records.map((record) => {
-        const encoded = encodeAuditWrite(record);
+        const validated = validateAuditWrite(record);
         return {
-          action: encoded.action,
+          action: validated.action,
           actorUserId: input.actorUserId,
-          changesJson: encoded.changesJson,
+          changesJson: validated.changes,
           createdAt: input.now,
           id: crypto.randomUUID(),
-          resourceId: encoded.resourceId,
-          resourceType: encoded.resourceType,
+          resourceId: validated.resourceId,
+          resourceType: validated.resourceType,
           workspaceId: DEFAULT_WORKSPACE_ID,
         };
       }),
@@ -2882,20 +2891,37 @@ export const listAuditLog = async (
             lt(auditLog.id, options.cursor.id),
           ),
         );
-  const rows = await database
-    .select({
-      action: auditLog.action,
-      actorUserId: auditLog.actorUserId,
-      changesJson: auditLog.changesJson,
-      createdAt: auditLog.createdAt,
-      id: auditLog.id,
-      resourceId: auditLog.resourceId,
-      resourceType: auditLog.resourceType,
-    })
-    .from(auditLog)
-    .where(and(eq(auditLog.workspaceId, DEFAULT_WORKSPACE_ID), keyset))
-    .orderBy(desc(auditLog.createdAt), desc(auditLog.id))
-    .limit(options.limit + 1);
+  let rows: Array<{
+    action: string;
+    actorUserId: null | string;
+    changesJson: readonly AuditChange[];
+    createdAt: Date;
+    id: string;
+    resourceId: null | string;
+    resourceType: string;
+  }>;
+  try {
+    rows = await database
+      .select({
+        action: auditLog.action,
+        actorUserId: auditLog.actorUserId,
+        changesJson: auditLog.changesJson,
+        createdAt: auditLog.createdAt,
+        id: auditLog.id,
+        resourceId: auditLog.resourceId,
+        resourceType: auditLog.resourceType,
+      })
+      .from(auditLog)
+      .where(and(eq(auditLog.workspaceId, DEFAULT_WORKSPACE_ID), keyset))
+      .orderBy(desc(auditLog.createdAt), desc(auditLog.id))
+      .limit(options.limit + 1);
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      throw new AuditLogDecodeError();
+    }
+
+    throw error;
+  }
 
   const items: AuditRecord[] = rows.slice(0, options.limit).map((row) => {
     const changes: null | readonly AuditChange[] = decodeAuditChanges(

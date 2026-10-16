@@ -1,4 +1,5 @@
 import { user } from './auth-schema';
+import { type AuditChange, type InstallationConfig } from '@/domain/schemas';
 import { sql } from 'drizzle-orm';
 import {
   check,
@@ -295,19 +296,20 @@ export const notificationPreferences = sqliteTable(
   (table) => [primaryKey({ columns: [table.workspaceId, table.userId] })],
 );
 
-// Installation-wide singleton configuration document. The JSON document is
-// validated against the versioned Effect Schema in src/domain/schemas.ts on
-// every read and before every write; Drizzle never types the document shape.
+// Installation-wide singleton configuration document. The JSON column is
+// typed with the domain schema for compile-time safety, while the
+// authoritative runtime validation (version and excess-property rejection)
+// happens in src/domain/schemas.ts on every read and before every write.
 // `write_version` is the internal compare-and-swap token bumped on every
 // write (including test-state updates), separate from the user-visible
 // `revision` inside the JSON so a test completion cannot invalidate a
-// settings draft or overwrite a concurrent configuration change.
+// settings draft or overwrite a concurrent configuration change. Who and
+// when changed the configuration is the generic audit_log's job, so this row
+// carries no duplicate timestamp/actor metadata.
 export const installationConfig = sqliteTable('installation_config', {
-  documentJson: text('document_json').notNull(),
-  updatedAt: timestampMs('updated_at').notNull(),
-  updatedByUserId: text('updated_by_user_id').references(() => user.id, {
-    onDelete: 'set null',
-  }),
+  documentJson: text('document_json', { mode: 'json' })
+    .$type<InstallationConfig>()
+    .notNull(),
   workspaceId: text('workspace_id').primaryKey(),
   // Random token written by every successful save. Audit statements in the
   // same batch are gated on it, so a compare-and-swap loser whose UPDATE
@@ -316,11 +318,12 @@ export const installationConfig = sqliteTable('installation_config', {
   writeVersion: integer('write_version').notNull().default(1),
 });
 
-// Generic, append-only who-changed-what log. `changes_json` is a bounded
-// array of field-level safe values validated by code schemas; producers must
-// redact secrets at the source. There is no user-facing audit editor in this
-// release. Configuration changes are the initial producer; the lifecycle is
-// independent of the configuration document.
+// Generic, append-only who-changed-what log. The `changes_json` column is
+// typed with the bounded audit schema for compile-time safety; the
+// authoritative runtime validation/redaction happens in
+// src/domain/schemas.ts on every write and read. There is no user-facing
+// audit editor in this release. Configuration changes are the initial
+// producer; the lifecycle is independent of the configuration document.
 export const auditLog = sqliteTable(
   'audit_log',
   {
@@ -328,7 +331,9 @@ export const auditLog = sqliteTable(
     actorUserId: text('actor_user_id').references(() => user.id, {
       onDelete: 'set null',
     }),
-    changesJson: text('changes_json').notNull(),
+    changesJson: text('changes_json', { mode: 'json' })
+      .$type<readonly AuditChange[]>()
+      .notNull(),
     createdAt: timestampMs('created_at').notNull(),
     id: text('id').primaryKey(),
     resourceId: text('resource_id'),

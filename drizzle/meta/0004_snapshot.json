@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "516d9ce3-937e-42e8-ad0b-dcb98b8900c9",
+  "id": "b97c01ce-aba9-4105-9e68-c19f45011cf9",
   "prevId": "a245b64f-f21f-411d-bc0e-ca590dc6c54c",
   "tables": {
     "activities": {
@@ -462,25 +462,18 @@
           "notNull": true,
           "autoincrement": false
         },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "updated_by_user_id": {
-          "name": "updated_by_user_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
         "workspace_id": {
           "name": "workspace_id",
           "type": "text",
           "primaryKey": true,
           "notNull": true,
+          "autoincrement": false
+        },
+        "write_token": {
+          "name": "write_token",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
           "autoincrement": false
         },
         "write_version": {
@@ -490,31 +483,10 @@
           "notNull": true,
           "autoincrement": false,
           "default": 1
-        },
-        "write_token": {
-          "name": "write_token",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
         }
       },
       "indexes": {},
-      "foreignKeys": {
-        "installation_config_updated_by_user_id_user_id_fk": {
-          "name": "installation_config_updated_by_user_id_user_id_fk",
-          "tableFrom": "installation_config",
-          "tableTo": "user",
-          "columnsFrom": [
-            "updated_by_user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        }
-      },
+      "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "checkConstraints": {}

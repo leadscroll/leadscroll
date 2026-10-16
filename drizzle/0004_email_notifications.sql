@@ -14,12 +14,9 @@ CREATE TABLE `audit_log` (
 CREATE INDEX `audit_log_workspace_created_idx` ON `audit_log` (`workspace_id`,`created_at`);--> statement-breakpoint
 CREATE TABLE `installation_config` (
 	`document_json` text NOT NULL,
-	`updated_at` integer NOT NULL,
-	`updated_by_user_id` text,
 	`workspace_id` text PRIMARY KEY NOT NULL,
-	`write_version` integer DEFAULT 1 NOT NULL,
 	`write_token` text,
-	FOREIGN KEY (`updated_by_user_id`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE set null
+	`write_version` integer DEFAULT 1 NOT NULL
 );
 --> statement-breakpoint
 CREATE TABLE `notification_preferences` (

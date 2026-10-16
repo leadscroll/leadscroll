@@ -6,7 +6,9 @@ import {
 import { getEmailSettingsViewCommand } from '@/application/notification-commands';
 import {
   appendAuditLog,
+  AuditLogDecodeError,
   DEFAULT_WORKSPACE_ID,
+  InstallationConfigDecodeError,
   listAuditLog,
   readInstallationConfig,
   writeInstallationConfig,
@@ -16,11 +18,11 @@ import {
   AuditValidationError,
   decodeInstallationConfig,
   DEFAULT_INSTALLATION_CONFIG,
-  encodeAuditChanges,
-  encodeAuditWrite,
-  encodeInstallationConfig,
   type InstallationConfig,
   InstallationConfigValidationError,
+  validateAuditChanges,
+  validateAuditWrite,
+  validateInstallationConfig,
 } from '@/domain/schemas';
 import { Effect, Either } from 'effect';
 import { afterEach, describe, expect, test } from 'vitest';
@@ -121,10 +123,10 @@ describe('notification schema migration', () => {
     await expect(
       fx.db
         .prepare(
-          `INSERT INTO installation_config (workspace_id, document_json, write_version, updated_at, updated_by_user_id)
-            VALUES (?, '{}', 1, ?, NULL)`,
+          `INSERT INTO installation_config (workspace_id, document_json, write_version, write_token)
+            VALUES (?, '{}', 1, 'sentinel-token')`,
         )
-        .bind(DEFAULT_WORKSPACE_ID, Date.now())
+        .bind(DEFAULT_WORKSPACE_ID)
         .run(),
     ).rejects.toThrow(/UNIQUE constraint/iu);
   });
@@ -149,6 +151,44 @@ describe('notification schema migration', () => {
     // The invalid raw document is preserved for operator recovery.
     const row = await fx.readConfigRow();
     expect(row.documentJson).toBe(JSON.stringify(unsupported));
+  });
+
+  test('malformed stored JSON fails redacted at the Drizzle read boundary', async () => {
+    const fx = await fixture();
+    await fx.setRawConfig('{"version":1,"revision":0,"SENTINEL":not-json');
+
+    let configError: unknown;
+    try {
+      await readInstallationConfig(fx.env);
+    } catch (error) {
+      configError = error;
+    }
+
+    expect(configError).toBeInstanceOf(InstallationConfigDecodeError);
+    expect(String(configError)).not.toContain('SENTINEL');
+
+    // An audit row with malformed JSON fails the same way and is not echoed.
+    await fx.user({ email: 'audit@example.test', id: 'audit-user' });
+    await fx.db
+      .prepare(
+        `INSERT INTO audit_log (
+          id, workspace_id, actor_user_id, created_at, action, resource_type,
+          resource_id, changes_json
+        ) VALUES ('bad-audit', ?, NULL, ?, 'email.settings_updated',
+          'installation.email', NULL, '{AUDIT_SENTINEL')`,
+      )
+      .bind(DEFAULT_WORKSPACE_ID, Date.now())
+      .run();
+
+    let auditError: unknown;
+    try {
+      await listAuditLog(fx.env, { cursor: null, limit: 10 });
+    } catch (error) {
+      auditError = error;
+    }
+
+    expect(auditError).toBeInstanceOf(AuditLogDecodeError);
+    expect(String(auditError)).not.toContain('AUDIT_SENTINEL');
   });
 
   test('audit helpers append bounded entries and page newest first', async () => {
@@ -288,7 +328,7 @@ describe('notification schema migration', () => {
       expect(decodeInstallationConfig(JSON.stringify(candidate))).toBeNull();
       let caught: unknown;
       try {
-        encodeInstallationConfig(candidate as InstallationConfig);
+        validateInstallationConfig(candidate);
       } catch (error) {
         caught = error;
       }
@@ -373,7 +413,7 @@ describe('notification schema migration', () => {
     for (const candidate of candidates) {
       let caught: unknown;
       try {
-        encodeAuditWrite(candidate as never);
+        validateAuditWrite(candidate);
       } catch (error) {
         caught = error;
       }
@@ -383,7 +423,7 @@ describe('notification schema migration', () => {
     }
 
     expect(() =>
-      encodeAuditChanges([
+      validateAuditChanges([
         {
           after: null,
           before: 'CHANGES_SENTINEL',

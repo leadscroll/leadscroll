@@ -175,11 +175,10 @@ const startIntegrationFixture = async (): Promise<IntegrationFixture> => {
     await database
       .prepare(
         `INSERT INTO installation_config (
-          workspace_id, document_json, write_version, updated_at,
-          updated_by_user_id
-        ) VALUES (?, ?, 1, ?, NULL)`,
+          workspace_id, document_json, write_version, write_token
+        ) VALUES (?, ?, 1, 'integration-token')`,
       )
-      .bind(WORKSPACE, JSON.stringify(document), now)
+      .bind(WORKSPACE, JSON.stringify(document))
       .run();
 
     const fixture: IntegrationFixture = {
