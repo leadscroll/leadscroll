@@ -5,43 +5,8 @@
     {
       "idx": 0,
       "version": "6",
-      "when": 1790746104482,
+      "when": 1792221029455,
       "tag": "0000_leadscroll_baseline",
-      "breakpoints": true
-    },
-    {
-      "idx": 1,
-      "version": "6",
-      "when": 1790808480568,
-      "tag": "0001_lead_skipped_fields",
-      "breakpoints": true
-    },
-    {
-      "idx": 2,
-      "version": "6",
-      "when": 1790826094357,
-      "tag": "0002_noisy_nitro",
-      "breakpoints": true
-    },
-    {
-      "idx": 3,
-      "version": "6",
-      "when": 1791359404603,
-      "tag": "0003_classy_emma_frost",
-      "breakpoints": true
-    },
-    {
-      "idx": 4,
-      "version": "6",
-      "when": 1792135899479,
-      "tag": "0004_email_notifications",
-      "breakpoints": true
-    },
-    {
-      "idx": 5,
-      "version": "6",
-      "when": 1792215855527,
-      "tag": "0005_remove_workspaces",
       "breakpoints": true
     }
   ]

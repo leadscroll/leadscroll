@@ -123,7 +123,7 @@ const startApiFixture = async (
   };
   fixtures.push(fixture);
 
-  // Apply the real migration history, then seed the bypass account.
+  // Apply the real baseline, then seed the bypass account.
   const names = (await readdir(join(repoRoot, 'drizzle')))
     .filter((name) => name.endsWith('.sql'))
     .toSorted();

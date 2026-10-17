@@ -8,16 +8,14 @@ import { join } from 'node:path';
 import { expect, test } from 'vitest';
 
 /**
- * Migration 0005 (atomic_registration_claims) and the durable guard
- * coverage, applied against real Miniflare D1 — the same migration files
- * the worker fixture applies.
+ * Durable registration-claim guard coverage against real Miniflare D1 — the
+ * same squashed baseline the worker fixture applies.
  *
- * - a fresh DB that applies every migration (0000..0005), to verify the
- *   claim ledger table, its UNIQUE claim_key race guard, and the grant
- *   guard trigger (including that a claim row survives user deletion via
- *   ON DELETE SET NULL);
- * - end-to-end redemptions through `redeemRegistration` to verify the
- *   error contract and the two-request race.
+ * - a fresh DB that applies the baseline, verifying the claim ledger table,
+ *   its UNIQUE claim_key race guard, and the hand-written grant trigger
+ *   (including that a claim row survives user deletion via ON DELETE SET NULL);
+ * - end-to-end redemptions through `redeemRegistration` to verify the error
+ *   contract and the two-request race.
  */
 
 const repoRoot = process.cwd();

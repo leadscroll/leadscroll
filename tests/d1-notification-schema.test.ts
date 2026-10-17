@@ -1,5 +1,4 @@
 import {
-  applyMigrationsFrom,
   type NotificationFixture,
   startNotificationFixture,
 } from './notification-fixture';
@@ -30,8 +29,8 @@ import { afterEach, describe, expect, test } from 'vitest';
 
 const fixtures: NotificationFixture[] = [];
 
-const fixture = async (options: { through?: string } = {}) => {
-  const value = await startNotificationFixture(options);
+const fixture = async () => {
+  const value = await startNotificationFixture();
   fixtures.push(value);
   return value;
 };
@@ -40,7 +39,7 @@ afterEach(async () => {
   await Promise.all(fixtures.splice(0).map(async (value) => value.dispose()));
 });
 
-describe('notification schema migration', () => {
+describe('notification schema baseline', () => {
   test('notification preferences default off and are unique per user', async () => {
     const fx = await fixture();
     await fx.user({ email: 'schema@example.test', id: 'schema-user' });
@@ -66,51 +65,6 @@ describe('notification schema migration', () => {
         .bind('schema-user', Date.now())
         .run(),
     ).rejects.toThrow(/UNIQUE constraint/iu);
-  });
-
-  test('migration 0004 creates exactly the three new tables', async () => {
-    const fx = await fixture({ through: '0003' });
-    const now = Date.now();
-    await fx.user({ email: 'bootstrap@example.test', id: 'bootstrap-user' });
-    // This fixture intentionally stops before 0004, so seed the lead through
-    // the historical schema that 0004 upgrades from.
-    await fx.db
-      .prepare(
-        `INSERT INTO leads (id, workspace_id, source, custom_fields, created_at, updated_at)
-         VALUES (?, '01ARZ3NDEKTSV4RRFFQ69G5FAV', 'Test', '{}', ?, ?)`,
-      )
-      .bind('01ARZ3NDEKTSV4RRFFQ69G5FC0', now, now)
-      .run();
-    await fx.db
-      .prepare(
-        `INSERT INTO registration_claims (id, grant_kind, grant_ref, claim_key, user_id, created_at)
-          VALUES (?, 'bootstrap', 'bootstrap', 'bootstrap', ?, ?)`,
-      )
-      .bind('claim-1', 'bootstrap-user', now)
-      .run();
-
-    await applyMigrationsFrom(fx.db, '0004');
-
-    const tables = await fx.db
-      .prepare(
-        `SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (
-          'installation_config', 'audit_log', 'notification_preferences',
-          'email_settings', 'email_credentials', 'email_settings_permissions',
-          'email_settings_audit', 'notification_test_attempts'
-        ) ORDER BY name`,
-      )
-      .all<{ name: string }>();
-    expect(tables.results.map((row) => row.name)).toEqual([
-      'audit_log',
-      'installation_config',
-      'notification_preferences',
-    ]);
-
-    // Existing CRM data and claims survive; no permission backfill exists.
-    expect(await fx.count('leads')).toBe(1);
-    expect(await fx.count('user')).toBe(1);
-    expect(await fx.count('registration_claims')).toBe(1);
-    expect(await fx.count('installation_config')).toBe(0);
   });
 
   test('the configuration document is a validated singleton', async () => {

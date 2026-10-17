@@ -12,7 +12,7 @@ import { expect, test } from 'vitest';
  * request cookie. Registration is invitation-only: the X-Setup-Token header
  * must present the bootstrap SETUP_TOKEN grant (only while no account exists)
  * or a one-time staff invite, and every authenticated session reaches the API.
- * The fixture applies the real drizzle/ migrations, including the generated
+ * The fixture applies the real drizzle/ baseline, including the generated
  * Better Auth tables, against in-memory D1.
  */
 

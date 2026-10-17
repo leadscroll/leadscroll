@@ -9,7 +9,7 @@ import { afterEach, describe, expect, test } from 'vitest';
  * Real-workerd integration for best-effort notification delivery.
  *
  * The real worker entry is bundled and run in Miniflare with the real D1
- * migrations. Outbound email is intercepted by a gated mock provider, so the
+ * baseline. Outbound email is intercepted by a gated mock provider, so the
  * test can prove two things the unit suites cannot:
  *
  * 1. the HTTP lead-creation response is returned while the provider call is

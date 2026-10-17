@@ -7,9 +7,9 @@
  * a fixed legacy encryption context, the provider, and the envelope version,
  * so a value copied to another provider fails to decrypt.
  *
- * The legacy context bytes include the ID of the workspace row that existed
- * before migration 0005. They are kept byte-for-byte so credentials written by
- * earlier releases continue to decrypt. This is an encryption compatibility
+ * The legacy context bytes include the ID of the workspace row that existed in
+ * the earlier workspace-scoped epoch. They are kept byte-for-byte so
+ * credentials written by earlier releases continue to decrypt. This is an encryption compatibility
  * constant, not a workspace entity: new ciphertext intentionally uses the same
  * authenticated context to keep one format and avoid secret-touching rewrites.
  *

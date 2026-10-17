@@ -172,7 +172,7 @@ export const staffInvites = sqliteTable('staff_invites', {
 });
 
 // One-row bootstrap invite state. The check keeps the table a singleton;
-// the seed row is inserted by migration 0004 (INSERT OR IGNORE, so reruns
+// the baseline migration inserts the seed row (INSERT OR IGNORE, so reruns
 // never refresh or reopen it).
 export const bootstrapState = sqliteTable(
   'bootstrap_state',
@@ -185,10 +185,10 @@ export const bootstrapState = sqliteTable(
   () => [check('bootstrap_state_default_only', sql`id = 'default'`)],
 );
 
-// Durable single-use ledger for registration redemption (migration 0005).
+// Durable single-use ledger for registration redemption (baseline schema).
 // The UNIQUE claim_key is the race guard: two concurrent redemptions of the
 // same grant cannot both insert, and the loser's batch rolls back in full.
-// The grant-guard trigger (migration 0005) re-validates grant eligibility
+// The baseline grant-guard trigger re-validates grant eligibility
 // inside the redemption batch, so a grant that is revoked, used, or expires
 // between the pre-check and the batch still fails atomically. The claim row
 // deliberately survives user deletion (ON DELETE SET NULL): a deleted

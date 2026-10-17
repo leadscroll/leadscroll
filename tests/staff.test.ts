@@ -9,7 +9,7 @@ import { expect, test } from 'vitest';
  *
  * The worker runs in Miniflare in PRODUCTION mode, so every protected
  * route resolves a Better Auth session from the request cookie. The
- * fixture applies the real drizzle/ migrations against in-memory D1.
+ * fixture applies the real drizzle/ baseline against in-memory D1.
  * Disabling an account writes the durable disabled flag and deletes all
  * of the account's session rows in one transaction; sign-in with a
  * disabled account's credentials is denied; re-enabling keeps the

@@ -23,7 +23,7 @@ import { expect, test } from 'vitest';
  * worker, because Miniflare does not propagate cancellation of a
  * Node-created body stream back to the Node side.
  *
- * Every test starts its own Miniflare + in-memory D1 fixture (migrations
+ * Every test starts its own Miniflare + in-memory D1 fixture (baseline
  * applied from drizzle/), so tests are independently runnable and never
  * rely on setup performed by a preceding test.
  */

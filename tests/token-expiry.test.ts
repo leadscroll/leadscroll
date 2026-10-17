@@ -10,8 +10,8 @@ import { expect, test } from 'vitest';
  *
  * The worker runs in Miniflare in PRODUCTION mode behind a real signed-in
  * admin session (no dev allowlist). The fixture applies the real drizzle/
- * migrations (including the nullable api_tokens.expires_at added in s1)
- * against in-memory D1 and seeds legacy/expired hashed rows directly, so
+ * baseline against in-memory D1 and seeds legacy/expired hashed rows
+ * directly, so
  * the legacy NULL-expiry compatibility path and the 401-before-writes
  * ordering are exercised against the same database the Worker uses.
  */

@@ -10,7 +10,7 @@ import { expect, test } from 'vitest';
  *
  * The worker runs in Miniflare in PRODUCTION mode, so every protected
  * route resolves a Better Auth session from the request cookie. The
- * fixture applies the real drizzle/ migrations (including staff_invites
+ * fixture applies the real drizzle/ baseline (including staff_invites
  * and the seeded bootstrap_state singleton) against in-memory D1. The
  * raw token only ever appears in the create response; persistence and
  * validation work on the SHA-256 hash.

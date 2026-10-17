@@ -7,7 +7,7 @@ import { expect, test } from 'vitest';
  * Invitation schema coverage against real Miniflare D1.
  *
  * The squashed baseline is the only migration, so this exercises the final
- * schema rather than the old 0004 upgrade path: exact column sets, the
+ * schema rather than an upgrade path: exact column sets, the
  * unconsumed 7-day bootstrap seed, the singleton CHECK, staff-invite token-hash
  * uniqueness, ON DELETE SET NULL on redemption, and the registration_claims
  * grant trigger (hand-written SQL that drizzle-kit does not generate).

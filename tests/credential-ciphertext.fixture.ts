@@ -1,10 +1,10 @@
 import { type EncryptedCredential } from '@/notifications/credential-crypto';
 
 /**
- * A ciphertext produced by the pre-0005 credential crypto implementation
- * (`encryptCredential` with the default workspace id). The envelope is kept
- * verbatim so the test proves that upgrading the schema does not require
- * re-encrypting or rewriting existing credentials.
+ * A ciphertext produced by the credential crypto implementation from the
+ * earlier workspace-scoped epoch (`encryptCredential` with the default
+ * workspace id). The envelope is kept verbatim so the test proves that the
+ * squashed baseline does not require re-encrypting existing credentials.
  */
 export const LEGACY_CREDENTIAL_KEY = Buffer.alloc(32, 7).toString('base64');
 

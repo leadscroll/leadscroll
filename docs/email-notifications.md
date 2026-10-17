@@ -175,28 +175,23 @@ values) and explicit test outcomes; credentials are recorded only as
 
 There is no scheduler to monitor and no delivery-status table to reconcile.
 
-## Upgrade note
+## Schema baseline
 
-Migration `0004_email_notifications.sql` creates exactly three tables:
-`installation_config` (the singleton typed JSON document, including the
-document revision, the encrypted provider credential, and compact test state),
-`audit_log` (the reusable who-changed-what log), and the existing
-`notification_preferences` per-user opt-in. Existing CRM data and migrations
-remain unchanged. No outbox, scheduler state, or Cron is needed.
+The squashed `0000_leadscroll_baseline.sql` already contains the final
+installation-wide email schema: `installation_config` is a singleton keyed
+`installation`, `audit_log` is installation-wide, and
+`notification_preferences` is keyed by user. There is no `0004`/`0005` upgrade
+sequence in a fresh installation.
 
-Migration `0005_remove_workspaces.sql` then makes the installation boundary
-explicit: `installation_config` is one row keyed `installation` with a
-singleton check, `notification_preferences` is keyed by `user_id`, and
-`audit_log` is installation-wide. It also removes the unused workspace table
-and `workspace_id` columns from the CRM and notification tables. Existing
-credential envelopes remain readable because the v1 AES-GCM authenticated data
-is preserved byte-for-byte as a frozen legacy context; no ciphertext or secret
-is rewritten. Before applying it, back up D1 and check for rows outside the
-historical default workspace. The migration performs that check itself and
-aborts atomically before any destructive statement when it finds such rows, so
-inspect the reported table, reconcile the data deliberately (or keep it in a
-separate installation), and re-run. Do not edit the migration to merge or drop
-unexpected rows.
+An installation from the previous workspace-scoped baseline cannot apply this
+file in place: the baseline filename is unchanged but its bytes differ, so the
+ordinary migration-history guards reject it. Export the old database while
+writes are paused, create a fresh D1 database, apply this baseline, replay the
+retained business/authentication/grant data into the final schema, and deploy
+code and a source pin that match this baseline. See the baseline reset guidance
+in `docs/source-built-installations.md`. Existing credential envelopes remain
+readable because the v1 AES-GCM authenticated data is preserved byte-for-byte
+as a frozen legacy context; no ciphertext or secret is rewritten.
 
 ## Rollback
 
@@ -204,20 +199,21 @@ Disabling sending stops future lead events from starting new sends, but a
 subscriber snapshot that was already running may still finish its in-flight
 sends; the change is not retroactive and does not cancel work.
 
-Migration `0005_remove_workspaces` is a schema compatibility boundary: it
-removes the workspaces table and `workspace_id` columns, and changes the
-installation configuration key. Worker code from before that migration queries
-those columns, so an old Worker or old source pin cannot serve after `0005` has
-been applied. Because deployment applies migrations before activating the new
-Worker, an already-running old Worker can fail between the migration and the new
-deploy. Plan a short maintenance window for this upgrade.
+This baseline is a schema epoch boundary. It removes the workspaces table and
+`workspace_id` columns and uses the installation configuration key. Worker code
+from the previous epoch queries those columns, so an old Worker or old source
+pin is incompatible with a database built from this baseline. Moving to the new
+baseline uses a fresh D1 database and a coordinated cutover, not an in-place
+migration: plan a maintenance window, pause writes, and expect the old Worker to
+fail once the binding points at the new database.
 
 Disabling sending, rolling back the Worker, or reverting the source pin does not
-reverse D1 or restore compatibility. If deployment fails after `0005`, recover
-by deploying a revision that understands the new schema, or restore a
-pre-`0005` D1 backup and then deploy code compatible with that backup. Do not run
-old code against the migrated schema. Provider API keys can be revoked at the
-provider even though old D1 backups may retain ciphertext.
+reverse the database epoch. If the cutover fails, recover by deploying a
+revision compatible with the target database, or restore the pre-cutover D1
+backup together with the old code, pin, and binding. Do not run an old Worker
+against the new baseline, and do not run new code against the old schema.
+Provider API keys can be revoked at the provider even though old D1 backups may
+retain ciphertext.
 
 ## Limits and untested assumptions
 

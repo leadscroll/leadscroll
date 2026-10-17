@@ -16,7 +16,7 @@
  *   guard. Two concurrent redemptions of the same grant cannot both
  *   insert a claim, so the loser's whole batch — including its user and
  *   account writes — rolls back.
- * - The `registration_claims_grant_guard` trigger (migration 0005)
+ * - The `registration_claims_grant_guard` trigger in the squashed baseline
  *   re-validates grant eligibility at claim-insert time, inside the
  *   batch. A grant that is revoked, used, or expires between the
  *   pre-check below and the batch therefore still fails atomically.
@@ -88,9 +88,9 @@ export class RegistrationError extends Error {
 }
 
 const BOOTSTRAP_CLAIM_KEY = 'bootstrap';
-// bootstrap_state is a singleton table; migration 0004 fixes the row id
-// to 'default' (CHECK constraint), while the claim ledger keys the
-// bootstrap grant under claim_key 'bootstrap'.
+// bootstrap_state is a singleton table; the baseline CHECK fixes the row id
+// to 'default', while the claim ledger keys the bootstrap grant under
+// claim_key 'bootstrap'.
 const BOOTSTRAP_STATE_ID = 'default';
 
 const emailExistsError = new RegistrationError(

@@ -10,7 +10,7 @@ import { expect, test } from 'vitest';
  * request fingerprints, replay/conflict/legacy handling,
  * token rotation, key validation, and the bounded raw-body limit.
  *
- * Every test builds its own Miniflare + in-memory D1 fixture (migrations
+ * Every test builds its own Miniflare + in-memory D1 fixture (baseline
  * applied from drizzle/), so tests are independently runnable and never rely
  * on setup performed by a preceding test.
  */
@@ -28,7 +28,6 @@ const assertRepoRoot = async () => {
 };
 
 const LEGACY_LEAD_ID = '01ARZ3NDEKTSV4RRFFQ69G5FB0';
-const LEGACY_WORKSPACE_ID = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
 const TABLES = ['leads', 'activities', 'idempotency_keys'];
 
 const canonical = (value: unknown): unknown =>
@@ -179,14 +178,13 @@ const startFixture = async (
       );
 
       if (options.legacy && index === 0) {
-        // Inserted after the first (only) migration: the baseline already
-        // seeds the default workspace, so only the legacy row is added.
+        // Inserted after the only baseline migration: this legacy row has no
+        // request fingerprint, mirroring intakes accepted before hashes.
         await database
           .prepare(
-            'INSERT INTO idempotency_keys (workspace_id, key, response_json, created_at) VALUES (?, ?, ?, ?)',
+            'INSERT INTO idempotency_keys (key, response_json, created_at) VALUES (?, ?, ?)',
           )
           .bind(
-            LEGACY_WORKSPACE_ID,
             'legacy-key',
             JSON.stringify({
               created: true,
