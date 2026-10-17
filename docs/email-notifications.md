@@ -202,12 +202,22 @@ unexpected rows.
 
 Disabling sending stops future lead events from starting new sends, but a
 subscriber snapshot that was already running may still finish its in-flight
-sends; the change is not retroactive and does not cancel work. The schema is
-forward-only: once `0004` has been applied, rolling back to Worker code that
-expected the old email-specific tables requires a version compatible with the
-new schema or restoring the database from a backup taken before the upgrade.
-Provider API keys can be revoked at the provider even though old D1 backups may
-retain ciphertext.
+sends; the change is not retroactive and does not cancel work.
+
+Migration `0005_remove_workspaces` is a schema compatibility boundary: it
+removes the workspaces table and `workspace_id` columns, and changes the
+installation configuration key. Worker code from before that migration queries
+those columns, so an old Worker or old source pin cannot serve after `0005` has
+been applied. Because deployment applies migrations before activating the new
+Worker, an already-running old Worker can fail between the migration and the new
+deploy. Plan a short maintenance window for this upgrade.
+
+Disabling sending, rolling back the Worker, or reverting the source pin does not
+reverse D1 or restore compatibility. If deployment fails after `0005`, recover
+by deploying a revision that understands the new schema, or restore a
+pre-`0005` D1 backup and then deploy code compatible with that backup. Do not run
+old code against the migrated schema. Provider API keys can be revoked at the
+provider even though old D1 backups may retain ciphertext.
 
 ## Limits and untested assumptions
 

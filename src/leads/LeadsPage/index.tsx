@@ -107,7 +107,6 @@ export const LeadsPage = () => {
             <Plus size={15} /> Add lead
           </Button>
         }
-        eyebrow="Installation"
         title="Leads"
       />
       <div className="view-toolbar">

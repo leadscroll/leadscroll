@@ -328,9 +328,7 @@ const tagViewsForLeads = async (
     .innerJoin(tags, eq(tags.id, leadTags.tagId))
     .leftJoin(tagScopes, eq(tagScopes.id, tags.scopeId))
     .where(
-      and(
-        sql`${leadTags.leadId} IN (SELECT value FROM json_each(${JSON.stringify(leadIds)}))`,
-      ),
+      sql`${leadTags.leadId} IN (SELECT value FROM json_each(${JSON.stringify(leadIds)}))`,
     )
     .orderBy(asc(tags.name));
 
@@ -1039,7 +1037,7 @@ export const getIntakeKey = async (
   const row = await getDatabase(environment)
     .select()
     .from(idempotencyKeys)
-    .where(and(eq(idempotencyKeys.key, idempotencyKey)))
+    .where(eq(idempotencyKeys.key, idempotencyKey))
     .get();
   return row
     ? {
@@ -1382,9 +1380,7 @@ const missingTagIds = async (
     .select({ id: tags.id })
     .from(tags)
     .where(
-      and(
-        sql`${tags.id} IN (SELECT value FROM json_each(${JSON.stringify(tagIds)}))`,
-      ),
+      sql`${tags.id} IN (SELECT value FROM json_each(${JSON.stringify(tagIds)}))`,
     );
   const present = new Set(rows.map((row) => row.id));
   return tagIds.filter((tagId) => !present.has(tagId));
@@ -1627,7 +1623,6 @@ export const updateTag = async (
         const scopeCount = await database
           .select({ count: sql<number>`count(*)` })
           .from(tagScopes)
-
           .get();
         statements.push(
           prepare(
@@ -1648,7 +1643,6 @@ export const updateTag = async (
         const tagCount = await database
           .select({ count: sql<number>`count(*)` })
           .from(tags)
-
           .get();
         targetColor = nextTagColor(Number(tagCount?.count ?? 0));
       }
@@ -1837,9 +1831,7 @@ const resolveAssignmentsByIds = async (
     .select({ id: tags.id, scopeId: tags.scopeId })
     .from(tags)
     .where(
-      and(
-        sql`${tags.id} IN (SELECT value FROM json_each(${JSON.stringify(unique)}))`,
-      ),
+      sql`${tags.id} IN (SELECT value FROM json_each(${JSON.stringify(unique)}))`,
     );
   const byId = new Map<string, null | string>(
     rows.map((row) => [row.id, row.scopeId]),
@@ -2495,12 +2487,12 @@ export const listLeadCreatedRecipients = async (
 
 // --- Installation configuration ---------------------------------------------
 //
-// One singleton JSON document per installation, validated against the
-// versioned Effect Schema in src/domain/schemas.ts on every read and before
-// every write.
-// Drizzle never types the document shape; `write_version` is the internal
-// compare-and-swap token. A corrupt or unsupported document throws
-// `InstallationConfigDecodeError` and is never silently replaced.
+// One singleton JSON document per installation. The JSON column is typed with
+// the domain schema for compile-time safety, while authoritative validation
+// still happens in src/domain/schemas.ts on every read and before every write.
+// `write_version` is the internal compare-and-swap token. A corrupt or
+// unsupported document throws `InstallationConfigDecodeError` and is never
+// silently replaced.
 
 export type InstallationConfigRow = {
   document: InstallationConfig;

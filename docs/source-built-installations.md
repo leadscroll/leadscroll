@@ -123,6 +123,15 @@ transaction. A source pin or Worker-version rollback does not reverse D1. Prefer
 additive migrations and staged compatibility; restore a D1 backup or deploy a
 compatible corrective revision when database rollback is required.
 
+Migration `0005_remove_workspaces` is a compatibility boundary: it removes the
+workspaces table and `workspace_id` columns that older Workers query, so an old
+source pin or Worker cannot serve after it is applied. An old Worker that is
+still running can fail between the migration and the new deployment. Plan a
+maintenance window. If the new deployment fails after `0005`, deploy a
+compatible revision or restore a pre-`0005` D1 backup together with code that
+matches that backup; disabling features or rolling back only the Worker does not
+reverse the schema.
+
 ## Existing full-source snapshot installations
 
 Do not generate a replacement repository for an installation whose D1 must
