@@ -41,13 +41,11 @@ export const AppShell = ({
       </a>
       <aside className="app-sidebar">
         <Link
-          className="workspace-brand"
+          className="brand-lockup"
           href="/leads"
         >
           <BrandMark />
-          <span>
-            LeadScroll <span className="workspace-caption">Workspace</span>
-          </span>
+          <span>LeadScroll</span>
         </Link>
         <nav
           aria-label="Main navigation"
@@ -63,7 +61,7 @@ export const AppShell = ({
               <div key={item.href}>
                 {(index === 0 || index === 1) && (
                   <p className="nav-section-label">
-                    {index === 0 ? 'Workspace' : 'Manage'}
+                    {index === 0 ? 'Leads' : 'Manage'}
                   </p>
                 )}
                 <Link

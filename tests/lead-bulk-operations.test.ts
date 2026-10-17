@@ -1,9 +1,4 @@
-import {
-  DEFAULT_WORKSPACE_ID,
-  type Env,
-  listLeads,
-  softDeleteLeads,
-} from '@/db/repository';
+import { type Env, listLeads, softDeleteLeads } from '@/db/repository';
 import { convertV4MiniflareOptions, Miniflare } from 'miniflare';
 import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -19,7 +14,6 @@ import { expect, test } from 'vitest';
  */
 
 const repoRoot = process.cwd();
-const WORKSPACE = DEFAULT_WORKSPACE_ID;
 
 type BindingGuard = {
   maxBindings: number;
@@ -154,14 +148,13 @@ const insertLeads = async (
     database
       .prepare(
         `INSERT INTO leads (
-          id, workspace_id, email, first_name, last_name,
+          id, email, first_name, last_name,
           source, estimated_value, custom_fields,
           created_at, updated_at, deleted_at
-        ) VALUES (?, ?, ?, ?, ?, ?, NULL, '{}', ?, ?, NULL)`,
+        ) VALUES (?, ?, ?, ?, ?, NULL, '{}', ?, ?, NULL)`,
       )
       .bind(
         lead.id,
-        WORKSPACE,
         lead.email ?? null,
         'Test',
         'Lead',

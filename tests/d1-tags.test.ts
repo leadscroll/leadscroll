@@ -1,4 +1,3 @@
-import { DEFAULT_WORKSPACE_ID } from '@/db/repository';
 import { build } from 'esbuild';
 import { convertV4MiniflareOptions, Miniflare } from 'miniflare';
 import { readdir, readFile } from 'node:fs/promises';
@@ -8,12 +7,10 @@ import { expect, test } from 'vitest';
 /**
  * D1-backed regression tests for persisted tags, scopes and assignments:
  * inferred-scope CRUD, database-level exclusivity, catalog integrity under
- * rename/delete, server-side filters, bulk mutation, intake tag creation and
- * the legacy `source` backfill migration.
+ * rename/delete, server-side filters, bulk mutation, and intake tag creation.
  */
 
 const repoRoot = process.cwd();
-const WORKSPACE = DEFAULT_WORKSPACE_ID;
 
 const workerScripts = new Map<string, string>();
 
@@ -49,7 +46,6 @@ type Fixture = {
   api: Api;
   db: D1Database;
   dispose: () => Promise<void>;
-  migrationNames: string[];
 };
 
 const applyMigrations = async (
@@ -124,7 +120,7 @@ const startFixture = async (): Promise<Fixture> => {
       return { json, status: response.status };
     };
 
-    return { api, db: database, dispose, migrationNames };
+    return { api, db: database, dispose };
   } catch (error) {
     await dispose();
     throw error;
@@ -156,22 +152,6 @@ const getLead = async (api: Api, id: string) => {
   const response = await api(`/v1/leads/${id}`);
   expect(response.status, JSON.stringify(response)).toBe(200);
   return response.json.data as { id: string; tags: TagJson[] };
-};
-
-const insertLegacyLead = async (
-  database: D1Database,
-  lead: { id: string; source: string },
-): Promise<void> => {
-  await database
-    .prepare(
-      `INSERT INTO leads (
-        id, workspace_id, email, first_name, last_name,
-        source, estimated_value, custom_fields,
-        created_at, updated_at, deleted_at
-      ) VALUES (?, ?, NULL, 'Legacy', 'Lead', ?, NULL, '{}', ?, ?, NULL)`,
-    )
-    .bind(lead.id, WORKSPACE, lead.source, Date.now(), Date.now())
-    .run();
 };
 
 test('catalog infers scopes and enforces exclusive assignment', async () => {
@@ -224,11 +204,10 @@ test('catalog infers scopes and enforces exclusive assignment', async () => {
     await expect(
       fx.db
         .prepare(
-          `INSERT INTO lead_tags (id, workspace_id, lead_id, tag_id, scope_id, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO lead_tags (id, lead_id, tag_id, scope_id, created_at) VALUES (?, ?, ?, ?, ?)`,
         )
         .bind(
           '01ARZ3NDEKTSV4RRFFQ69G5FB0',
-          WORKSPACE,
           lead.id,
           closed.id,
           considering.scopeId,
@@ -552,75 +531,6 @@ test('intake creates unknown tags, derives source, and replays safely', async ()
   }
 });
 
-test('legacy source values backfill losslessly into a source scope', async () => {
-  const script = await bundleWorker();
-  const mf = new Miniflare(
-    convertV4MiniflareOptions({
-      bindings: {
-        DEV_ADMIN_EMAIL: 'tags-regression@example.test',
-        ENVIRONMENT: 'test',
-      },
-      compatibilityDate: '2026-08-22',
-      compatibilityFlags: ['nodejs_compat'],
-      d1Databases: ['DB'],
-      modules: true,
-      script,
-    }),
-  );
-  try {
-    const database = await mf.getD1Database('DB');
-    const migrationNames = (await readdir(join(repoRoot, 'drizzle')))
-      .filter((name) => name.endsWith('.sql'))
-      .toSorted();
-    const tagMigration = '0003_classy_emma_frost.sql';
-    const before = migrationNames.filter((name) => name < tagMigration);
-    expect(before).not.toContain(tagMigration);
-
-    await applyMigrations(database, before);
-    const longSource = 'x'.repeat(80);
-    await insertLegacyLead(database, {
-      id: '01ARZ3NDEKTSV4RRFFQ69G5FC0',
-      source: 'Website_Form',
-    });
-    await insertLegacyLead(database, {
-      id: '01ARZ3NDEKTSV4RRFFQ69G5FC1',
-      source: longSource,
-    });
-    await applyMigrations(database, [tagMigration]);
-
-    const tags = await database
-      .prepare('SELECT name, scope_id FROM tags ORDER BY name')
-      .all<{ name: string; scope_id: null | string }>();
-    expect(tags.results.map((row) => row.name).toSorted()).toEqual(
-      [longSource, 'website_form'].toSorted(),
-    );
-    // The over-length legacy value is preserved in full, not truncated.
-    expect(tags.results.some((row) => row.name === longSource)).toBe(true);
-    expect(tags.results.every((row) => row.scope_id !== null)).toBe(true);
-
-    const joins = await database
-      .prepare(
-        'SELECT lead_id, count(*) AS count FROM lead_tags GROUP BY lead_id',
-      )
-      .all<{ count: number; lead_id: string }>();
-    expect(joins.results).toHaveLength(2);
-    for (const row of joins.results) {
-      expect(row.count).toBe(1);
-    }
-
-    // The raw legacy column is untouched.
-    const raw = await database
-      .prepare('SELECT source FROM leads ORDER BY id')
-      .all<{ source: string }>();
-    expect(raw.results.map((row) => row.source)).toEqual([
-      'Website_Form',
-      longSource,
-    ]);
-  } finally {
-    await mf.dispose();
-  }
-});
-
 test('bulk add uses deterministic last-wins winners and counts distinct leads', async () => {
   const fx = await startFixture();
   try {
@@ -872,17 +782,16 @@ test('transaction-time guards abort when a target disappears', async () => {
     const guard = (id: string) =>
       fx.db
         .prepare(
-          `INSERT INTO lead_tags (id, workspace_id, lead_id, tag_id, scope_id, created_at)
-           SELECT '0' || substr(hex(randomblob(13)), 1, 25), ?, requested.value, NULL, NULL, ?
+          `INSERT INTO lead_tags (id, lead_id, tag_id, scope_id, created_at)
+           SELECT '0' || substr(hex(randomblob(13)), 1, 25), requested.value, NULL, NULL, ?
            FROM json_each(?) AS requested
            WHERE NOT EXISTS (
              SELECT 1 FROM leads
              WHERE id = requested.value
-               AND workspace_id = ?
                AND deleted_at IS NULL
            )`,
         )
-        .bind(WORKSPACE, Date.now(), JSON.stringify([id]), WORKSPACE)
+        .bind(Date.now(), JSON.stringify([id]))
         .run();
 
     // A missing lead makes the guard insert a NULL tag_id and abort.
@@ -891,10 +800,10 @@ test('transaction-time guards abort when a target disappears', async () => {
     // When the lead is active the guard is a no-op and writes nothing.
     await fx.db
       .prepare(
-        `INSERT INTO leads (id, workspace_id, email, first_name, last_name, source, custom_fields, created_at, updated_at)
-         VALUES (?, ?, NULL, 'Guard', 'Lead', 'website', '{}', ?, ?)`,
+        `INSERT INTO leads (id, email, first_name, last_name, source, custom_fields, created_at, updated_at)
+         VALUES (?, NULL, 'Guard', 'Lead', 'website', '{}', ?, ?)`,
       )
-      .bind(leadId, WORKSPACE, Date.now(), Date.now())
+      .bind(leadId, Date.now(), Date.now())
       .run();
     const before = await fx.db
       .prepare('SELECT count(*) AS count FROM lead_tags')

@@ -1,4 +1,3 @@
-import { DEFAULT_WORKSPACE_ID } from '@/db/repository';
 import { build } from 'esbuild';
 import { convertV4MiniflareOptions, Miniflare } from 'miniflare';
 import { createHash } from 'node:crypto';
@@ -201,7 +200,7 @@ const seedToken = async (
 ): Promise<void> => {
   await fx.db
     .prepare(
-      'INSERT INTO api_tokens (id,name,prefix,token_hash,scope,workspace_id,created_at,expires_at,revoked_at) VALUES (?,?,?,?,?,?,?,?,?)',
+      'INSERT INTO api_tokens (id,name,prefix,token_hash,scope,created_at,expires_at,revoked_at) VALUES (?,?,?,?,?,?,?,?)',
     )
     .bind(
       id,
@@ -209,7 +208,6 @@ const seedToken = async (
       rawToken.slice(0, 12),
       sha256(rawToken),
       'intake:write',
-      DEFAULT_WORKSPACE_ID,
       Date.now(),
       expiresAt,
       revokedAt,

@@ -56,7 +56,7 @@ Prerequisites: a Cloudflare account, Node.js 24.20.0 (see `.node-version`) and p
 2. Create the D1 database in your account with any name you like — it does not need to match the Worker, for example `pnpm exec wrangler d1 create leadscroll-db`. Copy the `database_id` it prints into the `d1_databases` entry in `wrangler.jsonc` (replacing the empty string) and set `database_name` to the same name you used.
 3. Set the session secret: `openssl rand -base64 32 | pnpm exec wrangler secret put BETTER_AUTH_SECRET`.
 4. Set the invite token: `openssl rand -hex 32 | pnpm exec wrangler secret put SETUP_TOKEN`. Keep it across redeployments.
-5. Deploy: `pnpm run deploy` (set `CLOUDFLARE_ACCOUNT_ID` if your wrangler login spans multiple accounts). The deploy script builds, applies the D1 migrations, and deploys. The migration also bootstraps the default workspace row (fixed id, `INSERT OR IGNORE`) — the app itself never seeds data per request, so a deleted bootstrap row is not resurrected. Migration commands reference the `DB` binding rather than a database name, so renamed databases keep working.
+5. Deploy: `pnpm run deploy` (set `CLOUDFLARE_ACCOUNT_ID` if your wrangler login spans multiple accounts). The deploy script builds, applies the D1 migrations, and deploys. Migrations bootstrap the first-account registration window; the app itself never seeds data per request, so a deleted bootstrap row is not resurrected. The migration history is a single squashed baseline. Installations built on the previous workspace-scoped baseline cannot upgrade in place because the baseline filename is unchanged but its bytes differ; export their data, create a fresh D1 database, apply this baseline, replay the retained data, and deploy matching code and pin as described in [source-built installation details](docs/source-built-installations.md#baseline-reset-epoch). Migration commands reference the `DB` binding rather than a database name, so renamed databases keep working.
 
 You can also connect the repository in the dashboard under Workers → Settings → Builds, with the deploy command set to `pnpm run deploy`.
 
@@ -82,13 +82,13 @@ A fresh deployment operates in bootstrap mode: sign-up is gated by
 Once the first account exists, the bootstrap grant is no longer available and
 new staff accounts are created exclusively through single-use invites.
 
-A fresh deployment also gets a one-time setup window: the migration seeds the
+A fresh deployment also gets a one-time setup window: the baseline seeds the
 bootstrap grant with a 7-day expiry (`bootstrap_state`, fixed id `default`),
-and the grant is consumed the moment the first account is created. Existing
-installations gain access at upgrade because the same migration marks the
-grant consumed when a user already exists, so nothing about the previous
-sign-in flow changes for them. Audit the `bootstrap_state` row before
-deploying if you are upgrading an installation you did not build.
+and the grant is consumed the moment the first account is created. When
+restoring an existing installation onto the new baseline, preserve its
+`bootstrap_state` and `registration_claims` from the export (or set the seeded
+row to consumed) so the fresh seed does not reopen first-account registration.
+Audit the `bootstrap_state` row before exposing a restored installation.
 
 If that one-time window expires before the first account is created, the
 bootstrap token stops accepting sign-ups. Recovery is operator-only and
@@ -354,7 +354,7 @@ the same bounded read; they never fall through to another body parser.
   `400 idempotency_key_required`; any other malformed key returns
   `400 invalid_idempotency_key`. Both are rejected before any intake data is
   written, as are unauthorized requests.
-- **Identity.** The key is workspace-scoped and outlives tokens: rotating or
+- **Identity.** The key is installation-wide and outlives tokens: rotating or
   revoking tokens never duplicates a submission. Each accepted key stores a
   deterministic SHA-256 fingerprint of the decoded request. The fingerprint
   sorts object keys recursively, preserves array order, and normalizes the

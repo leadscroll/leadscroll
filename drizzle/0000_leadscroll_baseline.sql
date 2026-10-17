@@ -1,3 +1,6 @@
+-- Squashed baseline epoch: final installation-wide CRM schema (no workspaces).
+-- Generated from src/db/schema.ts. The registration grant trigger and the
+-- bootstrap seed below are hand-written SQL that Drizzle does not model.
 CREATE TABLE `activities` (
 	`actor_email` text,
 	`body` text NOT NULL,
@@ -6,9 +9,7 @@ CREATE TABLE `activities` (
 	`kind` text NOT NULL,
 	`lead_id` text NOT NULL,
 	`metadata` text DEFAULT '{}' NOT NULL,
-	`workspace_id` text NOT NULL,
-	FOREIGN KEY (`lead_id`) REFERENCES `leads`(`id`) ON UPDATE no action ON DELETE no action,
-	FOREIGN KEY (`workspace_id`) REFERENCES `workspaces`(`id`) ON UPDATE no action ON DELETE no action
+	FOREIGN KEY (`lead_id`) REFERENCES `leads`(`id`) ON UPDATE no action ON DELETE no action
 );
 --> statement-breakpoint
 CREATE INDEX `activities_lead_created_idx` ON `activities` (`lead_id`,`created_at`);--> statement-breakpoint
@@ -23,14 +24,11 @@ CREATE TABLE `api_tokens` (
 	`scope` text DEFAULT 'intake:write' NOT NULL,
 	`token` text,
 	`token_hash` text,
-	`type` text DEFAULT 'api' NOT NULL,
-	`workspace_id` text NOT NULL,
-	FOREIGN KEY (`workspace_id`) REFERENCES `workspaces`(`id`) ON UPDATE no action ON DELETE no action
+	`type` text DEFAULT 'api' NOT NULL
 );
 --> statement-breakpoint
 CREATE UNIQUE INDEX `api_tokens_token_unique` ON `api_tokens` (`token`);--> statement-breakpoint
 CREATE UNIQUE INDEX `api_tokens_token_hash_unique` ON `api_tokens` (`token_hash`);--> statement-breakpoint
-CREATE INDEX `api_tokens_workspace_idx` ON `api_tokens` (`workspace_id`);--> statement-breakpoint
 CREATE TABLE `bootstrap_state` (
 	`consumed_at` integer,
 	`created_at` integer NOT NULL,
@@ -43,12 +41,25 @@ CREATE TABLE `idempotency_keys` (
 	`created_at` integer NOT NULL,
 	`key` text NOT NULL,
 	`request_hash` text,
-	`response_json` text NOT NULL,
-	`workspace_id` text NOT NULL,
-	FOREIGN KEY (`workspace_id`) REFERENCES `workspaces`(`id`) ON UPDATE no action ON DELETE no action
+	`response_json` text NOT NULL
 );
 --> statement-breakpoint
-CREATE UNIQUE INDEX `idempotency_workspace_key_unique` ON `idempotency_keys` (`workspace_id`,`key`);--> statement-breakpoint
+CREATE UNIQUE INDEX `idempotency_key_unique` ON `idempotency_keys` (`key`);--> statement-breakpoint
+CREATE TABLE `lead_tags` (
+	`created_at` integer NOT NULL,
+	`id` text PRIMARY KEY NOT NULL,
+	`lead_id` text NOT NULL,
+	`scope_id` text,
+	`tag_id` text NOT NULL,
+	FOREIGN KEY (`lead_id`) REFERENCES `leads`(`id`) ON UPDATE no action ON DELETE no action,
+	FOREIGN KEY (`scope_id`) REFERENCES `tag_scopes`(`id`) ON UPDATE no action ON DELETE no action,
+	FOREIGN KEY (`tag_id`) REFERENCES `tags`(`id`) ON UPDATE no action ON DELETE no action
+);
+--> statement-breakpoint
+CREATE UNIQUE INDEX `lead_tags_lead_tag_unique` ON `lead_tags` (`lead_id`,`tag_id`);--> statement-breakpoint
+CREATE UNIQUE INDEX `lead_tags_lead_scope_unique` ON `lead_tags` (`lead_id`,`scope_id`) WHERE "lead_tags"."scope_id" IS NOT NULL;--> statement-breakpoint
+CREATE INDEX `lead_tags_lead_idx` ON `lead_tags` (`lead_id`);--> statement-breakpoint
+CREATE INDEX `lead_tags_tag_idx` ON `lead_tags` (`tag_id`);--> statement-breakpoint
 CREATE TABLE `leads` (
 	`created_at` integer NOT NULL,
 	`custom_fields` text DEFAULT '{}' NOT NULL,
@@ -60,15 +71,22 @@ CREATE TABLE `leads` (
 	`last_name` text,
 	`origin` text,
 	`raw_payload` text,
+	`skipped_fields` text,
 	`source` text NOT NULL,
 	`token_id` text,
-	`updated_at` integer NOT NULL,
-	`workspace_id` text NOT NULL,
-	FOREIGN KEY (`workspace_id`) REFERENCES `workspaces`(`id`) ON UPDATE no action ON DELETE no action
+	`updated_at` integer NOT NULL
 );
 --> statement-breakpoint
-CREATE INDEX `leads_email_idx` ON `leads` (`workspace_id`,`email`);--> statement-breakpoint
-CREATE INDEX `leads_workspace_created_idx` ON `leads` (`workspace_id`,`created_at`);--> statement-breakpoint
+CREATE INDEX `leads_email_idx` ON `leads` (`email`);--> statement-breakpoint
+CREATE INDEX `leads_created_idx` ON `leads` (`created_at`);--> statement-breakpoint
+CREATE TABLE `rate_limit` (
+	`count` integer NOT NULL,
+	`id` text PRIMARY KEY NOT NULL,
+	`key` text NOT NULL,
+	`last_request` integer NOT NULL
+);
+--> statement-breakpoint
+CREATE UNIQUE INDEX `rate_limit_key_unique` ON `rate_limit` (`key`);--> statement-breakpoint
 CREATE TABLE `registration_claims` (
 	`claim_key` text NOT NULL,
 	`created_at` integer NOT NULL,
@@ -94,15 +112,28 @@ CREATE TABLE `staff_invites` (
 );
 --> statement-breakpoint
 CREATE UNIQUE INDEX `staff_invites_token_hash_unique` ON `staff_invites` (`token_hash`);--> statement-breakpoint
-CREATE TABLE `workspaces` (
+CREATE TABLE `tag_scopes` (
+	`color` text NOT NULL,
 	`created_at` integer NOT NULL,
 	`id` text PRIMARY KEY NOT NULL,
-	`name` text NOT NULL,
-	`slug` text NOT NULL,
+	`prefix` text NOT NULL,
 	`updated_at` integer NOT NULL
 );
 --> statement-breakpoint
-CREATE UNIQUE INDEX `workspaces_slug_unique` ON `workspaces` (`slug`);--> statement-breakpoint
+CREATE UNIQUE INDEX `tag_scopes_prefix_unique` ON `tag_scopes` (`prefix`);--> statement-breakpoint
+CREATE TABLE `tags` (
+	`color` text,
+	`created_at` integer NOT NULL,
+	`id` text PRIMARY KEY NOT NULL,
+	`name` text NOT NULL,
+	`scope_id` text,
+	`updated_at` integer NOT NULL,
+	FOREIGN KEY (`scope_id`) REFERENCES `tag_scopes`(`id`) ON UPDATE no action ON DELETE no action
+);
+--> statement-breakpoint
+CREATE UNIQUE INDEX `tags_scope_name_unique` ON `tags` (`scope_id`,`name`);--> statement-breakpoint
+CREATE UNIQUE INDEX `tags_standalone_name_unique` ON `tags` (`name`) WHERE "tags"."scope_id" IS NULL;--> statement-breakpoint
+CREATE INDEX `tags_scope_idx` ON `tags` (`scope_id`);--> statement-breakpoint
 CREATE TABLE `account` (
 	`id` text PRIMARY KEY NOT NULL,
 	`account_id` text NOT NULL,
@@ -166,7 +197,5 @@ WHEN (NEW.grant_kind = 'bootstrap'
 BEGIN
   SELECT RAISE(ABORT, 'registration grant unavailable');
 END;
---> statement-breakpoint
-INSERT OR IGNORE INTO `workspaces` ("created_at", "id", "name", "slug", "updated_at") VALUES (1767225600000, '01ARZ3NDEKTSV4RRFFQ69G5FAV', 'LeadScroll', 'default', 1767225600000);
 --> statement-breakpoint
 INSERT OR IGNORE INTO `bootstrap_state` ("id", "created_at", "expires_at", "consumed_at") VALUES ('default', CAST(strftime('%s', 'now') AS INTEGER) * 1000, CAST(strftime('%s', 'now', '+7 days') AS INTEGER) * 1000, NULL);

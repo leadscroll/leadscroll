@@ -41,12 +41,48 @@ The shipped template pins the `main` channel rather than a fixed commit, so
 new installations build the current, CI-green `main` without a manual bump. The
 channel is resolved per build in an ephemeral checkout, not committed back, so
 an installation left on `main` keeps tracking upstream `main`; commit the
-resolved SHA or run Upgrade to freeze it. The history was
-reset to a single baseline migration, so installations pinned to pre-rename
-revisions cannot be upgraded in place: they must be reinstalled against a reset
-database. For existing installations only, the installer retains a narrow
-adapter for historical pin `8c8f7cd...`; it consumes that commit's local build
-output and never contacts GitHub Releases.
+resolved SHA or run Upgrade to freeze it. The current migration history is a
+single squashed baseline (`0000_leadscroll_baseline.sql`). Its filename is
+unchanged from earlier epochs but its bytes differ, so LeadScroll's source-update
+receipt guards reject a source-pin upgrade from those epochs when the old
+history is available. Those installations must use the baseline reset procedure
+below, not an in-place migration. For existing installations only, the installer
+retains a narrow adapter for historical pin `8c8f7cd...`; it consumes that
+commit's local build output and never contacts GitHub Releases.
+
+## Baseline reset epoch
+
+This release squashes migration history to one final-schema baseline. That is a
+one-time breaking epoch transition, not an ordinary forward migration:
+
+1. Pause writes and export the existing D1 database. Record the Worker name,
+   `DB` binding/name/ID, secrets, and the current source pin.
+2. Create a fresh replacement D1 database. Do not apply the new baseline over
+   the old database, and do not edit the old `d1_migrations` ledger to make its
+   history look different. The shared baseline filename does not mean the old
+   ledger's `0000` row describes the new schema.
+3. Apply `drizzle/0000_leadscroll_baseline.sql` to the fresh database. Its new
+   migration ledger contains only the baseline.
+4. Replay the retained business, authentication, token, invitation, and grant
+   rows into the final schema. Preserve IDs and values. The final schema has no
+   workspaces table or `workspace_id` columns. If the exported installation
+   already has accounts or spent grants, preserve its `bootstrap_state` and
+   `registration_claims` (or restore the bootstrap row as consumed); do not let
+   the fresh seed reopen first-account registration.
+5. Verify row counts, foreign keys, authentication, token hashes, idempotency
+   replay, tag constraints, and soft-deleted lead retention. Keep the old
+   database untouched.
+6. Deploy the Worker and source pin that match this baseline, with the `DB`
+   binding pointed at the replacement database. Keep the old database, old
+   code, old pin, and old binding together until the cutover is accepted.
+
+LeadScroll's updater and installer receipt checks reject a changed history when
+a previous receipt or baseline configuration is available. Bare
+`wrangler d1 migrations apply` does **not** checksum historical SQL: it compares
+migration names and will skip an already-recorded `0000` even when its bytes
+differ. Do not repin, redeploy, or repoint an old database and assume Wrangler
+detects the baseline change. Use the fresh-target procedure above; there is no
+automatic legacy reset or history bypass.
 
 ## Optional Upgrade workflow
 
@@ -96,8 +132,11 @@ git diff --name-status OLD_SHA NEW_SHA -- 'drizzle/*.sql'
 
 The first command must succeed. The second may show only added (`A`) migration
 files, with names after the old history; modified, deleted, renamed, or reordered
-migrations are a stop condition. A clean Cloudflare build has no old generated
-receipt to compare against, so this check is required before changing the pin.
+migrations are a stop condition. If the candidate changes the baseline epoch
+(for example, the bytes of `0000_leadscroll_baseline.sql` differ), stop and use
+the baseline reset procedure instead of a pin update. A clean Cloudflare build
+has no old generated receipt to compare against, so this check is required
+before changing the pin.
 
 Change only `revision` in the installation's `leadscroll.json` (to a full SHA,
 or back to `main` to resume tracking). Optionally run
@@ -112,36 +151,59 @@ deploy hook.
 
 ## Migration and rollback boundary
 
-Published migration names and contents remain immutable. CI compares the current
-`drizzle/*.sql` files with the pull-request base or previous pushed commit, rejects
-removal or rewriting, and requires appended names to sort after history. The
-installer also compares a candidate's migration receipt with the currently
-prepared receipt when that state is available.
+Published migration names and contents remain immutable within the current
+baseline epoch. The source updater and installer compare a candidate's migration
+receipt with the previously prepared receipt when one is available; that check
+rejects removal or rewriting and requires appended names to sort after existing
+history. A clean build may have no prior receipt, so it cannot prove that an old
+database is on the current epoch. In that case use the manual baseline transition
+below rather than relying on repository tests or an empty build receipt.
+
+The baseline filename is unchanged across the reset, so an existing
+`d1_migrations` row named `0000_leadscroll_baseline.sql` is **not** proof that
+the new schema is installed. Do not just repin code or point new code at the old
+database; inspect the actual schema or, preferably, use a fresh replacement
+database.
 
 Migrations run before Worker deployment and are not part of a cross-resource
 transaction. A source pin or Worker-version rollback does not reverse D1. Prefer
 additive migrations and staged compatibility; restore a D1 backup or deploy a
 compatible corrective revision when database rollback is required.
 
+The squashed baseline is also a compatibility boundary: a database built from
+it has no workspaces table or `workspace_id` columns, so an old source pin or
+Worker cannot serve it. Cutover uses a fresh database and matching code/pin, not
+an in-place migration; plan a maintenance window. If the cutover or deployment
+fails, restore the old database together with the old code, pin, and binding, or
+deploy a revision compatible with the replacement database. Rolling back only the
+Worker does not reverse the database epoch.
+
 ## Existing full-source snapshot installations
 
-Do not generate a replacement repository for an installation whose D1 must
-survive. Migrate its existing repository in a review branch:
+For this baseline epoch, do not reuse the old migration ledger or old database.
+Export and create a fresh replacement database first, then migrate the
+repository. Keep the old Worker, database, code, and pin together for rollback:
 
 1. Back up D1 and record the Worker name, `DB` binding/name/ID, build settings,
-   runtime variables, and secrets. Keep the existing Cloudflare resources.
-2. Replace application source/build files with the isolated template while
+   runtime variables, and secrets. Keep the old Cloudflare resources.
+2. Export the data. Create a fresh replacement D1 database and apply
+   `drizzle/0000_leadscroll_baseline.sql` to it.
+3. Replace application source/build files with the isolated template while
    preserving deployment-specific Wrangler values. Adopt the template's Worker
-   entry, assets path, and migrations path, but keep `DB` bound to the existing ID.
-3. Confirm every historical SQL migration is byte-identical to upstream history.
-   Review custom schema changes separately.
-4. Install with the frozen template lockfile, build the pinned source, and run
+   entry, assets path, and migrations path, and point `DB` at the replacement
+   database.
+4. Replay the retained business, authentication, token, invitation, and grant
+   data into the final schema. Preserve IDs, values, and spent bootstrap/claim
+   state; verify foreign keys and application invariants.
+5. Install with the frozen template lockfile, build the pinned source, and run
    `pnpm run deploy:dry-run`.
-5. Point the existing Workers Build at `pnpm run build` / `pnpm run deploy`, then
-   deploy to the same Worker and D1.
+6. Point the existing Workers Build at `pnpm run build` / `pnpm run deploy`, then
+   deploy to the same Worker with the replacement `DB` binding. Retain the old
+   database and matching old code/pin until the cutover is accepted.
 
-This feature does not mutate existing installation repositories or Cloudflare
-resources automatically.
+Do not try to reconstruct the old SQL migration history in the replacement
+database. After this epoch is established, future updates must preserve the
+baseline and append only new migrations.
 
 ## Verification boundary
 

@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "df0b6818-e573-4273-9dcb-8fb6946af1c7",
+  "id": "f1ada093-d357-46b8-9477-fd36e8990fdf",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "tables": {
     "activities": {
@@ -56,13 +56,6 @@
           "notNull": true,
           "autoincrement": false,
           "default": "'{}'"
-        },
-        "workspace_id": {
-          "name": "workspace_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
         }
       },
       "indexes": {
@@ -82,19 +75,6 @@
           "tableTo": "leads",
           "columnsFrom": [
             "lead_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "activities_workspace_id_workspaces_id_fk": {
-          "name": "activities_workspace_id_workspaces_id_fk",
-          "tableFrom": "activities",
-          "tableTo": "workspaces",
-          "columnsFrom": [
-            "workspace_id"
           ],
           "columnsTo": [
             "id"
@@ -188,13 +168,6 @@
           "notNull": true,
           "autoincrement": false,
           "default": "'api'"
-        },
-        "workspace_id": {
-          "name": "workspace_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
         }
       },
       "indexes": {
@@ -211,30 +184,9 @@
             "token_hash"
           ],
           "isUnique": true
-        },
-        "api_tokens_workspace_idx": {
-          "name": "api_tokens_workspace_idx",
-          "columns": [
-            "workspace_id"
-          ],
-          "isUnique": false
         }
       },
-      "foreignKeys": {
-        "api_tokens_workspace_id_workspaces_id_fk": {
-          "name": "api_tokens_workspace_id_workspaces_id_fk",
-          "tableFrom": "api_tokens",
-          "tableTo": "workspaces",
-          "columnsFrom": [
-            "workspace_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        }
-      },
+      "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "checkConstraints": {}
@@ -312,9 +264,55 @@
           "primaryKey": false,
           "notNull": true,
           "autoincrement": false
+        }
+      },
+      "indexes": {
+        "idempotency_key_unique": {
+          "name": "idempotency_key_unique",
+          "columns": [
+            "key"
+          ],
+          "isUnique": true
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "lead_tags": {
+      "name": "lead_tags",
+      "columns": {
+        "created_at": {
+          "name": "created_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
         },
-        "workspace_id": {
-          "name": "workspace_id",
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "lead_id": {
+          "name": "lead_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "scope_id": {
+          "name": "scope_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "tag_id": {
+          "name": "tag_id",
           "type": "text",
           "primaryKey": false,
           "notNull": true,
@@ -322,22 +320,71 @@
         }
       },
       "indexes": {
-        "idempotency_workspace_key_unique": {
-          "name": "idempotency_workspace_key_unique",
+        "lead_tags_lead_tag_unique": {
+          "name": "lead_tags_lead_tag_unique",
           "columns": [
-            "workspace_id",
-            "key"
+            "lead_id",
+            "tag_id"
           ],
           "isUnique": true
+        },
+        "lead_tags_lead_scope_unique": {
+          "name": "lead_tags_lead_scope_unique",
+          "columns": [
+            "lead_id",
+            "scope_id"
+          ],
+          "isUnique": true,
+          "where": "\"lead_tags\".\"scope_id\" IS NOT NULL"
+        },
+        "lead_tags_lead_idx": {
+          "name": "lead_tags_lead_idx",
+          "columns": [
+            "lead_id"
+          ],
+          "isUnique": false
+        },
+        "lead_tags_tag_idx": {
+          "name": "lead_tags_tag_idx",
+          "columns": [
+            "tag_id"
+          ],
+          "isUnique": false
         }
       },
       "foreignKeys": {
-        "idempotency_keys_workspace_id_workspaces_id_fk": {
-          "name": "idempotency_keys_workspace_id_workspaces_id_fk",
-          "tableFrom": "idempotency_keys",
-          "tableTo": "workspaces",
+        "lead_tags_lead_id_leads_id_fk": {
+          "name": "lead_tags_lead_id_leads_id_fk",
+          "tableFrom": "lead_tags",
+          "tableTo": "leads",
           "columnsFrom": [
-            "workspace_id"
+            "lead_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "lead_tags_scope_id_tag_scopes_id_fk": {
+          "name": "lead_tags_scope_id_tag_scopes_id_fk",
+          "tableFrom": "lead_tags",
+          "tableTo": "tag_scopes",
+          "columnsFrom": [
+            "scope_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "lead_tags_tag_id_tags_id_fk": {
+          "name": "lead_tags_tag_id_tags_id_fk",
+          "tableFrom": "lead_tags",
+          "tableTo": "tags",
+          "columnsFrom": [
+            "tag_id"
           ],
           "columnsTo": [
             "id"
@@ -424,6 +471,13 @@
           "notNull": false,
           "autoincrement": false
         },
+        "skipped_fields": {
+          "name": "skipped_fields",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
         "source": {
           "name": "source",
           "type": "text",
@@ -444,48 +498,71 @@
           "primaryKey": false,
           "notNull": true,
           "autoincrement": false
-        },
-        "workspace_id": {
-          "name": "workspace_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
         }
       },
       "indexes": {
         "leads_email_idx": {
           "name": "leads_email_idx",
           "columns": [
-            "workspace_id",
             "email"
           ],
           "isUnique": false
         },
-        "leads_workspace_created_idx": {
-          "name": "leads_workspace_created_idx",
+        "leads_created_idx": {
+          "name": "leads_created_idx",
           "columns": [
-            "workspace_id",
             "created_at"
           ],
           "isUnique": false
         }
       },
-      "foreignKeys": {
-        "leads_workspace_id_workspaces_id_fk": {
-          "name": "leads_workspace_id_workspaces_id_fk",
-          "tableFrom": "leads",
-          "tableTo": "workspaces",
-          "columnsFrom": [
-            "workspace_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "rate_limit": {
+      "name": "rate_limit",
+      "columns": {
+        "count": {
+          "name": "count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "key": {
+          "name": "key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "last_request": {
+          "name": "last_request",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
         }
       },
+      "indexes": {
+        "rate_limit_key_unique": {
+          "name": "rate_limit_key_unique",
+          "columns": [
+            "key"
+          ],
+          "isUnique": true
+        }
+      },
+      "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "checkConstraints": {}
@@ -659,9 +736,69 @@
       "uniqueConstraints": {},
       "checkConstraints": {}
     },
-    "workspaces": {
-      "name": "workspaces",
+    "tag_scopes": {
+      "name": "tag_scopes",
       "columns": {
+        "color": {
+          "name": "color",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "prefix": {
+          "name": "prefix",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "tag_scopes_prefix_unique": {
+          "name": "tag_scopes_prefix_unique",
+          "columns": [
+            "prefix"
+          ],
+          "isUnique": true
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "tags": {
+      "name": "tags",
+      "columns": {
+        "color": {
+          "name": "color",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
         "created_at": {
           "name": "created_at",
           "type": "integer",
@@ -683,11 +820,11 @@
           "notNull": true,
           "autoincrement": false
         },
-        "slug": {
-          "name": "slug",
+        "scope_id": {
+          "name": "scope_id",
           "type": "text",
           "primaryKey": false,
-          "notNull": true,
+          "notNull": false,
           "autoincrement": false
         },
         "updated_at": {
@@ -699,15 +836,45 @@
         }
       },
       "indexes": {
-        "workspaces_slug_unique": {
-          "name": "workspaces_slug_unique",
+        "tags_scope_name_unique": {
+          "name": "tags_scope_name_unique",
           "columns": [
-            "slug"
+            "scope_id",
+            "name"
           ],
           "isUnique": true
+        },
+        "tags_standalone_name_unique": {
+          "name": "tags_standalone_name_unique",
+          "columns": [
+            "name"
+          ],
+          "isUnique": true,
+          "where": "\"tags\".\"scope_id\" IS NULL"
+        },
+        "tags_scope_idx": {
+          "name": "tags_scope_idx",
+          "columns": [
+            "scope_id"
+          ],
+          "isUnique": false
         }
       },
-      "foreignKeys": {},
+      "foreignKeys": {
+        "tags_scope_id_tag_scopes_id_fk": {
+          "name": "tags_scope_id_tag_scopes_id_fk",
+          "tableFrom": "tags",
+          "tableTo": "tag_scopes",
+          "columnsFrom": [
+            "scope_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "checkConstraints": {}

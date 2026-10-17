@@ -49,7 +49,7 @@ and forced-color fallback for native selects.
 
 ## Shared components and page patterns
 
-- AppShell: consistent navigation, workspace identity and account access.
+- AppShell: consistent navigation, product identity and account access.
 - PageHeader: compact breadcrumb/location and page-level actions.
 - Lists: toolbar directly below header, compact table, meaningful selection bar,
   clear loading/error/empty/filtered-empty states, count and pagination footer.

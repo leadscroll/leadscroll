@@ -1,4 +1,3 @@
-import { DEFAULT_WORKSPACE_ID } from '@/db/repository';
 import { build } from 'esbuild';
 import { convertV4MiniflareOptions, Miniflare } from 'miniflare';
 import { createHash } from 'node:crypto';
@@ -178,14 +177,13 @@ const startFixture = async (
       }
 
       if (options.legacy && index === 0) {
-        // Inserted after the first (only) migration: the baseline already
-        // seeds the default workspace, so only the legacy row is added.
+        // Inserted after the only baseline migration: this legacy row has no
+        // request fingerprint, mirroring intakes accepted before hashes.
         await database
           .prepare(
-            'INSERT INTO idempotency_keys (workspace_id, key, response_json, created_at) VALUES (?, ?, ?, ?)',
+            'INSERT INTO idempotency_keys (key, response_json, created_at) VALUES (?, ?, ?)',
           )
           .bind(
-            DEFAULT_WORKSPACE_ID,
             'legacy-key',
             JSON.stringify({
               created: true,

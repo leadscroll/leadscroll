@@ -1,4 +1,3 @@
-import { DEFAULT_WORKSPACE_ID } from '@/db/repository';
 import { build } from 'esbuild';
 import { convertV4MiniflareOptions, Miniflare } from 'miniflare';
 import { readdir, readFile } from 'node:fs/promises';
@@ -15,7 +14,6 @@ import { expect, test } from 'vitest';
  */
 
 const repoRoot = process.cwd();
-const WORKSPACE = DEFAULT_WORKSPACE_ID;
 const ms = (offset: number) => Date.now() - offset;
 
 const workerScripts = new Map<string, string>();
@@ -142,14 +140,13 @@ const insertLead = async (
   await database
     .prepare(
       `INSERT INTO leads (
-        id, workspace_id, email, first_name, last_name,
+        id, email, first_name, last_name,
         source, estimated_value, custom_fields,
         created_at, updated_at, deleted_at
-      ) VALUES (?, ?, ?, ?, ?, ?, NULL, '{}', ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, NULL, '{}', ?, ?, ?)`,
     )
     .bind(
       lead.id,
-      WORKSPACE,
       email === null ? null : email.trim().toLowerCase(),
       lead.firstName ?? 'Test',
       lead.lastName ?? 'Lead',

@@ -224,7 +224,6 @@ const snapshot = async () => {
   const rows = {};
   // Capture complete durable business/account state without saving credential data in evidence.
   for (const table of [
-    'workspaces',
     'leads',
     'user',
     'account',

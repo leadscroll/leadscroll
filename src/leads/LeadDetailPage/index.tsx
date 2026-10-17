@@ -365,7 +365,7 @@ export const LeadDetailPage = ({ id }: { readonly id: string }) => {
         </div>
       </div>
       <ConfirmDialog
-        description={`Delete "${displayName}"? This removes the lead from your workspace.`}
+        description={`Delete "${displayName}"? This removes the lead from your lead list.`}
         onConfirm={() => remove.mutate()}
         onOpenChange={setConfirmDelete}
         open={confirmDelete}

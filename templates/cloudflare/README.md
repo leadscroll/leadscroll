@@ -73,6 +73,18 @@ so each manual run uses the current upstream upgrade logic with temporary
 write permission to this repository. Review that upstream workflow before
 enabling it and run it only when you are ready to upgrade.
 
+> **Baseline epoch:** the current upstream release resets migration history to
+> one squashed baseline. If this installation predates that epoch, LeadScroll's
+> updater/receipt guard rejects the changed `0000_leadscroll_baseline.sql` when
+> it has the old history available. A clean or stateless deploy may have no
+> previous receipt, and bare Wrangler only compares migration names, so it can
+> skip the shared `0000` filename without checking the schema. Do not repin,
+> redeploy, or repoint an old database to this baseline. Export the database,
+> create a fresh replacement D1, apply the new baseline, replay the retained
+> data, and deploy matching code/pin as described in the upstream
+> [source-built installation details](https://github.com/leadscroll/leadscroll/blob/main/docs/source-built-installations.md#baseline-reset-epoch).
+> Keep the old database, code, and pin together until the cutover is accepted.
+
 ### Manual alternative
 
 An ordinary rebuild uses the exact source commit in `leadscroll.json`; it does
@@ -136,10 +148,14 @@ pnpm exec wrangler dev --local --local-protocol https
 40-character `revision`. Do not replace the revision with `main`, `latest`, a tag,
 or a shortened SHA. Rebuilding the same commit does not update the application.
 
-A pin to older application code is not a database rollback. SQL migrations are
-forward-only, existing migration names and contents are immutable, and new
-migrations are applied once. Restore a D1 backup or use an explicitly compatible
-corrective revision when recovering from a bad migration.
+A pin to older application code is not a database rollback. Within a baseline
+epoch, SQL migrations are forward-only, existing migration names and contents
+are immutable, and new migrations are applied once. A deliberate baseline epoch
+reset is different: it needs export, a fresh database, data replay, a new
+migration ledger, and matching code/pin. LeadScroll receipt guards reject a
+changed baseline when old history is available, and there is no automatic reset.
+Restore a D1 backup or use an explicitly compatible corrective revision when
+recovering from a bad migration.
 
 An unreachable commit, frozen install failure, source-build failure, rewritten
 migration, or incompatible runtime requirement removes the readiness marker and
