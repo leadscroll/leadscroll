@@ -8,7 +8,6 @@
 
 import { type Env } from '@/db/repository';
 import { type EncryptedCredential } from '@/domain/schemas';
-import { DEFAULT_WORKSPACE_ID } from '@/domain/workspace';
 import {
   CredentialCryptoError,
   decryptCredential,
@@ -51,22 +50,12 @@ export const credentialCipherLayer = (
     decrypt: (envelope) =>
       Effect.tryPromise({
         catch: (cause) => asCryptoError(cause, 'decrypt_failed'),
-        try: () =>
-          decryptCredential(secret, {
-            envelope,
-            provider: 'resend',
-            workspaceId: DEFAULT_WORKSPACE_ID,
-          }),
+        try: () => decryptCredential(secret, { envelope, provider: 'resend' }),
       }),
     encrypt: (value) =>
       Effect.tryPromise({
         catch: (cause) => asCryptoError(cause, 'invalid_key'),
-        try: () =>
-          encryptCredential(secret, {
-            provider: 'resend',
-            value,
-            workspaceId: DEFAULT_WORKSPACE_ID,
-          }),
+        try: () => encryptCredential(secret, { provider: 'resend', value }),
       }),
   });
 };

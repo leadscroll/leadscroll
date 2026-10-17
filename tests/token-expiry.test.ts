@@ -1,4 +1,3 @@
-import { DEFAULT_WORKSPACE_ID } from '@/db/repository';
 import { build } from 'esbuild';
 import { convertV4MiniflareOptions, Miniflare } from 'miniflare';
 import { createHash } from 'node:crypto';
@@ -114,12 +113,13 @@ const startFixture = async (): Promise<Fixture> => {
       .toSorted();
     for (const name of names) {
       const sql = await readFile(join(repoRoot, 'drizzle', name), 'utf8');
-      for (const statement of sql
-        .split('--> statement-breakpoint')
-        .map((chunk) => chunk.trim())
-        .filter(Boolean)) {
-        await database.prepare(statement).run();
-      }
+      await database.batch(
+        sql
+          .split('--> statement-breakpoint')
+          .map((chunk) => chunk.trim())
+          .filter(Boolean)
+          .map((statement) => database.prepare(statement)),
+      );
     }
 
     const raw = async (
@@ -201,7 +201,7 @@ const seedToken = async (
 ): Promise<void> => {
   await fx.db
     .prepare(
-      'INSERT INTO api_tokens (id,name,prefix,token_hash,scope,workspace_id,created_at,expires_at,revoked_at) VALUES (?,?,?,?,?,?,?,?,?)',
+      'INSERT INTO api_tokens (id,name,prefix,token_hash,scope,created_at,expires_at,revoked_at) VALUES (?,?,?,?,?,?,?,?)',
     )
     .bind(
       id,
@@ -209,7 +209,6 @@ const seedToken = async (
       rawToken.slice(0, 12),
       sha256(rawToken),
       'intake:write',
-      DEFAULT_WORKSPACE_ID,
       Date.now(),
       expiresAt,
       revokedAt,

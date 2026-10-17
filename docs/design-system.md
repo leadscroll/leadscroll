@@ -8,7 +8,7 @@ UI generation or new styling dependency is required.
 ## Ownership
 
 - `src/styles.css`: semantic tokens, shared control styles, and page patterns.
-- `components/AppShell`: navigation, workspace identity, account access.
+- `components/AppShell`: navigation, product identity, account access.
 - `components/PageHeader`: location and page actions; shared with settings.
 - `components/ui`: Button, Field, Dialog, Avatar, and input/select classes.
 - Feature pages: content and workflow, using the shared foundations.

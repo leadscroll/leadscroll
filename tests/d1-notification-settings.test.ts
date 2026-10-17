@@ -535,7 +535,7 @@ describe('administrator test email command', () => {
     await configuredResend();
     await fixture.db
       .prepare(
-        "UPDATE installation_config SET document_json = json_set(document_json, '$.email.credential.ciphertext', 'not-a-valid-envelope') WHERE workspace_id = '01ARZ3NDEKTSV4RRFFQ69G5FAV'",
+        "UPDATE installation_config SET document_json = json_set(document_json, '$.email.credential.ciphertext', 'not-a-valid-envelope') WHERE id = 'installation'",
       )
       .run();
     const runtime = makeNotificationRuntime(fixture.env);

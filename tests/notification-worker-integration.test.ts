@@ -23,7 +23,6 @@ const repoRoot = process.cwd();
 const APP_ORIGIN = 'https://integration-test.example';
 const ADMIN_EMAIL = 'integration-admin@example.test';
 const STAFF_EMAIL = 'integration-staff@example.test';
-const WORKSPACE = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
 
 let workerScriptPromise: null | Promise<string> = null;
 const bundleWorker = async (): Promise<string> => {
@@ -122,12 +121,13 @@ const startIntegrationFixture = async (): Promise<IntegrationFixture> => {
       .filter((entry) => entry.endsWith('.sql'))
       .toSorted()) {
       const sql = await readFile(join(repoRoot, 'drizzle', name), 'utf8');
-      for (const statement of sql
-        .split('--> statement-breakpoint')
-        .map((chunk) => chunk.trim())
-        .filter(Boolean)) {
-        await database.prepare(statement).run();
-      }
+      await database.batch(
+        sql
+          .split('--> statement-breakpoint')
+          .map((chunk) => chunk.trim())
+          .filter(Boolean)
+          .map((statement) => database.prepare(statement)),
+      );
     }
 
     const now = Date.now();
@@ -147,10 +147,10 @@ const startIntegrationFixture = async (): Promise<IntegrationFixture> => {
       .run();
     await database
       .prepare(
-        `INSERT INTO notification_preferences (workspace_id, user_id, new_lead_email, updated_at)
-          VALUES (?, 'integration-staff', 1, ?)`,
+        `INSERT INTO notification_preferences (user_id, new_lead_email, updated_at)
+          VALUES ('integration-staff', 1, ?)`,
       )
-      .bind(WORKSPACE, now)
+      .bind(now)
       .run();
 
     const { encryptCredential } =
@@ -158,7 +158,6 @@ const startIntegrationFixture = async (): Promise<IntegrationFixture> => {
     const envelope = await encryptCredential(TEST_ENCRYPTION_KEY, {
       provider: 'resend',
       value: 're_integration_key',
-      workspaceId: WORKSPACE,
     });
     const { DEFAULT_INSTALLATION_CONFIG } = await import('@/domain/schemas');
     const document = {
@@ -176,10 +175,10 @@ const startIntegrationFixture = async (): Promise<IntegrationFixture> => {
     await database
       .prepare(
         `INSERT INTO installation_config (
-          workspace_id, document_json, write_version, write_token
-        ) VALUES (?, ?, 1, 'integration-token')`,
+          id, document_json, write_version, write_token
+        ) VALUES ('installation', ?, 1, 'integration-token')`,
       )
-      .bind(WORKSPACE, JSON.stringify(document))
+      .bind(JSON.stringify(document))
       .run();
 
     const fixture: IntegrationFixture = {

@@ -1,4 +1,3 @@
-import { DEFAULT_WORKSPACE_ID } from '@/db/repository';
 import { build } from 'esbuild';
 import { convertV4MiniflareOptions, Miniflare } from 'miniflare';
 import { readdir, readFile } from 'node:fs/promises';
@@ -13,7 +12,8 @@ import { expect, test } from 'vitest';
  */
 
 const repoRoot = process.cwd();
-const WORKSPACE = DEFAULT_WORKSPACE_ID;
+// Historical schema value used only by the pre-0003 backfill fixture.
+const LEGACY_WORKSPACE_ID = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
 
 const workerScripts = new Map<string, string>();
 
@@ -58,12 +58,13 @@ const applyMigrations = async (
 ): Promise<void> => {
   for (const name of names) {
     const sql = await readFile(join(repoRoot, 'drizzle', name), 'utf8');
-    for (const statement of sql
-      .split('--> statement-breakpoint')
-      .map((chunk) => chunk.trim())
-      .filter(Boolean)) {
-      await database.prepare(statement).run();
-    }
+    await database.batch(
+      sql
+        .split('--> statement-breakpoint')
+        .map((chunk) => chunk.trim())
+        .filter(Boolean)
+        .map((statement) => database.prepare(statement)),
+    );
   }
 };
 
@@ -170,7 +171,7 @@ const insertLegacyLead = async (
         created_at, updated_at, deleted_at
       ) VALUES (?, ?, NULL, 'Legacy', 'Lead', ?, NULL, '{}', ?, ?, NULL)`,
     )
-    .bind(lead.id, WORKSPACE, lead.source, Date.now(), Date.now())
+    .bind(lead.id, LEGACY_WORKSPACE_ID, lead.source, Date.now(), Date.now())
     .run();
 };
 
@@ -224,11 +225,10 @@ test('catalog infers scopes and enforces exclusive assignment', async () => {
     await expect(
       fx.db
         .prepare(
-          `INSERT INTO lead_tags (id, workspace_id, lead_id, tag_id, scope_id, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO lead_tags (id, lead_id, tag_id, scope_id, created_at) VALUES (?, ?, ?, ?, ?)`,
         )
         .bind(
           '01ARZ3NDEKTSV4RRFFQ69G5FB0',
-          WORKSPACE,
           lead.id,
           closed.id,
           considering.scopeId,
@@ -872,17 +872,16 @@ test('transaction-time guards abort when a target disappears', async () => {
     const guard = (id: string) =>
       fx.db
         .prepare(
-          `INSERT INTO lead_tags (id, workspace_id, lead_id, tag_id, scope_id, created_at)
-           SELECT '0' || substr(hex(randomblob(13)), 1, 25), ?, requested.value, NULL, NULL, ?
+          `INSERT INTO lead_tags (id, lead_id, tag_id, scope_id, created_at)
+           SELECT '0' || substr(hex(randomblob(13)), 1, 25), requested.value, NULL, NULL, ?
            FROM json_each(?) AS requested
            WHERE NOT EXISTS (
              SELECT 1 FROM leads
              WHERE id = requested.value
-               AND workspace_id = ?
                AND deleted_at IS NULL
            )`,
         )
-        .bind(WORKSPACE, Date.now(), JSON.stringify([id]), WORKSPACE)
+        .bind(Date.now(), JSON.stringify([id]))
         .run();
 
     // A missing lead makes the guard insert a NULL tag_id and abort.
@@ -891,10 +890,10 @@ test('transaction-time guards abort when a target disappears', async () => {
     // When the lead is active the guard is a no-op and writes nothing.
     await fx.db
       .prepare(
-        `INSERT INTO leads (id, workspace_id, email, first_name, last_name, source, custom_fields, created_at, updated_at)
-         VALUES (?, ?, NULL, 'Guard', 'Lead', 'website', '{}', ?, ?)`,
+        `INSERT INTO leads (id, email, first_name, last_name, source, custom_fields, created_at, updated_at)
+         VALUES (?, NULL, 'Guard', 'Lead', 'website', '{}', ?, ?)`,
       )
-      .bind(leadId, WORKSPACE, Date.now(), Date.now())
+      .bind(leadId, Date.now(), Date.now())
       .run();
     const before = await fx.db
       .prepare('SELECT count(*) AS count FROM lead_tags')

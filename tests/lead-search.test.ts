@@ -1,4 +1,4 @@
-import { DEFAULT_WORKSPACE_ID, type Env, listLeads } from '@/db/repository';
+import { type Env, listLeads } from '@/db/repository';
 import { convertV4MiniflareOptions, Miniflare } from 'miniflare';
 import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -13,7 +13,6 @@ import { expect, test } from 'vitest';
  */
 
 const repoRoot = process.cwd();
-const WORKSPACE = DEFAULT_WORKSPACE_ID;
 
 const watchStatements = (
   binding: D1Database,
@@ -70,12 +69,13 @@ const startFixture = async (): Promise<SearchFixture> => {
       .toSorted();
     for (const name of names) {
       const sql = await readFile(join(repoRoot, 'drizzle', name), 'utf8');
-      for (const statement of sql
-        .split('--> statement-breakpoint')
-        .map((chunk) => chunk.trim())
-        .filter(Boolean)) {
-        await raw.prepare(statement).run();
-      }
+      await raw.batch(
+        sql
+          .split('--> statement-breakpoint')
+          .map((chunk) => chunk.trim())
+          .filter(Boolean)
+          .map((statement) => raw.prepare(statement)),
+      );
     }
 
     const { db, statements } = watchStatements(raw);
@@ -108,14 +108,13 @@ const insertLead = async (
   await database
     .prepare(
       `INSERT INTO leads (
-        id, workspace_id, email, first_name, last_name,
+        id, email, first_name, last_name,
         source, estimated_value, custom_fields,
         created_at, updated_at, deleted_at
-      ) VALUES (?, ?, ?, ?, ?, ?, NULL, '{}', ?, ?, NULL)`,
+      ) VALUES (?, ?, ?, ?, ?, NULL, '{}', ?, ?, NULL)`,
     )
     .bind(
       id,
-      WORKSPACE,
       lead.email ?? null,
       lead.firstName ?? null,
       lead.lastName ?? null,

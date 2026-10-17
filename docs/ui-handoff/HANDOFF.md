@@ -84,7 +84,7 @@ Drizzle/raw SQL only inside the existing repository boundary and database port.
 Add forward-only D1 migration(s); never edit an existing migration.
 
 Persist stable tag IDs, normalized names, optional scope ownership, shared scope
-color, standalone color, and lead assignments. Enforce per-workspace uniqueness.
+color, standalone color, and lead assignments. Enforce installation-wide uniqueness.
 A database constraint plus atomic writes must prevent two values in the same scope
 on one lead; do not rely only on frontend filtering or read-before-write checks.
 Color choices match the reference palette. Scope identity survives renaming.

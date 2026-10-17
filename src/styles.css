@@ -92,9 +92,8 @@ textarea { resize: vertical; }
 .icon-button:hover { background: var(--surface-hover); color: var(--text-primary); }
 .app-shell { display: grid; grid-template-columns: 224px minmax(0, 1fr); min-height: 100vh; }
 .app-sidebar { position: sticky; top: 0; height: 100dvh; display: flex; flex-direction: column; padding: 20px 12px 12px; background: var(--surface-sidebar); border-right: 1px solid var(--border-subtle); }
-.workspace-brand { display: flex; align-items: center; gap: 10px; margin: 0 8px 24px; font-size: 14px; font-weight: 650; letter-spacing: -.3px; }
+.brand-lockup { display: flex; align-items: center; gap: 10px; margin: 0 8px 24px; font-size: 14px; font-weight: 650; letter-spacing: -.3px; }
 .brand-mark { display: block; width: 36px; height: 36px; flex-shrink: 0; object-fit: contain; }
-.workspace-caption { display: block; margin-top: 1px; font-size: 11px; font-weight: 400; letter-spacing: 0; color: var(--text-muted); }
 .nav-section-label { margin: 20px 11px 8px; font-size: 11px; color: var(--text-muted); font-weight: 500; }
 .nav-item { display: flex; align-items: center; gap: 10px; min-height: 35px; border-radius: var(--radius-control); padding: 6px 11px; color: var(--text-secondary); margin: 2px 0; transition: background var(--motion-fast); }
 .nav-item:hover { background: var(--surface-raised); color: var(--text-primary); }
@@ -196,8 +195,8 @@ textarea { resize: vertical; }
 @media (max-width: 760px) {
   .app-shell { display: block; }
   .app-sidebar { position: static; height: auto; padding: 12px; border-right: 0; border-bottom: 1px solid var(--border-subtle); }
-  .workspace-brand { margin: 0 0 10px; }
-  .workspace-caption, .nav-section-label, .release-label { display: none; }
+  .brand-lockup { margin: 0 0 10px; }
+  .nav-section-label, .release-label { display: none; }
   .sidebar-navigation { display: flex; gap: 4px; overflow-x: auto; }
   .nav-item { font-size: 11px; gap: 6px; padding-inline: 8px; white-space: nowrap; min-height: 40px; }
   .sidebar-footer { position: absolute; top: 12px; right: 12px; padding: 0; }

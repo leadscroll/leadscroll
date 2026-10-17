@@ -8,7 +8,6 @@ import { getEmailSettingsViewCommand } from '@/application/notification-settings
 import {
   appendAuditLog,
   AuditLogDecodeError,
-  DEFAULT_WORKSPACE_ID,
   InstallationConfigDecodeError,
   listAuditLog,
   readInstallationConfig,
@@ -19,6 +18,7 @@ import {
   AuditValidationError,
   decodeInstallationConfig,
   DEFAULT_INSTALLATION_CONFIG,
+  INSTALLATION_CONFIG_ID,
   type InstallationConfig,
   InstallationConfigValidationError,
   validateAuditChanges,
@@ -46,9 +46,9 @@ describe('notification schema migration', () => {
     await fx.user({ email: 'schema@example.test', id: 'schema-user' });
     await fx.db
       .prepare(
-        'INSERT INTO notification_preferences (workspace_id, user_id, updated_at) VALUES (?, ?, ?)',
+        'INSERT INTO notification_preferences (user_id, updated_at) VALUES (?, ?)',
       )
-      .bind(DEFAULT_WORKSPACE_ID, 'schema-user', Date.now())
+      .bind('schema-user', Date.now())
       .run();
     const row = await fx.db
       .prepare(
@@ -61,9 +61,9 @@ describe('notification schema migration', () => {
     await expect(
       fx.db
         .prepare(
-          'INSERT INTO notification_preferences (workspace_id, user_id, updated_at) VALUES (?, ?, ?)',
+          'INSERT INTO notification_preferences (user_id, updated_at) VALUES (?, ?)',
         )
-        .bind(DEFAULT_WORKSPACE_ID, 'schema-user', Date.now())
+        .bind('schema-user', Date.now())
         .run(),
     ).rejects.toThrow(/UNIQUE constraint/iu);
   });
@@ -72,7 +72,15 @@ describe('notification schema migration', () => {
     const fx = await fixture({ through: '0003' });
     const now = Date.now();
     await fx.user({ email: 'bootstrap@example.test', id: 'bootstrap-user' });
-    await fx.seedLead('01ARZ3NDEKTSV4RRFFQ69G5FAV');
+    // This fixture intentionally stops before 0004, so seed the lead through
+    // the historical schema that 0004 upgrades from.
+    await fx.db
+      .prepare(
+        `INSERT INTO leads (id, workspace_id, source, custom_fields, created_at, updated_at)
+         VALUES (?, '01ARZ3NDEKTSV4RRFFQ69G5FAV', 'Test', '{}', ?, ?)`,
+      )
+      .bind('01ARZ3NDEKTSV4RRFFQ69G5FC0', now, now)
+      .run();
     await fx.db
       .prepare(
         `INSERT INTO registration_claims (id, grant_kind, grant_ref, claim_key, user_id, created_at)
@@ -112,9 +120,9 @@ describe('notification schema migration', () => {
     expect(await fx.count('installation_config')).toBe(1);
     const stored = await fx.db
       .prepare(
-        'SELECT document_json, write_version FROM installation_config WHERE workspace_id = ?',
+        'SELECT document_json, write_version FROM installation_config WHERE id = ?',
       )
-      .bind(DEFAULT_WORKSPACE_ID)
+      .bind(INSTALLATION_CONFIG_ID)
       .first<{ document_json: string; write_version: number }>();
     const document = decodeInstallationConfig(
       JSON.parse(String(stored?.document_json)),
@@ -126,10 +134,10 @@ describe('notification schema migration', () => {
     await expect(
       fx.db
         .prepare(
-          `INSERT INTO installation_config (workspace_id, document_json, write_version, write_token)
+          `INSERT INTO installation_config (id, document_json, write_version, write_token)
             VALUES (?, '{}', 1, 'sentinel-token')`,
         )
-        .bind(DEFAULT_WORKSPACE_ID)
+        .bind(INSTALLATION_CONFIG_ID)
         .run(),
     ).rejects.toThrow(/UNIQUE constraint/iu);
   });
@@ -175,12 +183,12 @@ describe('notification schema migration', () => {
     await fx.db
       .prepare(
         `INSERT INTO audit_log (
-          id, workspace_id, actor_user_id, created_at, action, resource_type,
+          id, actor_user_id, created_at, action, resource_type,
           resource_id, changes_json
-        ) VALUES ('bad-audit', ?, NULL, ?, 'email.settings_updated',
+        ) VALUES ('bad-audit', NULL, ?, 'email.settings_updated',
           'installation.email', NULL, '{AUDIT_SENTINEL')`,
       )
-      .bind(DEFAULT_WORKSPACE_ID, Date.now())
+      .bind(Date.now())
       .run();
 
     let auditError: unknown;
@@ -209,12 +217,12 @@ describe('notification schema migration', () => {
     await fx.db
       .prepare(
         `INSERT INTO audit_log (
-          id, workspace_id, actor_user_id, created_at, action, resource_type,
+          id, actor_user_id, created_at, action, resource_type,
           resource_id, changes_json
-        ) VALUES ('double-audit', ?, NULL, ?, 'email.settings_updated',
+        ) VALUES ('double-audit', NULL, ?, 'email.settings_updated',
           'installation.email', NULL, ?)`,
       )
-      .bind(DEFAULT_WORKSPACE_ID, Date.now(), auditText)
+      .bind(Date.now(), auditText)
       .run();
     await expect(
       listAuditLog(fx.env, { cursor: null, limit: 10 }),

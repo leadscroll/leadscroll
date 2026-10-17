@@ -1,4 +1,3 @@
-import { DEFAULT_WORKSPACE_ID } from '@/db/repository';
 import { build } from 'esbuild';
 import { convertV4MiniflareOptions, Miniflare } from 'miniflare';
 import { createHash } from 'node:crypto';
@@ -29,6 +28,7 @@ const assertRepoRoot = async () => {
 };
 
 const LEGACY_LEAD_ID = '01ARZ3NDEKTSV4RRFFQ69G5FB0';
+const LEGACY_WORKSPACE_ID = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
 const TABLES = ['leads', 'activities', 'idempotency_keys'];
 
 const canonical = (value: unknown): unknown =>
@@ -170,12 +170,13 @@ const startFixture = async (
       .toSorted();
     for (const [index, name] of names.entries()) {
       const sql = await readFile(join(repoRoot, 'drizzle', name), 'utf8');
-      for (const statement of sql
-        .split('--> statement-breakpoint')
-        .map((chunk) => chunk.trim())
-        .filter(Boolean)) {
-        await database.prepare(statement).run();
-      }
+      await database.batch(
+        sql
+          .split('--> statement-breakpoint')
+          .map((chunk) => chunk.trim())
+          .filter(Boolean)
+          .map((statement) => database.prepare(statement)),
+      );
 
       if (options.legacy && index === 0) {
         // Inserted after the first (only) migration: the baseline already
@@ -185,7 +186,7 @@ const startFixture = async (
             'INSERT INTO idempotency_keys (workspace_id, key, response_json, created_at) VALUES (?, ?, ?, ?)',
           )
           .bind(
-            DEFAULT_WORKSPACE_ID,
+            LEGACY_WORKSPACE_ID,
             'legacy-key',
             JSON.stringify({
               created: true,

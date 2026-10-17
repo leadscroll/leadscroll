@@ -19,7 +19,7 @@ type NavigationItem = {
   href: string;
   icon: typeof LayoutList;
   label: string;
-  section: 'Manage' | 'Workspace';
+  section: 'Leads' | 'Manage';
 };
 
 const navigation: NavigationItem[] = [
@@ -27,7 +27,7 @@ const navigation: NavigationItem[] = [
     href: '/leads',
     icon: LayoutList,
     label: 'All leads',
-    section: 'Workspace',
+    section: 'Leads',
   },
   { href: '/settings/tags', icon: Tags, label: 'Tags', section: 'Manage' },
   {
@@ -88,13 +88,11 @@ export const AppShell = ({
       </a>
       <aside className="app-sidebar">
         <Link
-          className="workspace-brand"
+          className="brand-lockup"
           href="/leads"
         >
           <BrandMark />
-          <span>
-            LeadScroll <span className="workspace-caption">Workspace</span>
-          </span>
+          <span>LeadScroll</span>
         </Link>
         <nav
           aria-label="Main navigation"

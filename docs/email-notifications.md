@@ -152,7 +152,7 @@ addresses, envelopes, lead payloads, API keys, or provider response bodies are
 ever logged.
 
 Operators can inspect the persisted configuration and the redacted audit trail
-directly. The configuration is one JSON document per workspace, validated by
+directly. The configuration is one JSON document per installation, validated by
 the application schema on read; never edit it by hand while the Worker is
 serving requests, and never paste a provider key into a SQL command:
 
@@ -183,6 +183,20 @@ document revision, the encrypted provider credential, and compact test state),
 `audit_log` (the reusable who-changed-what log), and the existing
 `notification_preferences` per-user opt-in. Existing CRM data and migrations
 remain unchanged. No outbox, scheduler state, or Cron is needed.
+
+Migration `0005_remove_workspaces.sql` then makes the installation boundary
+explicit: `installation_config` is one row keyed `installation` with a
+singleton check, `notification_preferences` is keyed by `user_id`, and
+`audit_log` is installation-wide. It also removes the unused workspace table
+and `workspace_id` columns from the CRM and notification tables. Existing
+credential envelopes remain readable because the v1 AES-GCM authenticated data
+is preserved byte-for-byte as a frozen legacy context; no ciphertext or secret
+is rewritten. Before applying it, back up D1 and check for rows outside the
+historical default workspace. The migration performs that check itself and
+aborts atomically before any destructive statement when it finds such rows, so
+inspect the reported table, reconcile the data deliberately (or keep it in a
+separate installation), and re-run. Do not edit the migration to merge or drop
+unexpected rows.
 
 ## Rollback
 

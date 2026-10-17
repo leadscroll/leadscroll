@@ -48,7 +48,7 @@ export const createIntakeCommand = (
 ) =>
   Effect.gen(function* () {
     // Request identity: a pure fingerprint of the static-schema-decoded input.
-    // No mutable workspace lookup may influence it, so a retry is recognized
+    // No mutable installation lookup may influence it, so a retry is recognized
     // regardless of later edits elsewhere.
     const requestHash = yield* Effect.tryPromise({
       catch: (cause) => new PersistenceError({ cause }),

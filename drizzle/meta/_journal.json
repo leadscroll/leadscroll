@@ -36,6 +36,13 @@
       "when": 1792135899479,
       "tag": "0004_email_notifications",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1792215855527,
+      "tag": "0005_remove_workspaces",
+      "breakpoints": true
     }
   ]
 }
