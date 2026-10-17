@@ -64,7 +64,7 @@ jobs:
         run: pnpm run source:build .source-build
 
       - name: Preserve source-build receipt
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: leadscroll-source-build
           include-hidden-files: true
