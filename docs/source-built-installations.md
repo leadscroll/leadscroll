@@ -43,9 +43,10 @@ channel is resolved per build in an ephemeral checkout, not committed back, so
 an installation left on `main` keeps tracking upstream `main`; commit the
 resolved SHA or run Upgrade to freeze it. The current migration history is a
 single squashed baseline (`0000_leadscroll_baseline.sql`). Its filename is
-unchanged from earlier epochs but its bytes differ, so ordinary history guards
-reject a source-pin upgrade from those epochs. Those installations must use the
-baseline reset procedure below, not an in-place migration. For existing
+unchanged from earlier epochs but its bytes differ, so LeadScroll's source-update
+receipt guards reject a source-pin upgrade from those epochs when the old
+history is available. Those installations must use the baseline reset procedure
+below, not an in-place migration. For existing
 installations only, the installer retains a narrow adapter for historical pin
 `8c8f7cd...`; it consumes that commit's local build output and never contacts
 GitHub Releases.
@@ -75,10 +76,13 @@ one-time breaking epoch transition, not an ordinary forward migration:
    binding pointed at the replacement database. Keep the old database, old
    code, old pin, and old binding together until the cutover is accepted.
 
-Ordinary `wrangler d1 migrations apply` and Upgrade runs intentionally fail
-closed when they see the changed `0000_leadscroll_baseline.sql`; there is no
-automatic legacy reset or history bypass. The procedure is operator-led and
-requires export, a fresh database, replay, and matching code.
+LeadScroll's updater and installer receipt checks reject a changed history when
+a previous receipt or baseline configuration is available. Bare
+`wrangler d1 migrations apply` does **not** checksum historical SQL: it compares
+migration names and will skip an already-recorded `0000` even when its bytes
+differ. Do not repin, redeploy, or repoint an old database and assume Wrangler
+detects the baseline change. Use the fresh-target procedure above; there is no
+automatic legacy reset or history bypass.
 
 ## Optional Upgrade workflow
 
