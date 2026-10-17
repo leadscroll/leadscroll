@@ -40,7 +40,7 @@
     "@cloudflare/vitest-pool-workers": "^0.22.0",
     "@cloudflare/workers-types": "^5.20261014.1",
     "@tailwindcss/vite": "^4.1.18",
-    "@types/node": "^24.10.0",
+    "@types/node": "^26.6.5",
     "@types/react": "^19.2.10",
     "@types/react-dom": "^19.2.4",
     "@vitejs/plugin-react": "^5.1.1",
