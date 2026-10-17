@@ -35,22 +35,6 @@ both authentication secrets across upgrades.
    Worker.
 4. In the Worker's **Settings → Variables and Secrets**, add
    `BETTER_AUTH_SECRET` and `SETUP_TOKEN`, then redeploy before using the app.
-   Optionally add `EMAIL_SETTINGS_ENCRYPTION_KEY` (generate with
-   `openssl rand -base64 32`) if you plan to store a Resend API key through
-   **Manage → Email**. Cloudflare Email Sending needs no key; the base CRM
-   needs only the two authentication secrets.
-
-The template's `wrangler.jsonc` declares the native `EMAIL` binding; it is
-invoked only when Cloudflare is the saved provider.
-
-Email settings are inert until any enabled staff account enables a provider in
-**Manage → Email**; every enabled authenticated staff account can manage the
-installation configuration, and best-effort alerts are sent on the Worker
-request that created the lead. Keep all secret names across upgrades. See
-[email notifications][docs] in the upstream repository for provider setup,
-optional test emails, and best-effort delivery semantics.
-
-[docs]: https://github.com/leadscroll/leadscroll/blob/main/docs/email-notifications.md
 
 The build fetches only the full source SHA recorded in `leadscroll.json`, installs
 that checkout with its frozen `pnpm-lock.yaml` (including build-time development

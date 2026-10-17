@@ -17,7 +17,6 @@ import {
   type IntakeRequest,
   type UpdateLeadRequest,
 } from '@/domain/schemas';
-import { type LeadCreatedPublisher } from '@/notifications/events';
 import { Effect } from 'effect';
 
 const persist = <A>(operation: () => Promise<A>) =>
@@ -42,9 +41,8 @@ export const createIntakeCommand = (
   environment: Env,
   input: IntakeRequest,
   idempotencyKey: string,
-  provenance: undefined | { origin: null | string; tokenId: null | string },
-  rawPayload: unknown,
-  events: LeadCreatedPublisher,
+  provenance?: { origin: null | string; tokenId: null | string },
+  rawPayload?: unknown,
 ) =>
   Effect.gen(function* () {
     // Request identity: a pure fingerprint of the static-schema-decoded input.
@@ -59,8 +57,6 @@ export const createIntakeCommand = (
     );
     const storedOutcome = outcomeForStoredIntakeKey(stored, requestHash);
     if (storedOutcome) {
-      // A replay, legacy outcome, or conflict is not a new lead: it must not
-      // publish a notification event.
       return storedOutcome;
     }
 
@@ -69,7 +65,7 @@ export const createIntakeCommand = (
     // touches assignments, and the stored fingerprint is unchanged.
     const tagSpecs = yield* leadTagSpecs(input);
 
-    const outcome = yield* persist((): Promise<IntakePersistenceOutcome> =>
+    return yield* persist((): Promise<IntakePersistenceOutcome> =>
       createLeadAtomically(
         environment,
         input,
@@ -80,28 +76,9 @@ export const createIntakeCommand = (
         tagSpecs,
       ),
     );
-
-    // Publish only after the atomic batch committed a genuinely new lead. The
-    // event is scheduled off the response path; a failure to schedule never
-    // turns the successful creation into an error.
-    if (outcome.kind === 'created') {
-      yield* Effect.sync(() =>
-        events.publishLeadCreated({
-          actorUserId: null,
-          leadId: outcome.response.leadId,
-        }),
-      );
-    }
-
-    return outcome;
   });
 
-export const createLeadCommand = (
-  environment: Env,
-  input: CreateLeadRequest,
-  actorUserId: null | string,
-  events: LeadCreatedPublisher,
-) =>
+export const createLeadCommand = (environment: Env, input: CreateLeadRequest) =>
   Effect.gen(function* () {
     yield* validate(() => {
       if (!input.email && !input.firstName && !input.lastName) {
@@ -114,14 +91,7 @@ export const createLeadCommand = (
 
     const tagSpecs = yield* leadTagSpecs(input);
 
-    const lead = yield* persist(() => createLead(environment, input, tagSpecs));
-
-    // The manual creator is carried in the event so the subscriber can exclude
-    // them; other opted-in staff still receive the alert.
-    yield* Effect.sync(() =>
-      events.publishLeadCreated({ actorUserId, leadId: lead.id }),
-    );
-    return lead;
+    return yield* persist(() => createLead(environment, input, tagSpecs));
   });
 
 export const updateLeadCommand = (

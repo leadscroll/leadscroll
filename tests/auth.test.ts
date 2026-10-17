@@ -12,7 +12,7 @@ import { expect, test } from 'vitest';
  * request cookie. Registration is invitation-only: the X-Setup-Token header
  * must present the bootstrap SETUP_TOKEN grant (only while no account exists)
  * or a one-time staff invite, and every authenticated session reaches the API.
- * The fixture applies the real drizzle/ baseline, including the generated
+ * The fixture applies the real drizzle/ migrations, including the generated
  * Better Auth tables, against in-memory D1.
  */
 
@@ -129,13 +129,12 @@ const startFixture = async (
       .toSorted();
     for (const name of names) {
       const sql = await readFile(join(repoRoot, 'drizzle', name), 'utf8');
-      await database.batch(
-        sql
-          .split('--> statement-breakpoint')
-          .map((chunk) => chunk.trim())
-          .filter(Boolean)
-          .map((statement) => database.prepare(statement)),
-      );
+      for (const statement of sql
+        .split('--> statement-breakpoint')
+        .map((chunk) => chunk.trim())
+        .filter(Boolean)) {
+        await database.prepare(statement).run();
+      }
     }
 
     const raw = async (

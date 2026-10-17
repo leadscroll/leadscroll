@@ -9,61 +9,18 @@ import {
   LayoutList,
   LogOut,
   Mail,
-  Send,
   Tags,
   Users,
 } from 'lucide-react';
 import { Link, useLocation } from 'wouter';
 
-type NavigationItem = {
-  href: string;
-  icon: typeof LayoutList;
-  label: string;
-  section: 'Leads' | 'Manage';
-};
-
-const navigation: NavigationItem[] = [
-  {
-    href: '/leads',
-    icon: LayoutList,
-    label: 'All leads',
-    section: 'Leads',
-  },
-  { href: '/settings/tags', icon: Tags, label: 'Tags', section: 'Manage' },
-  {
-    href: '/settings/invites',
-    icon: Mail,
-    label: 'Invitations',
-    section: 'Manage',
-  },
-  {
-    href: '/settings/staff',
-    icon: Users,
-    label: 'Team members',
-    section: 'Manage',
-  },
-  {
-    href: '/settings/tokens',
-    icon: KeyRound,
-    label: 'Intake tokens',
-    section: 'Manage',
-  },
-  {
-    href: '/settings/email',
-    icon: Send,
-    label: 'Email',
-    section: 'Manage',
-  },
+const navigation = [
+  { href: '/leads', icon: LayoutList, label: 'All leads' },
+  { href: '/settings/tags', icon: Tags, label: 'Tags' },
+  { href: '/settings/invites', icon: Mail, label: 'Invitations' },
+  { href: '/settings/staff', icon: Users, label: 'Team members' },
+  { href: '/settings/tokens', icon: KeyRound, label: 'Intake tokens' },
 ];
-
-const activeNavigation = (
-  location: string,
-  href: string,
-  index: number,
-): boolean =>
-  location === href ||
-  location.startsWith(`${href}/`) ||
-  (index === 0 && location === '/');
 
 export const AppShell = ({
   children,
@@ -73,10 +30,6 @@ export const AppShell = ({
   const [location] = useLocation();
   const { data: session } = useSession();
   const name = session?.user.name || 'Your account';
-  // Every enabled authenticated staff account can manage installation email
-  // settings, so the entry is always visible; server routes still enforce
-  // authentication and disabled-account rules.
-  const visibleNavigation = navigation;
 
   return (
     <div className="app-shell">
@@ -98,27 +51,22 @@ export const AppShell = ({
           aria-label="Main navigation"
           className="sidebar-navigation"
         >
-          {visibleNavigation.map((item, index) => {
+          {navigation.map((item, index) => {
             const Icon = item.icon;
-            const showSection =
-              index === 0 ||
-              visibleNavigation[index - 1]?.section !== item.section;
+            const active =
+              location === item.href ||
+              location.startsWith(`${item.href}/`) ||
+              (index === 0 && location === '/');
             return (
               <div key={item.href}>
-                {showSection && (
-                  <p className="nav-section-label">{item.section}</p>
+                {(index === 0 || index === 1) && (
+                  <p className="nav-section-label">
+                    {index === 0 ? 'Leads' : 'Manage'}
+                  </p>
                 )}
                 <Link
-                  aria-current={
-                    activeNavigation(location, item.href, index)
-                      ? 'page'
-                      : undefined
-                  }
-                  className={cn(
-                    'nav-item',
-                    activeNavigation(location, item.href, index) &&
-                      'nav-item-active',
-                  )}
+                  aria-current={active ? 'page' : undefined}
+                  className={cn('nav-item', active && 'nav-item-active')}
                   href={item.href}
                 >
                   <Icon size={16} />

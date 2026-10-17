@@ -69,13 +69,12 @@ const startFixture = async (): Promise<SearchFixture> => {
       .toSorted();
     for (const name of names) {
       const sql = await readFile(join(repoRoot, 'drizzle', name), 'utf8');
-      await raw.batch(
-        sql
-          .split('--> statement-breakpoint')
-          .map((chunk) => chunk.trim())
-          .filter(Boolean)
-          .map((statement) => raw.prepare(statement)),
-      );
+      for (const statement of sql
+        .split('--> statement-breakpoint')
+        .map((chunk) => chunk.trim())
+        .filter(Boolean)) {
+        await raw.prepare(statement).run();
+      }
     }
 
     const { db, statements } = watchStatements(raw);

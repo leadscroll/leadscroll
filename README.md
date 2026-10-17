@@ -11,11 +11,6 @@ A self-hosted, Cloudflare-native CRM for teams handling inbound leads. It stores
 
 Companies, tasks, email sync, imports, reporting, workflows, custom objects, and multi-tenancy are deliberately not included yet.
 
-One installation is one shared lead database and staff team. Every authenticated,
-enabled staff account sees the same leads, tags, tokens, settings, and audit log;
-there is no workspace switch or per-workspace membership. Run separate
-installations when data must be administered independently.
-
 ## Install on Cloudflare
 
 Every deployment is independent: the repo carries no account-specific values.
@@ -60,7 +55,7 @@ Prerequisites: a Cloudflare account, Node.js 24.20.0 (see `.node-version`) and p
 1. Install dependencies: `pnpm install --frozen-lockfile`.
 2. Create the D1 database in your account with any name you like — it does not need to match the Worker, for example `pnpm exec wrangler d1 create leadscroll-db`. Copy the `database_id` it prints into the `d1_databases` entry in `wrangler.jsonc` (replacing the empty string) and set `database_name` to the same name you used.
 3. Set the session secret: `openssl rand -base64 32 | pnpm exec wrangler secret put BETTER_AUTH_SECRET`.
-4. Set the invite token: `openssl rand -hex 32 | pnpm exec wrangler secret put SETUP_TOKEN`. Keep it across redeployments. Optionally set `EMAIL_SETTINGS_ENCRYPTION_KEY` (`openssl rand -base64 32 | pnpm exec wrangler secret put EMAIL_SETTINGS_ENCRYPTION_KEY`) if you plan to store a Resend API key through Manage → Email; Cloudflare sending does not need it.
+4. Set the invite token: `openssl rand -hex 32 | pnpm exec wrangler secret put SETUP_TOKEN`. Keep it across redeployments.
 5. Deploy: `pnpm run deploy` (set `CLOUDFLARE_ACCOUNT_ID` if your wrangler login spans multiple accounts). The deploy script builds, applies the D1 migrations, and deploys. Migrations bootstrap the first-account registration window; the app itself never seeds data per request, so a deleted bootstrap row is not resurrected. The migration history is a single squashed baseline. Installations built on the previous workspace-scoped baseline cannot upgrade in place because the baseline filename is unchanged but its bytes differ; export their data, create a fresh D1 database, apply this baseline, replay the retained data, and deploy matching code and pin as described in [source-built installation details](docs/source-built-installations.md#baseline-reset-epoch). Migration commands reference the `DB` binding rather than a database name, so renamed databases keep working.
 
 You can also connect the repository in the dashboard under Workers → Settings → Builds, with the deploy command set to `pnpm run deploy`.
@@ -193,29 +188,6 @@ enabled staff session and trusted-origin writes like the rest of the
 staff API. Unknown or foreign session ids return `404`; individual success is
 `204`. The bulk response counts active sessions removed and keeps the caller.
 
-### Email notifications
-
-Opted-in staff can receive one generic email when a new lead is created.
-Email is disabled until a staff member configures a provider in
-Manage → Email; every enabled authenticated staff account can manage the
-installation configuration, and personal opt-in lives under Account →
-Notifications. Both
-Cloudflare Email Sending (Workers Paid, sender domain onboarded) and Resend
-(send-only API key, verified domain) are supported; the saved provider is
-authoritative and is never inferred from a binding. Intake never depends on the
-email provider: after the lead commits, the shared service publishes a small
-typed `lead.created` event and a bounded subscriber sends best-effort on the
-Worker's `ctx.waitUntil`. There is no outbox, Cron, retry engine, or delivery
-history; a queue can be added at the event boundary later.
-
-The optional `EMAIL_SETTINGS_ENCRYPTION_KEY` secret encrypts UI-entered Resend
-keys. It is required only when storing a Resend key through the UI and is not
-needed for Cloudflare. The base CRM still requires only
-`BETTER_AUTH_SECRET` and `SETUP_TOKEN`.
-
-See [email notifications](docs/email-notifications.md) for provider setup,
-the optional test email, best-effort limits, rollback, and operator recovery.
-
 ### Optional auth URL override
 
 By default, authentication uses the origin of each incoming Worker request, so a
@@ -244,8 +216,6 @@ sessions are stored in local D1.
 Optionally add `DEV_ADMIN_EMAIL` to bypass the session check locally. Development
 settings are deliberately absent from `.dev.vars.example`, whose entries become
 installer prompts. Deployed configuration stays `ENVIRONMENT=production`.
-Optionally add `EMAIL_SETTINGS_ENCRYPTION_KEY` to `.dev.vars` to exercise
-Resend credential storage locally.
 
 ## Integration API
 

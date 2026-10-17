@@ -46,10 +46,9 @@ single squashed baseline (`0000_leadscroll_baseline.sql`). Its filename is
 unchanged from earlier epochs but its bytes differ, so LeadScroll's source-update
 receipt guards reject a source-pin upgrade from those epochs when the old
 history is available. Those installations must use the baseline reset procedure
-below, not an in-place migration. For existing
-installations only, the installer retains a narrow adapter for historical pin
-`8c8f7cd...`; it consumes that commit's local build output and never contacts
-GitHub Releases.
+below, not an in-place migration. For existing installations only, the installer
+retains a narrow adapter for historical pin `8c8f7cd...`; it consumes that
+commit's local build output and never contacts GitHub Releases.
 
 ## Baseline reset epoch
 
@@ -71,7 +70,8 @@ one-time breaking epoch transition, not an ordinary forward migration:
    `registration_claims` (or restore the bootstrap row as consumed); do not let
    the fresh seed reopen first-account registration.
 5. Verify row counts, foreign keys, authentication, token hashes, idempotency
-   replay, tag constraints, and settings. Keep the old database untouched.
+   replay, tag constraints, and soft-deleted lead retention. Keep the old
+   database untouched.
 6. Deploy the Worker and source pin that match this baseline, with the `DB`
    binding pointed at the replacement database. Keep the old database, old
    code, old pin, and old binding together until the cutover is accepted.
@@ -171,13 +171,12 @@ additive migrations and staged compatibility; restore a D1 backup or deploy a
 compatible corrective revision when database rollback is required.
 
 The squashed baseline is also a compatibility boundary: a database built from
-it has no workspaces table or `workspace_id` columns and uses the final
-installation configuration key, so an old source pin or Worker cannot serve it.
-Cutover uses a fresh database and matching code/pin, not an in-place migration;
-plan a maintenance window. If the cutover or deployment fails, restore the old
-database together with the old code, pin, and binding, or deploy a revision
-compatible with the replacement database. Disabling features or rolling back
-only the Worker does not reverse the database epoch.
+it has no workspaces table or `workspace_id` columns, so an old source pin or
+Worker cannot serve it. Cutover uses a fresh database and matching code/pin, not
+an in-place migration; plan a maintenance window. If the cutover or deployment
+fails, restore the old database together with the old code, pin, and binding, or
+deploy a revision compatible with the replacement database. Rolling back only the
+Worker does not reverse the database epoch.
 
 ## Existing full-source snapshot installations
 
@@ -205,20 +204,6 @@ repository. Keep the old Worker, database, code, and pin together for rollback:
 Do not try to reconstruct the old SQL migration history in the replacement
 database. After this epoch is established, future updates must preserve the
 baseline and append only new migrations.
-
-## Email notification runtime
-
-Generated source builds preserve the Worker's `fetch` handler and its execution
-context argument, which is how best-effort notification work is scheduled with
-`ctx.waitUntil` after a lead commits. There is no `scheduled` handler and no
-Cron trigger: notification delivery is event-driven and best-effort. Standard
-templates declare the native `EMAIL` binding in `wrangler.jsonc`; older/custom
-installations may need to add it. The optional `EMAIL_SETTINGS_ENCRYPTION_KEY`
-secret is needed only to store a Resend API key through the UI and survives
-source-pin changes as a Worker secret; replacing the Worker recreates secrets
-and requires re-entering provider keys. See the upstream
-`docs/email-notifications.md` for setup, best-effort limits, rollback, and
-operator recovery.
 
 ## Verification boundary
 

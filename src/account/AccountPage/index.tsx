@@ -1,4 +1,3 @@
-import { NotificationsSection } from './NotificationsSection';
 import {
   type AccountPasswordFormValues,
   type AccountProfileFormValues,
@@ -507,10 +506,6 @@ export const AccountPage = () => {
             email={session.user.email}
             name={session.user.name}
             updatedAt={new Date(session.user.updatedAt)}
-          />
-          <NotificationsSection
-            email={session.user.email}
-            userId={session.user.id}
           />
           <PasswordSection />
           <SessionsSection

@@ -23,7 +23,7 @@ import { expect, test } from 'vitest';
  * worker, because Miniflare does not propagate cancellation of a
  * Node-created body stream back to the Node side.
  *
- * Every test starts its own Miniflare + in-memory D1 fixture (baseline
+ * Every test starts its own Miniflare + in-memory D1 fixture (migrations
  * applied from drizzle/), so tests are independently runnable and never
  * rely on setup performed by a preceding test.
  */
@@ -149,13 +149,12 @@ const startFixture = async (entry?: string): Promise<Fixture> => {
       .toSorted();
     for (const name of names) {
       const sql = await readFile(join(repoRoot, 'drizzle', name), 'utf8');
-      await database.batch(
-        sql
-          .split('--> statement-breakpoint')
-          .map((chunk) => chunk.trim())
-          .filter(Boolean)
-          .map((statement) => database.prepare(statement)),
-      );
+      for (const statement of sql
+        .split('--> statement-breakpoint')
+        .map((chunk) => chunk.trim())
+        .filter(Boolean)) {
+        await database.prepare(statement).run();
+      }
     }
 
     const raw = async (

@@ -9,7 +9,7 @@ import { expect, test } from 'vitest';
  *
  * The worker runs in Miniflare in PRODUCTION mode, so every protected
  * route resolves a Better Auth session from the request cookie. The
- * fixture applies the real drizzle/ baseline against in-memory D1.
+ * fixture applies the real drizzle/ migrations against in-memory D1.
  * Disabling an account writes the durable disabled flag and deletes all
  * of the account's session rows in one transaction; sign-in with a
  * disabled account's credentials is denied; re-enabling keeps the
@@ -109,13 +109,12 @@ const startFixture = async (): Promise<Fixture> => {
       .toSorted();
     for (const name of names) {
       const sql = await readFile(join(repoRoot, 'drizzle', name), 'utf8');
-      await database.batch(
-        sql
-          .split('--> statement-breakpoint')
-          .map((chunk) => chunk.trim())
-          .filter(Boolean)
-          .map((statement) => database.prepare(statement)),
-      );
+      for (const statement of sql
+        .split('--> statement-breakpoint')
+        .map((chunk) => chunk.trim())
+        .filter(Boolean)) {
+        await database.prepare(statement).run();
+      }
     }
 
     const raw = async (

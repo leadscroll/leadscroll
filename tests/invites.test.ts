@@ -10,7 +10,7 @@ import { expect, test } from 'vitest';
  *
  * The worker runs in Miniflare in PRODUCTION mode, so every protected
  * route resolves a Better Auth session from the request cookie. The
- * fixture applies the real drizzle/ baseline (including staff_invites
+ * fixture applies the real drizzle/ migrations (including staff_invites
  * and the seeded bootstrap_state singleton) against in-memory D1. The
  * raw token only ever appears in the create response; persistence and
  * validation work on the SHA-256 hash.
@@ -112,13 +112,12 @@ const startFixture = async (): Promise<Fixture> => {
       .toSorted();
     for (const name of names) {
       const sql = await readFile(join(repoRoot, 'drizzle', name), 'utf8');
-      await database.batch(
-        sql
-          .split('--> statement-breakpoint')
-          .map((chunk) => chunk.trim())
-          .filter(Boolean)
-          .map((statement) => database.prepare(statement)),
-      );
+      for (const statement of sql
+        .split('--> statement-breakpoint')
+        .map((chunk) => chunk.trim())
+        .filter(Boolean)) {
+        await database.prepare(statement).run();
+      }
     }
 
     const raw = async (

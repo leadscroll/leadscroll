@@ -1,5 +1,4 @@
 import { logRequest } from './logging';
-import { requestWaitUntil } from '@/api/execution-context';
 import { mapIntakeBodyError, parseIntakeBody } from '@/api/intake-parser';
 import {
   listAccountSessionsCommand,
@@ -13,18 +12,7 @@ import {
   softDeleteLeadsCommand,
   updateLeadCommand,
 } from '@/application/commands';
-import { deploymentLayer } from '@/application/deployment';
 import { type DomainError, type PersistenceError } from '@/application/errors';
-import { installationConfigStoreLayer } from '@/application/installation-config-store';
-import {
-  getNotificationPreferenceView,
-  updateNotificationPreferenceCommand,
-} from '@/application/notification-preferences';
-import {
-  getEmailSettingsViewCommand,
-  updateEmailSettingsCommand,
-} from '@/application/notification-settings';
-import { sendTestEmailCommand } from '@/application/notification-test-send';
 import {
   bulkTagCommand,
   createTagCommand,
@@ -86,27 +74,14 @@ import {
   HealthSchema,
   IntakeRequestSchema,
   ListLeadsQuerySchema,
-  SendEmailTestRequestSchema,
   SetLeadTagsRequestSchema,
   SetStaffDisabledRequestSchema,
-  UpdateEmailSettingsRequestSchema,
   UpdateLeadRequestSchema,
-  UpdateNotificationPreferenceRequestSchema,
   UpdateTagRequestSchema,
   UpdateTagScopeRequestSchema,
   ValidateInviteRequestSchema,
 } from '@/domain/schemas';
-import { credentialCipherLayer } from '@/notifications/credential-cipher';
-import { emailProviderResolverLayer } from '@/notifications/email-provider';
-import {
-  createLeadCreatedPublisher,
-  type LeadCreatedPublisher,
-  type LeadCreatedSubscriber,
-  type NotificationRuntime,
-  type NotificationServices,
-} from '@/notifications/events';
-import { createLeadCreatedEmailSubscriber } from '@/notifications/lead-created-subscriber';
-import { Effect, Either, Layer, ManagedRuntime, Schema } from 'effect';
+import { Effect, Either, Schema } from 'effect';
 import { Elysia } from 'elysia';
 import { CloudflareAdapter } from 'elysia/adapter/cloudflare-worker';
 
@@ -115,7 +90,7 @@ const errorResponse = (
   code: string,
   message: string,
   details?: unknown,
-): Response =>
+) =>
   Response.json(
     { code, details, message },
     {
@@ -159,18 +134,11 @@ const UNSAFE_METHODS = new Set(['DELETE', 'PATCH', 'POST', 'PUT']);
  * Domain codes that map to a non-422 status; everything else is 422.
  */
 const DOMAIN_ERROR_STATUS: Record<string, number> = {
-  // A corrupt installation configuration fails closed and is never echoed or
-  // silently reset; the operator restores it out of band.
-  config_unavailable: 500,
   conflict: 409,
   not_found: 404,
-  revision_conflict: 409,
   scope_conflict: 409,
   scope_exists: 409,
   tag_exists: 409,
-  test_daily_limited: 429,
-  test_rate_limited: 429,
-  test_request_conflict: 409,
 };
 
 const domainErrorStatus = (code: string): number =>
@@ -216,16 +184,11 @@ const rejectUntrustedStaffWrite = (
 };
 
 const run = async <A>(
-  runtime: NotificationRuntime,
   request: Request,
-  effect: Effect.Effect<
-    A,
-    DomainError | PersistenceError,
-    NotificationServices
-  >,
-): Promise<{ data: A } | { error: Response }> => {
+  effect: Effect.Effect<A, DomainError | PersistenceError>,
+) => {
   try {
-    const outcome = await runtime.runPromise(Effect.either(effect));
+    const outcome = await Effect.runPromise(Effect.either(effect));
     if (Either.isRight(outcome)) {
       return { data: outcome.right } as const;
     }
@@ -299,41 +262,6 @@ const parse = async <A, I>(
   }
 };
 
-/**
- * Validation for inputs that can carry secrets (provider credentials, test
- * request ids). Decoder failures are never echoed: an Effect message can
- * embed the rejected value. Responses are also no-store so a validation
- * failure is not cached.
- */
-const redactedParse = async <A, I>(
-  schema: Schema.Schema<A, I, never>,
-  value: unknown,
-) => {
-  try {
-    return { data: await decode(schema, value) } as const;
-  } catch {
-    return {
-      error: Response.json(
-        { code: 'validation_error', message: 'The request is invalid.' },
-        { headers: { 'Cache-Control': 'no-store' }, status: 422 },
-      ),
-    } as const;
-  }
-};
-
-/**
- * Copies a response with `Cache-Control: no-store` for settings surfaces.
- */
-const withNoStore = (response: Response): Response => {
-  const headers = new Headers(response.headers);
-  headers.set('Cache-Control', 'no-store');
-  return new Response(response.body, {
-    headers,
-    status: response.status,
-    statusText: response.statusText,
-  });
-};
-
 type AuthForRequest = (request: Request) => Auth;
 
 const requireAdmin = async (
@@ -381,22 +309,6 @@ const requireAdmin = async (
   }
 };
 
-// Installation email administration is open to every enabled authenticated
-// staff account. Authentication, disabled-account enforcement, origin, and
-// content-type checks still apply; public intake and API tokens are not staff
-// sessions and cannot reach these routes.
-const requireRealStaffSession = (
-  userId: null | string,
-): { error: Response } | { userId: string } => {
-  if (userId === null) {
-    return {
-      error: errorResponse(401, 'unauthorized', 'A real session is required.'),
-    };
-  }
-
-  return { userId };
-};
-
 // The public intake route is unauthenticated and cookie-free, so it answers
 // with `*` and no credentials. Scoped here rather than through
 // @elysiajs/cors, whose onRequest hook is global and would add reflected,
@@ -427,57 +339,7 @@ const withPublicCors = (
   });
 };
 
-const createAppWithAuth = (
-  environment: Env,
-  getAuth: AuthForRequest,
-  options: CreateAppOptions = {},
-) => {
-  // One composition runtime provides the configuration store, deployment
-  // capabilities, credential cipher, and provider resolver to every request
-  // effect. Subscribers are registered once at composition time; every
-  // request builds only a small scoped publisher around the Worker execution
-  // context.
-  const notificationServices = emailProviderResolverLayer(environment).pipe(
-    Layer.provideMerge(
-      Layer.mergeAll(
-        installationConfigStoreLayer(environment),
-        deploymentLayer(environment),
-        credentialCipherLayer(environment),
-      ),
-    ),
-  );
-  const runtime =
-    options.notificationRuntime ?? ManagedRuntime.make(notificationServices);
-  const subscribers: readonly LeadCreatedSubscriber[] =
-    options.notificationSubscribers ?? [
-      createLeadCreatedEmailSubscriber(environment),
-    ];
-  const eventsFor = (request: Request): LeadCreatedPublisher =>
-    createLeadCreatedPublisher({
-      runtime,
-      subscribers,
-      waitUntil: (promise) => {
-        const waitUntil = requestWaitUntil(request);
-        if (waitUntil === null) {
-          // Never silently drop the event: the publisher catches this and
-          // logs a scheduling_failed line while the lead stays committed.
-          throw new Error(
-            'No Worker execution context is registered for this request.',
-          );
-        }
-
-        waitUntil(promise);
-      },
-    });
-  const runRequest = <A>(
-    request: Request,
-    effect: Effect.Effect<
-      A,
-      DomainError | PersistenceError,
-      NotificationServices
-    >,
-  ) => run(runtime, request, effect);
-
+const createAppWithAuth = (environment: Env, getAuth: AuthForRequest) => {
   const accountEndpoints = createAccountAuthEndpoints(getAuth, environment);
   const publicIntake = new Elysia({ name: 'public-intake' })
     .options(
@@ -522,7 +384,7 @@ const createAppWithAuth = (
           return withPublicCors(parsed.error);
         }
 
-        const result = await runRequest(
+        const result = await run(
           request,
           createIntakeCommand(
             environment,
@@ -533,7 +395,6 @@ const createAppWithAuth = (
               tokenId: tokenRecord.id,
             },
             body,
-            eventsFor(request),
           ),
         );
         if ('error' in result) {
@@ -662,27 +523,19 @@ const createAppWithAuth = (
       // Contract spike: Elysia's Standard Schema path yields `code: 'VALIDATION'`
       // errors. Normalize them to the same `{ code, details, message }` envelope
       // the manual `parse()` helper returns, so clients see one error shape.
-      // Decoder messages are never returned: some schemas accept free-form
-      // values (custom fields, notes) that a message could echo. Malformed
-      // JSON is redacted only on the sensitive settings route; intake has its
-      // own route-level parser mapping (413/415).
-      .onError(({ code, error, request }) => {
+      .onError(({ code, error }) => {
         if (error instanceof Response) {
           return error;
         }
 
         if (code === 'VALIDATION') {
-          return withNoStore(
-            errorResponse(422, 'validation_error', 'The request is invalid.'),
-          );
-        }
-
-        if (
-          code === 'PARSE' &&
-          new URL(request.url).pathname.startsWith('/v1/settings/email')
-        ) {
-          return withNoStore(
-            errorResponse(422, 'validation_error', 'The request is invalid.'),
+          return errorResponse(
+            422,
+            'validation_error',
+            'The request is invalid.',
+            {
+              issue: error.message,
+            },
           );
         }
 
@@ -725,7 +578,7 @@ const createAppWithAuth = (
             return parsed.error;
           }
 
-          const result = await runRequest(
+          const result = await run(
             request,
             createIntakeCommand(
               environment,
@@ -736,7 +589,6 @@ const createAppWithAuth = (
                 tokenId: tokenRecord.id,
               },
               body,
-              eventsFor(request),
             ),
           );
           if ('error' in result) {
@@ -837,10 +689,6 @@ const createAppWithAuth = (
           // The account-sessions routes need the caller's own session row;
           // no raw token is propagated into application context.
           adminSession: admin.identity.session,
-          // Durable account id, used for self-suppression and per-user
-          // notification state. Null for the development bypass when no
-          // matching account row exists; such routes fail closed.
-          adminUserId: admin.identity.userId,
         };
       })
       .get(
@@ -871,15 +719,10 @@ const createAppWithAuth = (
       )
       .post(
         '/v1/leads',
-        async ({ adminUserId, body, request }) => {
-          const result = await runRequest(
+        async ({ body, request }) => {
+          const result = await run(
             request,
-            createLeadCommand(
-              environment,
-              body,
-              adminUserId,
-              eventsFor(request),
-            ),
+            createLeadCommand(environment, body),
           );
           return 'error' in result
             ? result.error
@@ -890,7 +733,7 @@ const createAppWithAuth = (
       .post(
         '/v1/leads/bulk-delete',
         async ({ body, request }) => {
-          const result = await runRequest(
+          const result = await run(
             request,
             softDeleteLeadsCommand(environment, body.ids),
           );
@@ -903,7 +746,7 @@ const createAppWithAuth = (
       .patch(
         '/v1/leads/:id',
         async ({ body, params, request }) => {
-          const result = await runRequest(
+          const result = await run(
             request,
             updateLeadCommand(environment, params.id, body),
           );
@@ -923,7 +766,7 @@ const createAppWithAuth = (
       .post(
         '/v1/leads/:id/activities',
         async ({ adminEmail, body, params, request }) => {
-          const result = await runRequest(
+          const result = await run(
             request,
             createLeadActivityCommand(
               environment,
@@ -952,7 +795,7 @@ const createAppWithAuth = (
       // Tag catalog. Scopes are inferred from `prefix:value` names; the API is
       // the exclusivity boundary and the database constraint is the backstop.
       .get('/v1/tags', async ({ request }) => {
-        const result = await runRequest(request, listTagsCommand(environment));
+        const result = await run(request, listTagsCommand(environment));
         return 'error' in result ? result.error : { data: result.data };
       })
       .post('/v1/tags', async ({ body, request }) => {
@@ -961,7 +804,7 @@ const createAppWithAuth = (
           return parsed.error;
         }
 
-        const result = await runRequest(
+        const result = await run(
           request,
           createTagCommand(environment, parsed.data.name),
         );
@@ -977,7 +820,7 @@ const createAppWithAuth = (
           return parsed.error;
         }
 
-        const result = await runRequest(
+        const result = await run(
           request,
           updateTagScopeCommand(environment, params.id, parsed.data),
         );
@@ -989,14 +832,14 @@ const createAppWithAuth = (
           return parsed.error;
         }
 
-        const result = await runRequest(
+        const result = await run(
           request,
           updateTagCommand(environment, params.id, parsed.data),
         );
         return 'error' in result ? result.error : { data: result.data.tag };
       })
       .delete('/v1/tags/:id', async ({ params, request }) => {
-        const result = await runRequest(
+        const result = await run(
           request,
           deleteTagCommand(environment, params.id),
         );
@@ -1010,7 +853,7 @@ const createAppWithAuth = (
           return parsed.error;
         }
 
-        const result = await runRequest(
+        const result = await run(
           request,
           setLeadTagsCommand(environment, params.id, parsed.data.tagIds),
         );
@@ -1022,7 +865,7 @@ const createAppWithAuth = (
           return parsed.error;
         }
 
-        const result = await runRequest(
+        const result = await run(
           request,
           bulkTagCommand(
             environment,
@@ -1143,7 +986,7 @@ const createAppWithAuth = (
           );
         }
 
-        const result = await runRequest(
+        const result = await run(
           request,
           listAccountSessionsCommand(environment, adminSession),
         );
@@ -1160,7 +1003,7 @@ const createAppWithAuth = (
             );
           }
 
-          const result = await runRequest(
+          const result = await run(
             request,
             revokeAccountSessionCommand(environment, adminSession, params.id),
           );
@@ -1192,7 +1035,7 @@ const createAppWithAuth = (
             );
           }
 
-          const result = await runRequest(
+          const result = await run(
             request,
             revokeOtherAccountSessionsCommand(environment, adminSession),
           );
@@ -1201,166 +1044,8 @@ const createAppWithAuth = (
             : { data: { revoked: result.data } };
         },
       )
-      // Self-service notification preference. The session user id is
-      // authoritative; no path or body field can address another staff
-      // member's row.
-      .get('/v1/account/notifications', async ({ adminUserId, request }) => {
-        if (adminUserId === null) {
-          return errorResponse(
-            401,
-            'unauthorized',
-            'A real session is required.',
-          );
-        }
-
-        const result = await runRequest(
-          request,
-          getNotificationPreferenceView(environment, adminUserId),
-        );
-        return 'error' in result ? result.error : { data: result.data };
-      })
-      .put(
-        '/v1/account/notifications',
-        async ({ adminUserId, body, request }) => {
-          if (adminUserId === null) {
-            return errorResponse(
-              401,
-              'unauthorized',
-              'A real session is required.',
-            );
-          }
-
-          const parsed = await parse(
-            UpdateNotificationPreferenceRequestSchema,
-            body,
-          );
-          if ('error' in parsed) {
-            return parsed.error;
-          }
-
-          const result = await runRequest(
-            request,
-            updateNotificationPreferenceCommand(
-              environment,
-              adminUserId,
-              parsed.data.newLeadEmail,
-            ),
-          );
-          return 'error' in result ? result.error : { data: result.data };
-        },
-      )
-      // Installation email settings. The shared staff session guard above
-      // already enforces authentication, disabled accounts, trusted writes,
-      // and JSON bodies; every enabled staff account may manage the
-      // installation's email configuration.
-      .get('/v1/settings/email', async ({ adminUserId, request }) => {
-        const admin = requireRealStaffSession(adminUserId);
-        if ('error' in admin) {
-          return withNoStore(admin.error);
-        }
-
-        const result = await runRequest(
-          request,
-          getEmailSettingsViewCommand(resolveAuthOrigin(environment, request)),
-        );
-        if ('error' in result) {
-          return withNoStore(result.error);
-        }
-
-        return Response.json(
-          { data: result.data },
-          { headers: { 'Cache-Control': 'no-store' } },
-        );
-      })
-      .put('/v1/settings/email', async ({ adminUserId, body, request }) => {
-        const admin = requireRealStaffSession(adminUserId);
-        if ('error' in admin) {
-          return withNoStore(admin.error);
-        }
-
-        const parsed = await redactedParse(
-          UpdateEmailSettingsRequestSchema,
-          body,
-        );
-        if ('error' in parsed) {
-          return parsed.error;
-        }
-
-        const result = await runRequest(
-          request,
-          updateEmailSettingsCommand({
-            actorUserId: admin.userId,
-            canonicalOrigin: resolveAuthOrigin(environment, request),
-            credential: parsed.data.credential,
-            enabled: parsed.data.enabled,
-            expectedRevision: parsed.data.expectedRevision,
-            fromEmail: parsed.data.fromEmail ?? null,
-            fromName: parsed.data.fromName ?? null,
-            provider: parsed.data.provider,
-          }),
-        );
-        if ('error' in result) {
-          return withNoStore(result.error);
-        }
-
-        return Response.json(
-          { data: result.data },
-          { headers: { 'Cache-Control': 'no-store' } },
-        );
-      })
-      .post(
-        '/v1/settings/email/test',
-        async ({ adminEmail, adminUserId, body, request }) => {
-          const admin = requireRealStaffSession(adminUserId);
-          if ('error' in admin) {
-            return withNoStore(admin.error);
-          }
-
-          const parsed = await redactedParse(SendEmailTestRequestSchema, body);
-          if ('error' in parsed) {
-            return parsed.error;
-          }
-
-          const result = await runRequest(
-            request,
-            sendTestEmailCommand({
-              actorEmail: adminEmail.toLowerCase(),
-              actorUserId: admin.userId,
-              canonicalOrigin: resolveAuthOrigin(environment, request),
-              expectedRevision: parsed.data.expectedRevision,
-              requestId: parsed.data.requestId,
-            }),
-          );
-          if ('error' in result) {
-            return withNoStore(result.error);
-          }
-
-          return Response.json(
-            { data: result.data },
-            { headers: { 'Cache-Control': 'no-store' } },
-          );
-        },
-      )
   );
 };
 
-export type CreateAppOptions = {
-  /**
-   * Composition runtime for notification services. Tests may provide a
-   * runtime with test provider/store layers; production omits it.
-   */
-  notificationRuntime?: NotificationRuntime;
-  /**
-   * Fixed subscriber list for best-effort notification events. Production
-   * omits this and gets the real email subscriber; tests may pass recording
-   * subscribers.
-   */
-  notificationSubscribers?: readonly LeadCreatedSubscriber[];
-};
-
-export const createApp = (environment: Env, options: CreateAppOptions = {}) =>
-  createAppWithAuth(
-    environment,
-    (request) => createAuth(environment, request),
-    options,
-  );
+export const createApp = (environment: Env) =>
+  createAppWithAuth(environment, (request) => createAuth(environment, request));

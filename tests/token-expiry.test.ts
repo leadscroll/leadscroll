@@ -10,8 +10,8 @@ import { expect, test } from 'vitest';
  *
  * The worker runs in Miniflare in PRODUCTION mode behind a real signed-in
  * admin session (no dev allowlist). The fixture applies the real drizzle/
- * baseline against in-memory D1 and seeds legacy/expired hashed rows
- * directly, so
+ * migrations (including the nullable api_tokens.expires_at added in s1)
+ * against in-memory D1 and seeds legacy/expired hashed rows directly, so
  * the legacy NULL-expiry compatibility path and the 401-before-writes
  * ordering are exercised against the same database the Worker uses.
  */
@@ -113,13 +113,12 @@ const startFixture = async (): Promise<Fixture> => {
       .toSorted();
     for (const name of names) {
       const sql = await readFile(join(repoRoot, 'drizzle', name), 'utf8');
-      await database.batch(
-        sql
-          .split('--> statement-breakpoint')
-          .map((chunk) => chunk.trim())
-          .filter(Boolean)
-          .map((statement) => database.prepare(statement)),
-      );
+      for (const statement of sql
+        .split('--> statement-breakpoint')
+        .map((chunk) => chunk.trim())
+        .filter(Boolean)) {
+        await database.prepare(statement).run();
+      }
     }
 
     const raw = async (

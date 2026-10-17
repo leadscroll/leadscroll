@@ -2,12 +2,6 @@ import { useSession } from '@/lib/auth-client';
 import { useQueryClient } from '@tanstack/react-query';
 import { useEffect } from 'react';
 
-/**
- * Identity boundary for per-user caches. Query keys isolate rendering
- * immediately; this effect removes another identity's data as soon as auth
- * changes (including sign-out) so a subsequent login cannot read a previous
- * user's cached settings or capabilities.
- */
 export const AccountSessionCacheBoundary = ({
   children,
 }: {
@@ -18,17 +12,12 @@ export const AccountSessionCacheBoundary = ({
   const userId = session?.user.id;
   const sessionId = session?.session.id;
   useEffect(() => {
+    // Keys isolate rendering immediately; remove old identities and cancel their
+    // requests as soon as the auth identity changes, including sign-out.
     const filters = {
-      predicate: (query: { queryKey: readonly unknown[] }) => {
-        const [root, keyUserId, keySessionId] = query.queryKey;
-        if (root === 'account-sessions') {
-          return keyUserId !== userId || keySessionId !== sessionId;
-        }
-
-        return root === 'email-settings' || root === 'notification-preference'
-          ? keyUserId !== userId
-          : false;
-      },
+      predicate: (query: { queryKey: readonly unknown[] }) =>
+        query.queryKey[0] === 'account-sessions' &&
+        (query.queryKey[1] !== userId || query.queryKey[2] !== sessionId),
     };
     void queryClient.cancelQueries(filters);
     queryClient.removeQueries(filters);

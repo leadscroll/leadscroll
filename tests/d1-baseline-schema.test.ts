@@ -141,13 +141,10 @@ describe('squashed baseline schema', () => {
       'account',
       'activities',
       'api_tokens',
-      'audit_log',
       'bootstrap_state',
       'idempotency_keys',
-      'installation_config',
       'lead_tags',
       'leads',
-      'notification_preferences',
       'rate_limit',
       'registration_claims',
       'session',
@@ -162,12 +159,9 @@ describe('squashed baseline schema', () => {
     for (const table of [
       'activities',
       'api_tokens',
-      'audit_log',
       'idempotency_keys',
-      'installation_config',
       'lead_tags',
       'leads',
-      'notification_preferences',
       'tag_scopes',
       'tags',
     ]) {
@@ -202,12 +196,6 @@ describe('squashed baseline schema', () => {
 
   test('preserves installation-wide uniqueness and exclusivity constraints', async () => {
     const { database } = await fixture();
-    await database
-      .prepare(
-        "INSERT INTO user (id, name, email, email_verified, created_at, updated_at) VALUES ('user-1', 'User', 'user@example.test', 1, ?, ?)",
-      )
-      .bind(NOW, NOW)
-      .run();
     await database
       .prepare(
         `INSERT INTO leads (id, email, source, custom_fields, created_at, updated_at)
@@ -249,19 +237,6 @@ describe('squashed baseline schema', () => {
          VALUES ('idem-1', 'request-hash', '{}', ?)`,
       )
       .bind(NOW)
-      .run();
-    await database
-      .prepare(
-        `INSERT INTO notification_preferences (user_id, new_lead_email, updated_at)
-         VALUES ('user-1', 1, ?)`,
-      )
-      .bind(NOW)
-      .run();
-    await database
-      .prepare(
-        `INSERT INTO installation_config (id, document_json, write_version, write_token)
-         VALUES ('installation', '{}', 1, 'write-token')`,
-      )
       .run();
 
     await expect(
@@ -321,31 +296,6 @@ describe('squashed baseline schema', () => {
            VALUES ('idem-1', 'other-hash', '{}', ?)`,
         )
         .bind(NOW)
-        .run(),
-    ).rejects.toThrow(/UNIQUE constraint failed/u);
-    await expect(
-      database
-        .prepare(
-          `INSERT INTO notification_preferences (user_id, new_lead_email, updated_at)
-           VALUES ('user-1', 0, ?)`,
-        )
-        .bind(NOW)
-        .run(),
-    ).rejects.toThrow(/UNIQUE constraint failed/u);
-    await expect(
-      database
-        .prepare(
-          `INSERT INTO installation_config (id, document_json, write_version, write_token)
-           VALUES ('other', '{}', 1, NULL)`,
-        )
-        .run(),
-    ).rejects.toThrow(/CHECK constraint failed/u);
-    await expect(
-      database
-        .prepare(
-          `INSERT INTO installation_config (id, document_json, write_version, write_token)
-           VALUES ('installation', '{}', 1, NULL)`,
-        )
         .run(),
     ).rejects.toThrow(/UNIQUE constraint failed/u);
     await expect(

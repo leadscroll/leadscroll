@@ -9,13 +9,10 @@ import {
 import {
   activities,
   apiTokens,
-  auditLog,
   bootstrapState,
   idempotencyKeys,
-  installationConfig,
   leads,
   leadTags,
-  notificationPreferences,
   session,
   staffInvites,
   tags,
@@ -26,22 +23,12 @@ import { type RegistrationGrant } from '@/auth/registration-repository';
 import { type IntakeResponse } from '@/domain/intake';
 import { encodeKeysetCursor, type Keyset } from '@/domain/pagination';
 import {
-  type AuditChange,
-  type AuditRecord,
-  type AuditWrite,
   type CreateLeadRequest,
-  decodeAuditChanges,
-  decodeInstallationConfig,
-  DEFAULT_INSTALLATION_CONFIG,
-  INSTALLATION_CONFIG_ID,
-  type InstallationConfig,
   type IntakeRequest,
   normalizeEmail,
   type SkippedField,
   type TagColor,
   type UpdateLeadRequest,
-  validateAuditWrite,
-  validateInstallationConfig,
 } from '@/domain/schemas';
 import { normalizeSourceTag, tagLabel, type TagSpec } from '@/domain/tags';
 import {
@@ -54,8 +41,6 @@ import {
   gt,
   isNotNull,
   isNull,
-  lt,
-  ne,
   or,
   sql,
 } from 'drizzle-orm';
@@ -70,14 +55,6 @@ export type Env = {
   DB: Database;
   // Development/test-only identity bypass. Never honored in production.
   DEV_ADMIN_EMAIL?: string;
-  // Optional native Cloudflare Email Sending binding. Declared by standard
-  // installations and invoked only when the saved provider is `cloudflare`;
-  // disabled/Resend paths must never call or probe it.
-  EMAIL?: Pick<SendEmail, 'send'>;
-  // Dedicated AES-256-GCM root key for UI-entered provider credentials. Not
-  // required by the base CRM; absent means credential writes and sends fail
-  // closed while Disable and ordinary CRM features keep working.
-  EMAIL_SETTINGS_ENCRYPTION_KEY?: string;
   ENVIRONMENT: 'development' | 'production' | 'test';
   // Invite token required to create a staff account (X-Setup-Token header on
   // POST /api/auth/sign-up/email). Unset or empty rejects every sign-up.
@@ -328,7 +305,9 @@ const tagViewsForLeads = async (
     .innerJoin(tags, eq(tags.id, leadTags.tagId))
     .leftJoin(tagScopes, eq(tagScopes.id, tags.scopeId))
     .where(
-      sql`${leadTags.leadId} IN (SELECT value FROM json_each(${JSON.stringify(leadIds)}))`,
+      and(
+        sql`${leadTags.leadId} IN (SELECT value FROM json_each(${JSON.stringify(leadIds)}))`,
+      ),
     )
     .orderBy(asc(tags.name));
 
@@ -1037,7 +1016,7 @@ export const getIntakeKey = async (
   const row = await getDatabase(environment)
     .select()
     .from(idempotencyKeys)
-    .where(eq(idempotencyKeys.key, idempotencyKey))
+    .where(and(eq(idempotencyKeys.key, idempotencyKey)))
     .get();
   return row
     ? {
@@ -1380,7 +1359,9 @@ const missingTagIds = async (
     .select({ id: tags.id })
     .from(tags)
     .where(
-      sql`${tags.id} IN (SELECT value FROM json_each(${JSON.stringify(tagIds)}))`,
+      and(
+        sql`${tags.id} IN (SELECT value FROM json_each(${JSON.stringify(tagIds)}))`,
+      ),
     );
   const present = new Set(rows.map((row) => row.id));
   return tagIds.filter((tagId) => !present.has(tagId));
@@ -1831,7 +1812,9 @@ const resolveAssignmentsByIds = async (
     .select({ id: tags.id, scopeId: tags.scopeId })
     .from(tags)
     .where(
-      sql`${tags.id} IN (SELECT value FROM json_each(${JSON.stringify(unique)}))`,
+      and(
+        sql`${tags.id} IN (SELECT value FROM json_each(${JSON.stringify(unique)}))`,
+      ),
     );
   const byId = new Map<string, null | string>(
     rows.map((row) => [row.id, row.scopeId]),
@@ -2143,9 +2126,6 @@ export const createLeadAtomically = async (
     environment.DB,
     'INSERT INTO idempotency_keys (key, request_hash, response_json, created_at) VALUES (?, ?, ?, ?)',
   ).bind(idempotencyKey, requestHash, JSON.stringify(response), timestamp);
-  // Recipient selection and notification are best-effort event work now: the
-  // lead and its idempotency row commit here, and the application command
-  // publishes `lead.created` only after this function reports a new commit.
 
   // A concurrent writer can create the same scope/tag between the plan read
   // and the batch, which aborts the whole batch on the unique index. Because
@@ -2409,375 +2389,4 @@ export const createLeadActivity = async (
   };
   await getDatabase(environment).insert(activities).values(record);
   return record;
-};
-
-// --- New-lead email notifications -------------------------------------------
-//
-// Persistence for personal preferences and the installation-wide
-// configuration document. Drizzle stays inside this module per the repository
-// boundary; recipient selection, provider policy, and delivery live in
-// src/application and src/notifications.
-
-export type NotificationPreferenceRecord =
-  typeof notificationPreferences.$inferSelect;
-
-// --- Personal preferences ---------------------------------------------------
-
-export const getNotificationPreference = async (
-  environment: Env,
-  userId: string,
-): Promise<NotificationPreferenceRecord | null> => {
-  const row = await getDatabase(environment)
-    .select()
-    .from(notificationPreferences)
-    .where(eq(notificationPreferences.userId, userId))
-    .get();
-  return row ?? null;
-};
-
-export const upsertNotificationPreference = async (
-  environment: Env,
-  userId: string,
-  newLeadEmail: boolean,
-  timestamp: Date,
-): Promise<void> => {
-  await getDatabase(environment)
-    .insert(notificationPreferences)
-    .values({
-      newLeadEmail,
-      updatedAt: timestamp,
-      userId,
-    })
-    .onConflictDoUpdate({
-      set: { newLeadEmail, updatedAt: timestamp },
-      target: notificationPreferences.userId,
-    });
-};
-
-export type LeadCreatedRecipient = {
-  email: string;
-  userId: string;
-};
-
-/**
- * Opted-in, enabled recipients for a newly created lead. The manual creator
- * is excluded when an actor is known. Selection is read at notification time
- * rather than written with the lead, so a preference change before the best-
- * effort delivery is honored.
- */
-export const listLeadCreatedRecipients = async (
-  environment: Env,
-  actorUserId: null | string,
-): Promise<LeadCreatedRecipient[]> => {
-  const rows = await getDatabase(environment)
-    .select({ email: user.email, userId: notificationPreferences.userId })
-    .from(notificationPreferences)
-    .innerJoin(user, eq(user.id, notificationPreferences.userId))
-    .where(
-      and(
-        eq(notificationPreferences.newLeadEmail, true),
-        isNull(user.disabledAt),
-        actorUserId === null
-          ? undefined
-          : ne(notificationPreferences.userId, actorUserId),
-      ),
-    );
-  return rows;
-};
-
-// --- Installation configuration ---------------------------------------------
-//
-// One singleton JSON document per installation. The JSON column is typed with
-// the domain schema for compile-time safety, while authoritative validation
-// still happens in src/domain/schemas.ts on every read and before every write.
-// `write_version` is the internal compare-and-swap token. A corrupt or
-// unsupported document throws `InstallationConfigDecodeError` and is never
-// silently replaced.
-
-export type InstallationConfigRow = {
-  document: InstallationConfig;
-  writeVersion: number;
-};
-
-export class InstallationConfigDecodeError extends Error {
-  constructor() {
-    super('The installation configuration document is invalid.');
-    this.name = 'InstallationConfigDecodeError';
-  }
-}
-
-export const readInstallationConfig = async (
-  environment: Env,
-): Promise<InstallationConfigRow> => {
-  let row:
-    undefined | { documentJson: InstallationConfig; writeVersion: number };
-  try {
-    row = await getDatabase(environment)
-      .select({
-        documentJson: installationConfig.documentJson,
-        writeVersion: installationConfig.writeVersion,
-      })
-      .from(installationConfig)
-      .where(eq(installationConfig.id, INSTALLATION_CONFIG_ID))
-      .get();
-  } catch (error) {
-    // Drizzle's JSON column mode parses the stored TEXT while mapping the
-    // row, so malformed JSON fails here. Report the redacted decode error and
-    // leave the stored row untouched; other database faults still propagate.
-    if (error instanceof SyntaxError) {
-      throw new InstallationConfigDecodeError();
-    }
-
-    throw error;
-  }
-
-  if (row === undefined) {
-    return { document: DEFAULT_INSTALLATION_CONFIG, writeVersion: 0 };
-  }
-
-  const document = decodeInstallationConfig(row.documentJson);
-  if (document === null) {
-    throw new InstallationConfigDecodeError();
-  }
-
-  return { document, writeVersion: row.writeVersion };
-};
-
-const auditStatements = (
-  environment: Env,
-  input: {
-    actorUserId: null | string;
-    now: Date;
-    records: readonly AuditWrite[];
-  },
-  writeToken: string,
-): Statement[] =>
-  input.records.map((record) => {
-    const validated = validateAuditWrite(record);
-    return prepare(
-      environment.DB,
-      `INSERT INTO audit_log (
-          id, actor_user_id, created_at, action, resource_type,
-          resource_id, changes_json
-        )
-        SELECT ?, ?, ?, ?, ?, ?, ?
-        WHERE EXISTS (
-          SELECT 1 FROM installation_config
-          WHERE id = '${INSTALLATION_CONFIG_ID}' AND write_token = ?
-        )`,
-    ).bind(
-      crypto.randomUUID(),
-      input.actorUserId,
-      input.now.getTime(),
-      validated.action,
-      validated.resourceType,
-      validated.resourceId,
-      // The CAS/audit guard is a narrow raw-SQL exception: D1's conditional
-      // batch needs the serialized JSON form here, so serialize once after
-      // schema validation.
-      JSON.stringify(validated.changes),
-      writeToken,
-    );
-  });
-
-export type InstallationConfigWriteInput = {
-  actorUserId: null | string;
-  audit?: readonly AuditWrite[];
-  document: InstallationConfig;
-  expectedWriteVersion: number;
-  now: Date;
-};
-
-/**
- * Compare-and-swap write. Returns false when `expectedWriteVersion` is stale;
- * the caller re-reads and retries. Audit statements are gated on the write
- * version produced by this same atomic batch, so a lost race cannot leave a
- * phantom audit entry and a successful write always has its audit rows.
- */
-export const writeInstallationConfig = async (
-  environment: Env,
-  input: InstallationConfigWriteInput,
-): Promise<boolean> => {
-  // Candidate validation is authoritative even though Drizzle serializes the
-  // JSON column; the raw CAS batch below needs the serialized form.
-  const document = validateInstallationConfig(input.document);
-  const documentJson = JSON.stringify(document);
-  const nextWriteVersion = input.expectedWriteVersion + 1;
-  const writeToken = randomToken('config-');
-  const audit = auditStatements(
-    environment,
-    {
-      actorUserId: input.actorUserId,
-      now: input.now,
-      records: input.audit ?? [],
-    },
-    writeToken,
-  );
-
-  if (input.expectedWriteVersion === 0) {
-    const insert = prepare(
-      environment.DB,
-      `INSERT INTO installation_config (
-          id, document_json, write_version, write_token
-        ) VALUES ('${INSTALLATION_CONFIG_ID}', ?, 1, ?)`,
-    ).bind(documentJson, writeToken);
-    try {
-      const inserted = await executeAtomicallyWithResults(environment.DB, [
-        insert,
-        ...audit,
-      ]);
-      return (inserted[0]?.meta?.changes ?? 0) > 0;
-    } catch (error) {
-      if (isUniqueViolation(error)) {
-        return false;
-      }
-
-      throw error;
-    }
-  }
-
-  const update = prepare(
-    environment.DB,
-    `UPDATE installation_config
-      SET document_json = ?, write_version = ?, write_token = ?
-      WHERE id = '${INSTALLATION_CONFIG_ID}' AND write_version = ?`,
-  ).bind(
-    documentJson,
-    nextWriteVersion,
-    writeToken,
-    input.expectedWriteVersion,
-  );
-  const results = await executeAtomicallyWithResults(environment.DB, [
-    update,
-    ...audit,
-  ]);
-  return (results[0]?.meta?.changes ?? 0) > 0;
-};
-
-// --- Generic audit log ------------------------------------------------------
-
-export type AuditLogPage = {
-  items: AuditRecord[];
-  nextCursor: null | string;
-};
-
-export class AuditLogDecodeError extends Error {
-  constructor() {
-    super('The audit log entry is invalid.');
-    this.name = 'AuditLogDecodeError';
-  }
-}
-
-/**
- * Append-only audit writer for producers that do not need the atomic
- * configuration compare-and-swap. Values are validated and bounded by the
- * shared schemas before they reach D1.
- */
-export const appendAuditLog = async (
-  environment: Env,
-  input: {
-    actorUserId: null | string;
-    now: Date;
-    records: readonly AuditWrite[];
-  },
-): Promise<void> => {
-  if (input.records.length === 0) {
-    return;
-  }
-
-  await getDatabase(environment)
-    .insert(auditLog)
-    .values(
-      input.records.map((record) => {
-        const validated = validateAuditWrite(record);
-        return {
-          action: validated.action,
-          actorUserId: input.actorUserId,
-          changesJson: validated.changes,
-          createdAt: input.now,
-          id: crypto.randomUUID(),
-          resourceId: validated.resourceId,
-          resourceType: validated.resourceType,
-        };
-      }),
-    );
-};
-
-/**
- * Keyset query over the audit log, newest first. Row changes are decoded and
- * validated; a corrupt row fails closed instead of leaking raw JSON.
- */
-export const listAuditLog = async (
-  environment: Env,
-  options: { cursor: Keyset | null; limit: number },
-): Promise<AuditLogPage> => {
-  const database = getDatabase(environment);
-  const keyset =
-    options.cursor === null
-      ? undefined
-      : or(
-          lt(auditLog.createdAt, new Date(options.cursor.createdAt)),
-          and(
-            eq(auditLog.createdAt, new Date(options.cursor.createdAt)),
-            lt(auditLog.id, options.cursor.id),
-          ),
-        );
-  let rows: Array<{
-    action: string;
-    actorUserId: null | string;
-    changesJson: readonly AuditChange[];
-    createdAt: Date;
-    id: string;
-    resourceId: null | string;
-    resourceType: string;
-  }>;
-  try {
-    rows = await database
-      .select({
-        action: auditLog.action,
-        actorUserId: auditLog.actorUserId,
-        changesJson: auditLog.changesJson,
-        createdAt: auditLog.createdAt,
-        id: auditLog.id,
-        resourceId: auditLog.resourceId,
-        resourceType: auditLog.resourceType,
-      })
-      .from(auditLog)
-      .where(keyset)
-      .orderBy(desc(auditLog.createdAt), desc(auditLog.id))
-      .limit(options.limit + 1);
-  } catch (error) {
-    if (error instanceof SyntaxError) {
-      throw new AuditLogDecodeError();
-    }
-
-    throw error;
-  }
-
-  const items: AuditRecord[] = rows.slice(0, options.limit).map((row) => {
-    const changes: null | readonly AuditChange[] = decodeAuditChanges(
-      row.changesJson,
-    );
-    if (changes === null) {
-      throw new AuditLogDecodeError();
-    }
-
-    return {
-      action: row.action,
-      actorUserId: row.actorUserId,
-      changes,
-      createdAt: row.createdAt.toISOString(),
-      id: row.id,
-      resourceId: row.resourceId,
-      resourceType: row.resourceType,
-    };
-  });
-  const last = items.at(-1);
-  return {
-    items,
-    nextCursor:
-      rows.length > options.limit && last !== undefined
-        ? encodeKeysetCursor({ createdAt: last.createdAt, id: last.id })
-        : null,
-  };
 };

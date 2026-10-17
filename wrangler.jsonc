@@ -22,10 +22,6 @@
       "migrations_dir": "drizzle"
     }
   ],
-  // Native Cloudflare Email Sending binding. Declared by default and invoked
-  // only when the saved provider is `cloudflare`; disabled and Resend modes
-  // never call or probe it. See docs/email-notifications.md.
-  "send_email": [{ "name": "EMAIL" }],
   "vars": {
     "ENVIRONMENT": "production"
   }

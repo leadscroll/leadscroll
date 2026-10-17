@@ -10,7 +10,7 @@ import { expect, test } from 'vitest';
  * request fingerprints, replay/conflict/legacy handling,
  * token rotation, key validation, and the bounded raw-body limit.
  *
- * Every test builds its own Miniflare + in-memory D1 fixture (baseline
+ * Every test builds its own Miniflare + in-memory D1 fixture (migrations
  * applied from drizzle/), so tests are independently runnable and never rely
  * on setup performed by a preceding test.
  */
@@ -169,13 +169,12 @@ const startFixture = async (
       .toSorted();
     for (const [index, name] of names.entries()) {
       const sql = await readFile(join(repoRoot, 'drizzle', name), 'utf8');
-      await database.batch(
-        sql
-          .split('--> statement-breakpoint')
-          .map((chunk) => chunk.trim())
-          .filter(Boolean)
-          .map((statement) => database.prepare(statement)),
-      );
+      for (const statement of sql
+        .split('--> statement-breakpoint')
+        .map((chunk) => chunk.trim())
+        .filter(Boolean)) {
+        await database.prepare(statement).run();
+      }
 
       if (options.legacy && index === 0) {
         // Inserted after the only baseline migration: this legacy row has no

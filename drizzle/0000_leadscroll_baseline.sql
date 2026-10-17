@@ -1,4 +1,4 @@
--- Squashed baseline epoch: final installation-wide schema (no workspaces).
+-- Squashed baseline epoch: final installation-wide CRM schema (no workspaces).
 -- Generated from src/db/schema.ts. The registration grant trigger and the
 -- bootstrap seed below are hand-written SQL that Drizzle does not model.
 CREATE TABLE `activities` (
@@ -29,18 +29,6 @@ CREATE TABLE `api_tokens` (
 --> statement-breakpoint
 CREATE UNIQUE INDEX `api_tokens_token_unique` ON `api_tokens` (`token`);--> statement-breakpoint
 CREATE UNIQUE INDEX `api_tokens_token_hash_unique` ON `api_tokens` (`token_hash`);--> statement-breakpoint
-CREATE TABLE `audit_log` (
-	`action` text NOT NULL,
-	`actor_user_id` text,
-	`changes_json` text NOT NULL,
-	`created_at` integer NOT NULL,
-	`id` text PRIMARY KEY NOT NULL,
-	`resource_id` text,
-	`resource_type` text NOT NULL,
-	FOREIGN KEY (`actor_user_id`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE set null
-);
---> statement-breakpoint
-CREATE INDEX `audit_log_created_idx` ON `audit_log` (`created_at`);--> statement-breakpoint
 CREATE TABLE `bootstrap_state` (
 	`consumed_at` integer,
 	`created_at` integer NOT NULL,
@@ -57,14 +45,6 @@ CREATE TABLE `idempotency_keys` (
 );
 --> statement-breakpoint
 CREATE UNIQUE INDEX `idempotency_key_unique` ON `idempotency_keys` (`key`);--> statement-breakpoint
-CREATE TABLE `installation_config` (
-	`document_json` text NOT NULL,
-	`id` text PRIMARY KEY NOT NULL,
-	`write_token` text,
-	`write_version` integer DEFAULT 1 NOT NULL,
-	CONSTRAINT "installation_config_singleton" CHECK("id" = 'installation')
-);
---> statement-breakpoint
 CREATE TABLE `lead_tags` (
 	`created_at` integer NOT NULL,
 	`id` text PRIMARY KEY NOT NULL,
@@ -99,13 +79,6 @@ CREATE TABLE `leads` (
 --> statement-breakpoint
 CREATE INDEX `leads_email_idx` ON `leads` (`email`);--> statement-breakpoint
 CREATE INDEX `leads_created_idx` ON `leads` (`created_at`);--> statement-breakpoint
-CREATE TABLE `notification_preferences` (
-	`new_lead_email` integer DEFAULT false NOT NULL,
-	`updated_at` integer NOT NULL,
-	`user_id` text PRIMARY KEY NOT NULL,
-	FOREIGN KEY (`user_id`) REFERENCES `user`(`id`) ON UPDATE no action ON DELETE cascade
-);
---> statement-breakpoint
 CREATE TABLE `rate_limit` (
 	`count` integer NOT NULL,
 	`id` text PRIMARY KEY NOT NULL,

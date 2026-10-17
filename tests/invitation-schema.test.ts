@@ -31,9 +31,9 @@ const splitStatements = (sql: string): string[] =>
 
 const applyFile = async (database: D1Database, name: string): Promise<void> => {
   const sql = await readFile(join(repoRoot, 'drizzle', name), 'utf8');
-  await database.batch(
-    splitStatements(sql).map((statement) => database.prepare(statement)),
-  );
+  for (const statement of splitStatements(sql)) {
+    await database.prepare(statement).run();
+  }
 };
 
 const allRows = async (
