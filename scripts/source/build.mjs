@@ -3,6 +3,7 @@ import {
   sourceBuildFormat,
   validateSourceManifest,
 } from './manifest.mjs';
+import { sourceWorkerWrapper } from './wrapper.mjs';
 import { build } from 'esbuild';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
@@ -111,21 +112,17 @@ await build({
   // This bundle runs inside workerd after installation. Selecting browser
   // exports here would embed Better Auth's shared-slot async-storage polyfill.
   conditions: ['workerd'],
+  // Mirror `wrangler deploy`: production builds fold `process.env.NODE_ENV`
+  // to "production", which keeps the pinned Resend SDK's raw-error logger
+  // inert without any runtime mutation.
+  define: { 'process.env.NODE_ENV': '"production"' },
   external: ['cloudflare:*', 'node:*'],
   format: 'esm',
   legalComments: 'linked',
   outfile: join(destination, 'worker.mjs'),
   platform: 'browser',
   stdin: {
-    contents: `import core from './src/worker-global.ts';
-export default {
-  async fetch(request, env, ctx) {
-    const response = await core.fetch(request, env, ctx);
-    const stamped = new Response(response.body, response);
-    stamped.headers.set('X-LeadScroll-Commit', ${JSON.stringify(commit)});
-    return stamped;
-  }
-};`,
+    contents: sourceWorkerWrapper(commit),
     resolveDir: source,
     sourcefile: 'source-build-entry.js',
   },

@@ -376,3 +376,392 @@ export const AccountSessionViewSchema = Schema.Struct({
 export type AccountSessionView = Schema.Schema.Type<
   typeof AccountSessionViewSchema
 >;
+
+// New-lead email notifications. Personal preferences stay separate from
+// installation-level email settings; "availability" is a closed, safe summary
+// computed from the saved provider configuration.
+export const NotificationAvailabilitySchema = Schema.Literal(
+  'configured',
+  'disabled',
+  'misconfigured',
+);
+export type NotificationAvailability = Schema.Schema.Type<
+  typeof NotificationAvailabilitySchema
+>;
+
+export const UpdateNotificationPreferenceRequestSchema = Schema.Struct({
+  newLeadEmail: Schema.Boolean,
+}).annotations({
+  description:
+    'Opt in or out of email alerts for newly created leads. Defaults off.',
+});
+export type UpdateNotificationPreferenceRequest = Schema.Schema.Type<
+  typeof UpdateNotificationPreferenceRequestSchema
+>;
+
+// Installation-wide configuration. `expectedRevision` is a server-generated,
+// user-visible compare-and-swap token; the credential operation is explicit
+// keep/replace/remove so a blank key field can never erase a stored
+// credential. The persisted document is validated against this schema on
+// every read and before every write; a corrupt or unsupported document fails
+// closed and is never silently reset.
+export const EmailSettingsProviderSchema = Schema.Literal(
+  'cloudflare',
+  'disabled',
+  'resend',
+);
+export type EmailSettingsProvider = Schema.Schema.Type<
+  typeof EmailSettingsProviderSchema
+>;
+
+export const EmailCredentialOperationSchema = Schema.Struct({
+  operation: Schema.Literal('keep', 'remove', 'replace'),
+  value: Schema.optional(Schema.String.pipe(Schema.maxLength(512))),
+}).annotations({
+  description:
+    'keep preserves the stored provider key, replace stores the supplied value, remove deletes it and disables the affected provider.',
+});
+
+export const UpdateEmailSettingsRequestSchema = Schema.Struct({
+  credential: EmailCredentialOperationSchema,
+  enabled: Schema.Boolean,
+  expectedRevision: Schema.Number.pipe(Schema.int(), Schema.nonNegative()),
+  fromEmail: Schema.optional(Schema.NullOr(EmailSchema)),
+  fromName: Schema.optional(
+    Schema.NullOr(NonEmptyStringSchema.pipe(Schema.maxLength(120))),
+  ),
+  provider: EmailSettingsProviderSchema,
+}).annotations({
+  description:
+    'Saves installation email settings. Never sends a test automatically and never accepts a client-chosen origin or provider base URL.',
+});
+export type EmailCredentialOperation = Schema.Schema.Type<
+  typeof EmailCredentialOperationSchema
+>;
+export type UpdateEmailSettingsRequest = Schema.Schema.Type<
+  typeof UpdateEmailSettingsRequestSchema
+>;
+
+export const SendEmailTestRequestSchema = Schema.Struct({
+  expectedRevision: Schema.Number.pipe(Schema.int(), Schema.nonNegative()),
+  requestId: NonEmptyStringSchema.pipe(Schema.maxLength(64)),
+}).annotations({
+  description:
+    'Sends one optional test message to the signed-in administrator using the saved configuration; requestId deduplicates retries.',
+});
+export type SendEmailTestRequest = Schema.Schema.Type<
+  typeof SendEmailTestRequestSchema
+>;
+
+// --- Installation configuration document ------------------------------------
+
+export const INSTALLATION_CONFIG_VERSION = 1;
+
+// Bounded rolling-window limits for optional test sends. The persisted
+// `recent` array is pruned on every reservation and capped by its schema.
+export const EMAIL_TEST_MIN_INTERVAL_MS = 60_000;
+export const EMAIL_TEST_WINDOW_MS = 24 * 60 * 60 * 1_000;
+export const EMAIL_TEST_ROLLING_LIMIT = 5;
+export const EMAIL_TEST_RECENT_CAP = 5;
+
+const BoundedString = (maximum: number) =>
+  Schema.String.pipe(Schema.maxLength(maximum));
+
+export const EncryptedCredentialSchema = Schema.Struct({
+  ciphertext: BoundedString(4_096).pipe(Schema.minLength(1)),
+  keyVersion: Schema.Number.pipe(Schema.int(), Schema.positive()),
+  nonce: BoundedString(512).pipe(Schema.minLength(1)),
+});
+export type EncryptedCredential = Schema.Schema.Type<
+  typeof EncryptedCredentialSchema
+>;
+
+export const InstallationEmailConfigSchema = Schema.Struct({
+  canonicalOrigin: Schema.NullOr(BoundedString(2_048)),
+  credential: Schema.NullOr(EncryptedCredentialSchema),
+  enabled: Schema.Boolean,
+  fromEmail: Schema.NullOr(BoundedString(320)),
+  fromName: Schema.NullOr(BoundedString(120)),
+  provider: EmailSettingsProviderSchema,
+});
+export type InstallationEmailConfig = Schema.Schema.Type<
+  typeof InstallationEmailConfigSchema
+>;
+
+export const EmailTestOutcomeSchema = Schema.Literal(
+  'accepted',
+  'ambiguous',
+  'configuration_error',
+  'rejected',
+  'sending',
+);
+export type EmailTestOutcome = Schema.Schema.Type<
+  typeof EmailTestOutcomeSchema
+>;
+
+// One compact test attempt: the reserved request id, the actor who owns it,
+// the saved email revision it belongs to, and the reported outcome. Only the
+// most recent attempt is retained, so duplicate protection is finite and
+// documented rather than a durable replay engine.
+export const EmailTestStateSchema = Schema.Struct({
+  actorUserId: BoundedString(64).pipe(Schema.minLength(1)),
+  at: Schema.Number.pipe(Schema.int(), Schema.nonNegative()),
+  configRevision: Schema.Number.pipe(Schema.int(), Schema.nonNegative()),
+  outcome: EmailTestOutcomeSchema,
+  provider: Schema.NullOr(Schema.Literal('cloudflare', 'resend')),
+  providerMessageId: Schema.NullOr(BoundedString(256)),
+  reasonCode: Schema.NullOr(BoundedString(64)),
+  requestId: NonEmptyStringSchema.pipe(Schema.maxLength(64)),
+});
+export type EmailTestState = Schema.Schema.Type<typeof EmailTestStateSchema>;
+
+export const EmailTestRateEntrySchema = Schema.Struct({
+  actorUserId: BoundedString(64).pipe(Schema.minLength(1)),
+  at: Schema.Number.pipe(Schema.int(), Schema.nonNegative()),
+});
+export type EmailTestRateEntry = Schema.Schema.Type<
+  typeof EmailTestRateEntrySchema
+>;
+
+export const InstallationConfigSchema = Schema.Struct({
+  email: InstallationEmailConfigSchema,
+  emailTest: Schema.Struct({
+    last: Schema.NullOr(EmailTestStateSchema),
+    recent: Schema.Array(EmailTestRateEntrySchema).pipe(
+      Schema.maxItems(EMAIL_TEST_RECENT_CAP),
+    ),
+  }),
+  revision: Schema.Number.pipe(Schema.int(), Schema.nonNegative()),
+  version: Schema.Literal(INSTALLATION_CONFIG_VERSION),
+});
+export type InstallationConfig = Schema.Schema.Type<
+  typeof InstallationConfigSchema
+>;
+
+/**
+ * Shared parse options for every configuration decode/encode: unknown
+ * properties at any struct level are rejected instead of stripped, so a
+ * document written by a newer schema is never silently rewritten without the
+ * data it carried.
+ */
+const REJECT_EXCESS_PROPERTIES = { onExcessProperty: 'error' } as const;
+
+/**
+ * Fixed, redacted audit validation failure; never carries rejected values.
+ */
+export class AuditValidationError extends Error {
+  constructor() {
+    super('The audit record is invalid.');
+    this.name = 'AuditValidationError';
+  }
+}
+
+/**
+ * Fixed, redacted validation failure; never carries rejected values.
+ */
+export class InstallationConfigValidationError extends Error {
+  constructor() {
+    super('The installation configuration is invalid.');
+    this.name = 'InstallationConfigValidationError';
+  }
+}
+
+export const DEFAULT_INSTALLATION_CONFIG: InstallationConfig = Object.freeze({
+  email: Object.freeze({
+    canonicalOrigin: null,
+    credential: null,
+    enabled: false,
+    fromEmail: null,
+    fromName: null,
+    provider: 'disabled',
+  }),
+  emailTest: Object.freeze({ last: null, recent: Object.freeze([]) }),
+  revision: 0,
+  version: INSTALLATION_CONFIG_VERSION,
+}) as InstallationConfig;
+
+/**
+ * Decodes one persisted configuration document from an already-parsed Drizzle
+ * JSON value. Raw TEXT parsing belongs to the database driver or tooling.
+ * Returns null for malformed JSON, an unknown schema version, an unknown
+ * property at any level, or any shape that violates the bounded schema, so
+ * callers can fail closed without echoing raw content.
+ */
+export const decodeInstallationConfig = (
+  value: unknown,
+): InstallationConfig | null => {
+  try {
+    return Schema.decodeUnknownSync(InstallationConfigSchema)(
+      value,
+      REJECT_EXCESS_PROPERTIES,
+    );
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * Validates a configuration document against the authoritative schema,
+ * including excess-property rejection at every level, and returns the
+ * validated value for Drizzle to serialize. Throws a fixed redacted error on
+ * failure and never includes rejected values.
+ */
+export const validateInstallationConfig = (
+  value: unknown,
+): InstallationConfig => {
+  try {
+    return Schema.decodeUnknownSync(InstallationConfigSchema)(
+      value,
+      REJECT_EXCESS_PROPERTIES,
+    );
+  } catch {
+    throw new InstallationConfigValidationError();
+  }
+};
+
+// --- Generic audit log ------------------------------------------------------
+
+/**
+ * Safe, bounded audit values: scalars only. Producers are responsible for
+ * redacting secrets before they reach this contract; the schema bounds the
+ * size so an audit row cannot grow without limit.
+ */
+export const AuditValueSchema = Schema.NullOr(
+  Schema.Union(
+    BoundedString(512),
+    Schema.Number.pipe(Schema.finite()),
+    Schema.Boolean,
+  ),
+);
+export type AuditValue = Schema.Schema.Type<typeof AuditValueSchema>;
+
+export const AuditChangeSchema = Schema.Struct({
+  after: AuditValueSchema,
+  before: AuditValueSchema,
+  field: NonEmptyStringSchema.pipe(Schema.maxLength(128)),
+});
+export type AuditChange = Schema.Schema.Type<typeof AuditChangeSchema>;
+
+export const AuditChangesSchema = Schema.Array(AuditChangeSchema).pipe(
+  Schema.maxItems(32),
+);
+
+export const AuditWriteSchema = Schema.Struct({
+  action: NonEmptyStringSchema.pipe(
+    Schema.maxLength(64),
+    Schema.pattern(/^[a-z][a-z0-9_.]*$/u),
+  ),
+  changes: AuditChangesSchema,
+  resourceId: Schema.NullOr(NonEmptyStringSchema.pipe(Schema.maxLength(64))),
+  resourceType: NonEmptyStringSchema.pipe(
+    Schema.maxLength(64),
+    Schema.pattern(/^[a-z][a-z0-9_.]*$/u),
+  ),
+});
+export type AuditWrite = Schema.Schema.Type<typeof AuditWriteSchema>;
+
+export const AuditRecordSchema = Schema.Struct({
+  action: Schema.String,
+  actorUserId: Schema.NullOr(Schema.String),
+  changes: AuditChangesSchema,
+  createdAt: Schema.String,
+  id: Schema.String,
+  resourceId: Schema.NullOr(Schema.String),
+  resourceType: Schema.String,
+});
+export type AuditRecord = Schema.Schema.Type<typeof AuditRecordSchema>;
+
+/**
+ * Validates bounded audit changes for a producer. Throws a fixed redacted
+ * error on failure and never includes rejected values.
+ */
+export const validateAuditChanges = (
+  changes: unknown,
+): readonly AuditChange[] => {
+  try {
+    return Schema.decodeUnknownSync(AuditChangesSchema)(
+      changes,
+      REJECT_EXCESS_PROPERTIES,
+    );
+  } catch {
+    throw new AuditValidationError();
+  }
+};
+
+/**
+ * Validates one audit producer record against the bounded schema before it
+ * reaches D1. Throws a fixed redacted error on failure and never includes
+ * rejected values; repository helpers call this for every audited mutation.
+ */
+export const validateAuditWrite = (record: unknown): AuditWrite => {
+  try {
+    return Schema.decodeUnknownSync(AuditWriteSchema)(
+      record,
+      REJECT_EXCESS_PROPERTIES,
+    );
+  } catch {
+    throw new AuditValidationError();
+  }
+};
+
+/**
+ * Decodes bounded audit changes from an already-parsed Drizzle JSON value. Returns null for malformed data
+ * instead of echoing it.
+ */
+export const decodeAuditChanges = (
+  value: unknown,
+): null | readonly AuditChange[] => {
+  try {
+    return Schema.decodeUnknownSync(AuditChangesSchema)(
+      value,
+      REJECT_EXCESS_PROPERTIES,
+    );
+  } catch {
+    return null;
+  }
+};
+
+// --- Notification response contracts ----------------------------------------
+
+// The SPA derives its types from these schemas; the server command views are
+// typed by the same aliases, so the two sides cannot drift without a type
+// error. Credentials are never part of a response contract.
+export const EmailTestViewSchema = Schema.Struct({
+  at: Schema.NullOr(Schema.String),
+  outcome: EmailTestOutcomeSchema,
+  providerMessageId: Schema.NullOr(Schema.String),
+  reasonCode: Schema.NullOr(Schema.String),
+  revision: Schema.Number.pipe(Schema.int(), Schema.nonNegative()),
+});
+export type EmailTestView = Schema.Schema.Type<typeof EmailTestViewSchema>;
+
+export const EmailSettingsViewSchema = Schema.Struct({
+  canonicalOrigin: Schema.String,
+  enabled: Schema.Boolean,
+  environment: Schema.Struct({
+    hasCloudflareBinding: Schema.Boolean,
+    hasEncryptionKey: Schema.Boolean,
+  }),
+  fromEmail: Schema.NullOr(Schema.String),
+  fromName: Schema.NullOr(Schema.String),
+  hasApiKey: Schema.Boolean,
+  provider: EmailSettingsProviderSchema,
+  readiness: Schema.Struct({
+    availability: NotificationAvailabilitySchema,
+    reasonCode: Schema.NullOr(Schema.String),
+  }),
+  revision: Schema.Number.pipe(Schema.int(), Schema.nonNegative()),
+  test: Schema.NullOr(EmailTestViewSchema),
+});
+export type EmailSettingsView = Schema.Schema.Type<
+  typeof EmailSettingsViewSchema
+>;
+
+export const NotificationPreferenceViewSchema = Schema.Struct({
+  availability: NotificationAvailabilitySchema,
+  newLeadEmail: Schema.Boolean,
+  provider: Schema.NullOr(Schema.Literal('cloudflare', 'resend')),
+});
+export type NotificationPreferenceView = Schema.Schema.Type<
+  typeof NotificationPreferenceViewSchema
+>;

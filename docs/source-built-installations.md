@@ -41,8 +41,9 @@ The shipped template pins the `main` channel rather than a fixed commit, so
 new installations build the current, CI-green `main` without a manual bump. The
 channel is resolved per build in an ephemeral checkout, not committed back, so
 an installation left on `main` keeps tracking upstream `main`; commit the
-resolved SHA or run Upgrade to freeze it. The current migration history is a
-single squashed baseline (`0000_leadscroll_baseline.sql`). Its filename is
+resolved SHA or run Upgrade to freeze it. The current migration history starts
+with a single squashed baseline (`0000_leadscroll_baseline.sql`); this feature
+appends `0001_email_notifications.sql` on top of it. The baseline filename is
 unchanged from earlier epochs but its bytes differ, so LeadScroll's source-update
 receipt guards reject a source-pin upgrade from those epochs when the old
 history is available. Those installations must use the baseline reset procedure
@@ -204,6 +205,20 @@ repository. Keep the old Worker, database, code, and pin together for rollback:
 Do not try to reconstruct the old SQL migration history in the replacement
 database. After this epoch is established, future updates must preserve the
 baseline and append only new migrations.
+
+## Email notification runtime
+
+Generated source builds preserve the Worker's `fetch` handler and its execution
+context argument, which is how best-effort notification work is scheduled with
+`ctx.waitUntil` after a lead commits. There is no `scheduled` handler and no
+Cron trigger: notification delivery is event-driven and best-effort. Standard
+templates declare the native `EMAIL` binding in `wrangler.jsonc`; older/custom
+installations may need to add it. The optional `EMAIL_SETTINGS_ENCRYPTION_KEY`
+secret is needed only to store a Resend API key through the UI and survives
+source-pin changes as a Worker secret; replacing the Worker recreates secrets
+and requires re-entering provider keys. See the upstream
+`docs/email-notifications.md` for setup, best-effort limits, rollback, and
+operator recovery.
 
 ## Verification boundary
 
