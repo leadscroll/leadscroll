@@ -457,6 +457,11 @@ export type SendEmailTestRequest = Schema.Schema.Type<
 
 export const INSTALLATION_CONFIG_VERSION = 1;
 
+// The installation_config table is a constrained singleton: one save document
+// per installation. The fixed primary key makes that explicit in the schema
+// and in raw SQL, instead of relying on application reads to fetch one row.
+export const INSTALLATION_CONFIG_ID = 'installation';
+
 // Bounded rolling-window limits for optional test sends. The persisted
 // `recent` array is pruned on every reservation and capped by its schema.
 export const EMAIL_TEST_MIN_INTERVAL_MS = 60_000;

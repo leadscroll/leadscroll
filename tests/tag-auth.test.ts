@@ -14,7 +14,6 @@ import { expect, test } from 'vitest';
 
 const repoRoot = process.cwd();
 const APP_ORIGIN = 'https://tag-auth-test.example';
-const WORKSPACE = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
 const BROWSER_TOKEN = 'lsc_pub_tag_auth_test_token';
 
 const workerScripts = new Map<string, string>();
@@ -92,20 +91,21 @@ const startFixture = async (options: {
       .toSorted();
     for (const name of names) {
       const sql = await readFile(join(repoRoot, 'drizzle', name), 'utf8');
-      for (const statement of sql
-        .split('--> statement-breakpoint')
-        .map((chunk) => chunk.trim())
-        .filter(Boolean)) {
-        await database.prepare(statement).run();
-      }
+      await database.batch(
+        sql
+          .split('--> statement-breakpoint')
+          .map((chunk) => chunk.trim())
+          .filter(Boolean)
+          .map((statement) => database.prepare(statement)),
+      );
     }
 
     await database
       .prepare(
-        `INSERT INTO api_tokens (id, workspace_id, name, prefix, scope, type, token, created_at)
-         VALUES (?, ?, 'Browser', 'lsc_pub_tag', 'intake:write', 'browser', ?, ?)`,
+        `INSERT INTO api_tokens (id, name, prefix, scope, type, token, created_at)
+         VALUES (?, 'Browser', 'lsc_pub_tag', 'intake:write', 'browser', ?, ?)`,
       )
-      .bind('01ARZ3NDEKTSV4RRFFQ69G5FB0', WORKSPACE, BROWSER_TOKEN, Date.now())
+      .bind('01ARZ3NDEKTSV4RRFFQ69G5FB0', BROWSER_TOKEN, Date.now())
       .run();
 
     const request = async (

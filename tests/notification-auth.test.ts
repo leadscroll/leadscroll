@@ -129,12 +129,13 @@ const startApiFixture = async (
     .toSorted();
   for (const name of names) {
     const sql = await readFile(join(repoRoot, 'drizzle', name), 'utf8');
-    for (const statement of sql
-      .split('--> statement-breakpoint')
-      .map((chunk) => chunk.trim())
-      .filter(Boolean)) {
-      await fixture.db.prepare(statement).run();
-    }
+    await fixture.db.batch(
+      sql
+        .split('--> statement-breakpoint')
+        .map((chunk) => chunk.trim())
+        .filter(Boolean)
+        .map((statement) => fixture.db.prepare(statement)),
+    );
   }
 
   if (options.identity !== false) {

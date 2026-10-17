@@ -39,7 +39,7 @@ const canonicalize = (value: unknown): unknown =>
  * - Normalizes the lead email with the existing `normalizeEmail`, so
  *   case/whitespace differences in the email never create a conflict either.
  * - Uses no field-definition or pipeline lookup: the fingerprint is a pure
- *   function of the decoded request, so mutable workspace state can never
+ *   function of the decoded request, so mutable installation state can never
  *   change whether a retry is recognized.
  *
  * Omitted optional properties are absent from the decoded value, while an

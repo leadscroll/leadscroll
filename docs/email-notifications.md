@@ -152,7 +152,7 @@ addresses, envelopes, lead payloads, API keys, or provider response bodies are
 ever logged.
 
 Operators can inspect the persisted configuration and the redacted audit trail
-directly. The configuration is one JSON document per workspace, validated by
+directly. The configuration is one JSON document per installation, validated by
 the application schema on read; never edit it by hand while the Worker is
 serving requests, and never paste a provider key into a SQL command:
 
@@ -184,16 +184,40 @@ document revision, the encrypted provider credential, and compact test state),
 `notification_preferences` per-user opt-in. Existing CRM data and migrations
 remain unchanged. No outbox, scheduler state, or Cron is needed.
 
+Migration `0005_remove_workspaces.sql` then makes the installation boundary
+explicit: `installation_config` is one row keyed `installation` with a
+singleton check, `notification_preferences` is keyed by `user_id`, and
+`audit_log` is installation-wide. It also removes the unused workspace table
+and `workspace_id` columns from the CRM and notification tables. Existing
+credential envelopes remain readable because the v1 AES-GCM authenticated data
+is preserved byte-for-byte as a frozen legacy context; no ciphertext or secret
+is rewritten. Before applying it, back up D1 and check for rows outside the
+historical default workspace. The migration performs that check itself and
+aborts atomically before any destructive statement when it finds such rows, so
+inspect the reported table, reconcile the data deliberately (or keep it in a
+separate installation), and re-run. Do not edit the migration to merge or drop
+unexpected rows.
+
 ## Rollback
 
 Disabling sending stops future lead events from starting new sends, but a
 subscriber snapshot that was already running may still finish its in-flight
-sends; the change is not retroactive and does not cancel work. The schema is
-forward-only: once `0004` has been applied, rolling back to Worker code that
-expected the old email-specific tables requires a version compatible with the
-new schema or restoring the database from a backup taken before the upgrade.
-Provider API keys can be revoked at the provider even though old D1 backups may
-retain ciphertext.
+sends; the change is not retroactive and does not cancel work.
+
+Migration `0005_remove_workspaces` is a schema compatibility boundary: it
+removes the workspaces table and `workspace_id` columns, and changes the
+installation configuration key. Worker code from before that migration queries
+those columns, so an old Worker or old source pin cannot serve after `0005` has
+been applied. Because deployment applies migrations before activating the new
+Worker, an already-running old Worker can fail between the migration and the new
+deploy. Plan a short maintenance window for this upgrade.
+
+Disabling sending, rolling back the Worker, or reverting the source pin does not
+reverse D1 or restore compatibility. If deployment fails after `0005`, recover
+by deploying a revision that understands the new schema, or restore a
+pre-`0005` D1 backup and then deploy code compatible with that backup. Do not run
+old code against the migrated schema. Provider API keys can be revoked at the
+provider even though old D1 backups may retain ciphertext.
 
 ## Limits and untested assumptions
 

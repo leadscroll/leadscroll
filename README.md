@@ -11,6 +11,11 @@ A self-hosted, Cloudflare-native CRM for teams handling inbound leads. It stores
 
 Companies, tasks, email sync, imports, reporting, workflows, custom objects, and multi-tenancy are deliberately not included yet.
 
+One installation is one shared lead database and staff team. Every authenticated,
+enabled staff account sees the same leads, tags, tokens, settings, and audit log;
+there is no workspace switch or per-workspace membership. Run separate
+installations when data must be administered independently.
+
 ## Install on Cloudflare
 
 Every deployment is independent: the repo carries no account-specific values.
@@ -56,7 +61,7 @@ Prerequisites: a Cloudflare account, Node.js 24.20.0 (see `.node-version`) and p
 2. Create the D1 database in your account with any name you like — it does not need to match the Worker, for example `pnpm exec wrangler d1 create leadscroll-db`. Copy the `database_id` it prints into the `d1_databases` entry in `wrangler.jsonc` (replacing the empty string) and set `database_name` to the same name you used.
 3. Set the session secret: `openssl rand -base64 32 | pnpm exec wrangler secret put BETTER_AUTH_SECRET`.
 4. Set the invite token: `openssl rand -hex 32 | pnpm exec wrangler secret put SETUP_TOKEN`. Keep it across redeployments. Optionally set `EMAIL_SETTINGS_ENCRYPTION_KEY` (`openssl rand -base64 32 | pnpm exec wrangler secret put EMAIL_SETTINGS_ENCRYPTION_KEY`) if you plan to store a Resend API key through Manage → Email; Cloudflare sending does not need it.
-5. Deploy: `pnpm run deploy` (set `CLOUDFLARE_ACCOUNT_ID` if your wrangler login spans multiple accounts). The deploy script builds, applies the D1 migrations, and deploys. The migration also bootstraps the default workspace row (fixed id, `INSERT OR IGNORE`) — the app itself never seeds data per request, so a deleted bootstrap row is not resurrected. Migration commands reference the `DB` binding rather than a database name, so renamed databases keep working.
+5. Deploy: `pnpm run deploy` (set `CLOUDFLARE_ACCOUNT_ID` if your wrangler login spans multiple accounts). The deploy script builds, applies the D1 migrations, and deploys. Migrations bootstrap the first-account registration window; the app itself never seeds data per request, so a deleted bootstrap row is not resurrected. Migration `0005_remove_workspaces` removes the historical singleton workspace row and its scoping columns; it refuses to run if it finds rows outside the default workspace, leaving the database unchanged. Back up D1 and inspect such data before upgrading. Migration commands reference the `DB` binding rather than a database name, so renamed databases keep working.
 
 You can also connect the repository in the dashboard under Workers → Settings → Builds, with the deploy command set to `pnpm run deploy`.
 
@@ -379,7 +384,7 @@ the same bounded read; they never fall through to another body parser.
   `400 idempotency_key_required`; any other malformed key returns
   `400 invalid_idempotency_key`. Both are rejected before any intake data is
   written, as are unauthorized requests.
-- **Identity.** The key is workspace-scoped and outlives tokens: rotating or
+- **Identity.** The key is installation-wide and outlives tokens: rotating or
   revoking tokens never duplicates a submission. Each accepted key stores a
   deterministic SHA-256 fingerprint of the decoded request. The fingerprint
   sorts object keys recursively, preserves array order, and normalizes the

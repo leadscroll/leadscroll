@@ -129,12 +129,13 @@ const startFixture = async (
       .toSorted();
     for (const name of names) {
       const sql = await readFile(join(repoRoot, 'drizzle', name), 'utf8');
-      for (const statement of sql
-        .split('--> statement-breakpoint')
-        .map((chunk) => chunk.trim())
-        .filter(Boolean)) {
-        await database.prepare(statement).run();
-      }
+      await database.batch(
+        sql
+          .split('--> statement-breakpoint')
+          .map((chunk) => chunk.trim())
+          .filter(Boolean)
+          .map((statement) => database.prepare(statement)),
+      );
     }
 
     const raw = async (

@@ -107,7 +107,6 @@ export const LeadsPage = () => {
             <Plus size={15} /> Add lead
           </Button>
         }
-        eyebrow="Workspace"
         title="Leads"
       />
       <div className="view-toolbar">
@@ -205,7 +204,7 @@ export const LeadsPage = () => {
         <>
           <div className="table-scroll">
             <table className="leads-table">
-              <caption className="sr-only">Leads in your workspace</caption>
+              <caption className="sr-only">All leads</caption>
               <thead>
                 <tr>
                   <th
@@ -371,7 +370,7 @@ export const LeadsPage = () => {
       )}
       {showCreate && <CreateLeadDialog onOpenChange={setShowCreate} />}
       <ConfirmDialog
-        description={`Delete ${selected.length} ${selected.length === 1 ? 'lead' : 'leads'}? This removes them from your workspace.`}
+        description={`Delete ${selected.length} ${selected.length === 1 ? 'lead' : 'leads'}? This removes them from your lead list.`}
         onConfirm={() => deleteSelected.mutate()}
         onOpenChange={setConfirmDelete}
         open={confirmDelete}

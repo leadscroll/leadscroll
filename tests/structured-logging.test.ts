@@ -19,6 +19,20 @@ import { afterEach, beforeAll, beforeEach, expect, test } from 'vitest';
  */
 
 const repoRoot = process.cwd();
+
+const applyMigrationSql = async (
+  binding: D1Database,
+  sql: string,
+): Promise<void> => {
+  await binding.batch(
+    sql
+      .split('--> statement-breakpoint')
+      .map((chunk) => chunk.trim())
+      .filter(Boolean)
+      .map((statement) => binding.prepare(statement)),
+  );
+};
+
 const assertRepoRoot = async () => {
   const entry = join(repoRoot, 'src/worker-global.ts');
   try {
@@ -124,12 +138,7 @@ beforeEach(async () => {
     .toSorted();
   for (const name of names) {
     const sql = await readFile(join(repoRoot, 'drizzle', name), 'utf8');
-    for (const statement of sql
-      .split('--> statement-breakpoint')
-      .map((chunk) => chunk.trim())
-      .filter(Boolean)) {
-      await database.prepare(statement).run();
-    }
+    await applyMigrationSql(database, sql);
   }
 }, 60_000);
 

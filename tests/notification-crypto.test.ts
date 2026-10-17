@@ -1,4 +1,9 @@
 import {
+  LEGACY_CREDENTIAL_ENVELOPE,
+  LEGACY_CREDENTIAL_KEY,
+  LEGACY_CREDENTIAL_PLAINTEXT,
+} from './credential-ciphertext.fixture';
+import {
   CREDENTIAL_KEY_VERSION,
   CredentialCryptoError,
   decryptCredential,
@@ -21,7 +26,6 @@ const OTHER_KEY = base64(bytes(9));
 
 const scope = {
   provider: 'resend',
-  workspaceId: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
 };
 
 const encrypt = (secret: string, value = 're_test_key') =>
@@ -87,17 +91,23 @@ describe('credential encryption', () => {
     ).rejects.toMatchObject({ code: 'invalid_payload' });
   });
 
-  test('binds ciphertext to the workspace and provider scope', async () => {
-    const envelope = await encrypt(KEY);
+  test('decrypts a pre-removal ciphertext fixture byte-for-byte', async () => {
     await expect(
-      decryptCredential(KEY, {
-        ...scope,
-        envelope,
-        workspaceId: '01ARZ3NDEKTSV4RRFFQ69G5FAW',
+      decryptCredential(LEGACY_CREDENTIAL_KEY, {
+        envelope: LEGACY_CREDENTIAL_ENVELOPE,
+        provider: 'resend',
       }),
-    ).rejects.toMatchObject({ code: 'decrypt_failed' });
+    ).resolves.toBe(LEGACY_CREDENTIAL_PLAINTEXT);
+  });
+
+  test('keeps the legacy authenticated context and binds the provider', async () => {
+    const envelope = await encrypt(KEY);
     await expect(
       decryptCredential(KEY, { ...scope, envelope, provider: 'cloudflare' }),
     ).rejects.toMatchObject({ code: 'decrypt_failed' });
+
+    // New encryptions remain readable by the frozen v1 context, so an older
+    // deployment can still read credentials written after the upgrade.
+    await expect(decrypt(KEY, envelope)).resolves.toBe('re_test_key');
   });
 });

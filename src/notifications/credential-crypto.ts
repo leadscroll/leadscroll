@@ -4,8 +4,14 @@
  * The root key is a deployment secret (EMAIL_SETTINGS_ENCRYPTION_KEY) that is
  * never stored in D1 or bundled into the browser. Each encryption uses a fresh
  * 96-bit nonce, and the authenticated additional data binds the ciphertext to
- * the workspace, provider, and envelope version, so a value copied between
- * workspaces or providers fails to decrypt.
+ * a fixed legacy encryption context, the provider, and the envelope version,
+ * so a value copied to another provider fails to decrypt.
+ *
+ * The legacy context bytes include the ID of the workspace row that existed
+ * before migration 0005. They are kept byte-for-byte so credentials written by
+ * earlier releases continue to decrypt. This is an encryption compatibility
+ * constant, not a workspace entity: new ciphertext intentionally uses the same
+ * authenticated context to keep one format and avoid secret-touching rewrites.
  *
  * Failure semantics are closed: a missing, malformed, or wrong key and a
  * tampered payload all throw `CredentialCryptoError`. Plaintext lives only
@@ -101,12 +107,17 @@ const importRootKey = async (secret: string): Promise<CryptoKey> => {
   ]);
 };
 
-const additionalData = (
-  workspaceId: string,
-  provider: string,
-): Uint8Array<ArrayBuffer> =>
+export const LEGACY_CREDENTIAL_WORKSPACE_ID = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
+
+/**
+ * v1 authenticated data, frozen for ciphertext compatibility. Do not remove
+ * the workspace identifier segment: it is part of every stored envelope's
+ * authentication tag, even though the runtime no longer has a workspace
+ * entity.
+ */
+const additionalData = (provider: string): Uint8Array<ArrayBuffer> =>
   new TextEncoder().encode(
-    `leadscroll:email-credential:v${CREDENTIAL_KEY_VERSION}:${workspaceId}:${provider}`,
+    `leadscroll:email-credential:v${CREDENTIAL_KEY_VERSION}:${LEGACY_CREDENTIAL_WORKSPACE_ID}:${provider}`,
   );
 
 /**
@@ -115,13 +126,13 @@ const additionalData = (
  */
 export const encryptCredential = async (
   secret: string,
-  input: { provider: string; value: string; workspaceId: string },
+  input: { provider: string; value: string },
 ): Promise<EncryptedCredential> => {
   const key = await importRootKey(secret);
   const nonce = crypto.getRandomValues(new Uint8Array(12));
   const ciphertext = await crypto.subtle.encrypt(
     {
-      additionalData: additionalData(input.workspaceId, input.provider),
+      additionalData: additionalData(input.provider),
       iv: nonce,
       name: 'AES-GCM',
     },
@@ -143,11 +154,7 @@ export const encryptCredential = async (
  */
 export const decryptCredential = async (
   secret: string,
-  input: {
-    envelope: EncryptedCredential;
-    provider: string;
-    workspaceId: string;
-  },
+  input: { envelope: EncryptedCredential; provider: string },
 ): Promise<string> => {
   if (input.envelope.keyVersion !== CREDENTIAL_KEY_VERSION) {
     throw new CredentialCryptoError(
@@ -175,7 +182,7 @@ export const decryptCredential = async (
   try {
     plaintext = await crypto.subtle.decrypt(
       {
-        additionalData: additionalData(input.workspaceId, input.provider),
+        additionalData: additionalData(input.provider),
         iv: nonce,
         name: 'AES-GCM',
       },

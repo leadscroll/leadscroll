@@ -33,6 +33,7 @@ import {
   decodeAuditChanges,
   decodeInstallationConfig,
   DEFAULT_INSTALLATION_CONFIG,
+  INSTALLATION_CONFIG_ID,
   type InstallationConfig,
   type IntakeRequest,
   normalizeEmail,
@@ -43,7 +44,6 @@ import {
   validateInstallationConfig,
 } from '@/domain/schemas';
 import { normalizeSourceTag, tagLabel, type TagSpec } from '@/domain/tags';
-import { DEFAULT_WORKSPACE_ID } from '@/domain/workspace';
 import {
   and,
   asc,
@@ -60,8 +60,6 @@ import {
   sql,
 } from 'drizzle-orm';
 import { alias } from 'drizzle-orm/sqlite-core';
-
-export { DEFAULT_WORKSPACE_ID } from '@/domain/workspace';
 
 export type Env = {
   ASSETS: Fetcher;
@@ -162,8 +160,7 @@ const leadSearchPredicate = (query: string) => {
  */
 const duplicateCountExpression = sql<number>`(
   SELECT count(*) FROM leads AS duplicate
-  WHERE duplicate.workspace_id = leads.workspace_id
-    AND duplicate.deleted_at IS NULL
+  WHERE duplicate.deleted_at IS NULL
     AND duplicate.email IS NOT NULL
     AND duplicate.email = leads.email
 )`;
@@ -191,10 +188,7 @@ const tagsJsonExpression = sql<string>`COALESCE((
   WHERE assignment.lead_id = leads.id
 ), '[]')`;
 
-type LeadListRow = Omit<
-  typeof leads.$inferSelect,
-  'rawPayload' | 'workspaceId'
->;
+type LeadListRow = Omit<typeof leads.$inferSelect, 'rawPayload'>;
 
 const toLead = (
   row: LeadListRow & { duplicateCount: number },
@@ -334,10 +328,7 @@ const tagViewsForLeads = async (
     .innerJoin(tags, eq(tags.id, leadTags.tagId))
     .leftJoin(tagScopes, eq(tagScopes.id, tags.scopeId))
     .where(
-      and(
-        eq(leadTags.workspaceId, DEFAULT_WORKSPACE_ID),
-        sql`${leadTags.leadId} IN (SELECT value FROM json_each(${JSON.stringify(leadIds)}))`,
-      ),
+      sql`${leadTags.leadId} IN (SELECT value FROM json_each(${JSON.stringify(leadIds)}))`,
     )
     .orderBy(asc(tags.name));
 
@@ -359,10 +350,7 @@ export const listLeads = async (
   options: LeadPageOptions,
 ): Promise<LeadPage> => {
   const { cursor, limit, query, tagId, tagScopeId } = options;
-  const predicates = [
-    eq(leads.workspaceId, DEFAULT_WORKSPACE_ID),
-    isNull(leads.deletedAt),
-  ];
+  const predicates = [isNull(leads.deletedAt)];
   if (query) {
     predicates.push(leadSearchPredicate(query));
   }
@@ -439,9 +427,7 @@ export const getLead = async (
       tagsJson: tagsJsonExpression,
     })
     .from(leads)
-    .where(
-      and(eq(leads.workspaceId, DEFAULT_WORKSPACE_ID), eq(leads.id, leadId)),
-    )
+    .where(eq(leads.id, leadId))
     .get();
   if (!row) {
     return null;
@@ -466,12 +452,7 @@ export const listLeadActivities = async (environment: Env, leadId: string) =>
   getDatabase(environment)
     .select()
     .from(activities)
-    .where(
-      and(
-        eq(activities.workspaceId, DEFAULT_WORKSPACE_ID),
-        eq(activities.leadId, leadId),
-      ),
-    )
+    .where(eq(activities.leadId, leadId))
     .orderBy(desc(activities.createdAt));
 
 const randomToken = (prefix: string): string =>
@@ -509,7 +490,6 @@ export const createApiToken = async (
     token: input.type === 'browser' ? raw : null,
     tokenHash: input.type === 'api' ? await hashToken(raw) : null,
     type: input.type,
-    workspaceId: DEFAULT_WORKSPACE_ID,
   };
   await getDatabase(environment).insert(apiTokens).values(record);
   // API tokens are shown exactly once; browser tokens are stored so they can
@@ -542,19 +522,13 @@ export const listApiTokens = async (environment: Env) =>
       type: apiTokens.type,
     })
     .from(apiTokens)
-    .where(eq(apiTokens.workspaceId, DEFAULT_WORKSPACE_ID))
     .orderBy(desc(apiTokens.createdAt));
 
 export const revokeApiToken = async (environment: Env, tokenId: string) => {
   const result = await getDatabase(environment)
     .update(apiTokens)
     .set({ revokedAt: now() })
-    .where(
-      and(
-        eq(apiTokens.id, tokenId),
-        eq(apiTokens.workspaceId, DEFAULT_WORKSPACE_ID),
-      ),
-    )
+    .where(eq(apiTokens.id, tokenId))
     .run();
   return result.meta.changes > 0;
 };
@@ -1063,12 +1037,7 @@ export const getIntakeKey = async (
   const row = await getDatabase(environment)
     .select()
     .from(idempotencyKeys)
-    .where(
-      and(
-        eq(idempotencyKeys.workspaceId, DEFAULT_WORKSPACE_ID),
-        eq(idempotencyKeys.key, idempotencyKey),
-      ),
-    )
+    .where(eq(idempotencyKeys.key, idempotencyKey))
     .get();
   return row
     ? {
@@ -1227,12 +1196,10 @@ const resolveTagPlan = async (
   const database = getDatabase(environment);
   const scopeRows = await database
     .select({ id: tagScopes.id, prefix: tagScopes.prefix })
-    .from(tagScopes)
-    .where(eq(tagScopes.workspaceId, DEFAULT_WORKSPACE_ID));
+    .from(tagScopes);
   const tagRows = await database
     .select({ id: tags.id, name: tags.name, scopeId: tags.scopeId })
-    .from(tags)
-    .where(eq(tags.workspaceId, DEFAULT_WORKSPACE_ID));
+    .from(tags);
   const scopesByPrefix = new Map<string, string>(
     scopeRows.map((row) => [row.prefix, row.id]),
   );
@@ -1299,29 +1266,14 @@ const tagPlanStatements = (
   ...plan.newScopes.map((scope) =>
     prepare(
       environment.DB,
-      'INSERT INTO tag_scopes (id, workspace_id, prefix, color, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
-    ).bind(
-      scope.id,
-      DEFAULT_WORKSPACE_ID,
-      scope.prefix,
-      scope.color,
-      timestamp,
-      timestamp,
-    ),
+      'INSERT INTO tag_scopes (id, prefix, color, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
+    ).bind(scope.id, scope.prefix, scope.color, timestamp, timestamp),
   ),
   ...plan.newTags.map((tag) =>
     prepare(
       environment.DB,
-      'INSERT INTO tags (id, workspace_id, name, scope_id, color, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
-    ).bind(
-      tag.id,
-      DEFAULT_WORKSPACE_ID,
-      tag.name,
-      tag.scopeId,
-      tag.color,
-      timestamp,
-      timestamp,
-    ),
+      'INSERT INTO tags (id, name, scope_id, color, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
+    ).bind(tag.id, tag.name, tag.scopeId, tag.color, timestamp, timestamp),
   ),
 ];
 
@@ -1334,19 +1286,11 @@ const leadTagStatements = (
   assignments.map((assignment) =>
     prepare(
       environment.DB,
-      `INSERT INTO lead_tags (id, workspace_id, lead_id, tag_id, scope_id, created_at)
-        VALUES (?, ?, ?, ?, (
-          SELECT scope_id FROM tags WHERE id = ? AND workspace_id = ?
+      `INSERT INTO lead_tags (id, lead_id, tag_id, scope_id, created_at)
+        VALUES (?, ?, ?, (
+          SELECT scope_id FROM tags WHERE id = ?
         ), ?)`,
-    ).bind(
-      id(),
-      DEFAULT_WORKSPACE_ID,
-      leadId,
-      assignment.tagId,
-      assignment.tagId,
-      DEFAULT_WORKSPACE_ID,
-      timestamp,
-    ),
+    ).bind(id(), leadId, assignment.tagId, assignment.tagId, timestamp),
   );
 
 /**
@@ -1362,10 +1306,9 @@ const guardActiveLeadsStatement = (
 ): Statement =>
   prepare(
     environment.DB,
-    `INSERT INTO lead_tags (id, workspace_id, lead_id, tag_id, scope_id, created_at)
+    `INSERT INTO lead_tags (id, lead_id, tag_id, scope_id, created_at)
       SELECT
         '0' || substr(hex(randomblob(13)), 1, 25),
-        ?,
         requested.value,
         NULL,
         NULL,
@@ -1374,15 +1317,9 @@ const guardActiveLeadsStatement = (
       WHERE NOT EXISTS (
         SELECT 1 FROM leads
         WHERE id = requested.value
-          AND workspace_id = ?
           AND deleted_at IS NULL
       )`,
-  ).bind(
-    DEFAULT_WORKSPACE_ID,
-    timestamp,
-    JSON.stringify(leadIds),
-    DEFAULT_WORKSPACE_ID,
-  );
+  ).bind(timestamp, JSON.stringify(leadIds));
 
 /**
  * Transaction-time guard: aborts the enclosing batch when any requested tag no
@@ -1396,10 +1333,9 @@ const guardExistingTagsStatement = (
 ): Statement =>
   prepare(
     environment.DB,
-    `INSERT INTO lead_tags (id, workspace_id, lead_id, tag_id, scope_id, created_at)
+    `INSERT INTO lead_tags (id, lead_id, tag_id, scope_id, created_at)
       SELECT
         '0' || substr(hex(randomblob(13)), 1, 25),
-        ?,
         NULL,
         NULL,
         NULL,
@@ -1407,14 +1343,9 @@ const guardExistingTagsStatement = (
       FROM json_each(?) AS requested
       WHERE NOT EXISTS (
         SELECT 1 FROM tags
-        WHERE id = requested.value AND workspace_id = ?
+        WHERE id = requested.value
       )`,
-  ).bind(
-    DEFAULT_WORKSPACE_ID,
-    timestamp,
-    JSON.stringify(tagIds),
-    DEFAULT_WORKSPACE_ID,
-  );
+  ).bind(timestamp, JSON.stringify(tagIds));
 
 const missingActiveLeadIds = async (
   environment: Env,
@@ -1429,7 +1360,6 @@ const missingActiveLeadIds = async (
     .from(leads)
     .where(
       and(
-        eq(leads.workspaceId, DEFAULT_WORKSPACE_ID),
         isNull(leads.deletedAt),
         sql`${leads.id} IN (SELECT value FROM json_each(${JSON.stringify(leadIds)}))`,
       ),
@@ -1450,10 +1380,7 @@ const missingTagIds = async (
     .select({ id: tags.id })
     .from(tags)
     .where(
-      and(
-        eq(tags.workspaceId, DEFAULT_WORKSPACE_ID),
-        sql`${tags.id} IN (SELECT value FROM json_each(${JSON.stringify(tagIds)}))`,
-      ),
+      sql`${tags.id} IN (SELECT value FROM json_each(${JSON.stringify(tagIds)}))`,
     );
   const present = new Set(rows.map((row) => row.id));
   return tagIds.filter((tagId) => !present.has(tagId));
@@ -1478,7 +1405,7 @@ const getTagView = async (
     .select(tagViewSelect)
     .from(tags)
     .leftJoin(tagScopes, eq(tagScopes.id, tags.scopeId))
-    .where(and(eq(tags.workspaceId, DEFAULT_WORKSPACE_ID), eq(tags.id, tagId)))
+    .where(eq(tags.id, tagId))
     .get();
   return row ? toTagViewRecord(row) : undefined;
 };
@@ -1490,12 +1417,7 @@ const getScopeView = async (
   const row = await getDatabase(environment)
     .select()
     .from(tagScopes)
-    .where(
-      and(
-        eq(tagScopes.workspaceId, DEFAULT_WORKSPACE_ID),
-        eq(tagScopes.id, scopeId),
-      ),
-    )
+    .where(eq(tagScopes.id, scopeId))
     .get();
   return row
     ? {
@@ -1515,7 +1437,6 @@ export const listTagCatalog = async (
   const scopeRows = await database
     .select()
     .from(tagScopes)
-    .where(eq(tagScopes.workspaceId, DEFAULT_WORKSPACE_ID))
     .orderBy(asc(tagScopes.prefix));
   const tagRows = await database
     .select({
@@ -1523,8 +1444,7 @@ export const listTagCatalog = async (
       leadCount: sql<number>`(SELECT count(*) FROM lead_tags AS usage JOIN leads AS used ON used.id = usage.lead_id WHERE usage.tag_id = ${tags.id} AND used.deleted_at IS NULL)`,
     })
     .from(tags)
-    .leftJoin(tagScopes, eq(tagScopes.id, tags.scopeId))
-    .where(eq(tags.workspaceId, DEFAULT_WORKSPACE_ID));
+    .leftJoin(tagScopes, eq(tagScopes.id, tags.scopeId));
 
   return {
     scopes: scopeRows.map((row) => ({
@@ -1589,7 +1509,6 @@ const findTagBySpec = async (
     .from(tags)
     .where(
       and(
-        eq(tags.workspaceId, DEFAULT_WORKSPACE_ID),
         scopeId === null ? isNull(tags.scopeId) : eq(tags.scopeId, scopeId),
         eq(tags.name, name),
       ),
@@ -1605,28 +1524,21 @@ export const createTag = async (
     ? await database
         .select()
         .from(tagScopes)
-        .where(
-          and(
-            eq(tagScopes.workspaceId, DEFAULT_WORKSPACE_ID),
-            eq(tagScopes.prefix, spec.prefix),
-          ),
-        )
+        .where(eq(tagScopes.prefix, spec.prefix))
         .get()
     : undefined;
   const scopeId = scope?.id ?? null;
   if (await findTagBySpec(environment, scopeId, spec.name)) {
-    return tagConflict('tags.workspace_name');
+    return tagConflict('tags.name_scope');
   }
 
   const scopeCount = await database
     .select({ count: sql<number>`count(*)` })
     .from(tagScopes)
-    .where(eq(tagScopes.workspaceId, DEFAULT_WORKSPACE_ID))
     .get();
   const tagCount = await database
     .select({ count: sql<number>`count(*)` })
     .from(tags)
-    .where(eq(tags.workspaceId, DEFAULT_WORKSPACE_ID))
     .get();
   const timestamp = now().getTime();
   const effectiveScopeId = spec.prefix ? (scopeId ?? id()) : null;
@@ -1636,10 +1548,9 @@ export const createTag = async (
     statements.push(
       prepare(
         environment.DB,
-        'INSERT INTO tag_scopes (id, workspace_id, prefix, color, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
+        'INSERT INTO tag_scopes (id, prefix, color, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
       ).bind(
         effectiveScopeId,
-        DEFAULT_WORKSPACE_ID,
         spec.prefix,
         nextTagColor(Number(scopeCount?.count ?? 0)),
         timestamp,
@@ -1651,10 +1562,9 @@ export const createTag = async (
   statements.push(
     prepare(
       environment.DB,
-      'INSERT INTO tags (id, workspace_id, name, scope_id, color, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO tags (id, name, scope_id, color, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
     ).bind(
       tagId,
-      DEFAULT_WORKSPACE_ID,
       spec.name,
       effectiveScopeId,
       effectiveScopeId ? null : nextTagColor(Number(tagCount?.count ?? 0)),
@@ -1686,7 +1596,7 @@ export const updateTag = async (
   const current = await database
     .select()
     .from(tags)
-    .where(and(eq(tags.workspaceId, DEFAULT_WORKSPACE_ID), eq(tags.id, tagId)))
+    .where(eq(tags.id, tagId))
     .get();
   if (!current) {
     return { kind: 'not-found' };
@@ -1704,12 +1614,7 @@ export const updateTag = async (
       const scope = await database
         .select()
         .from(tagScopes)
-        .where(
-          and(
-            eq(tagScopes.workspaceId, DEFAULT_WORKSPACE_ID),
-            eq(tagScopes.prefix, patch.name.prefix),
-          ),
-        )
+        .where(eq(tagScopes.prefix, patch.name.prefix))
         .get();
       if (scope) {
         targetScopeId = scope.id;
@@ -1718,15 +1623,13 @@ export const updateTag = async (
         const scopeCount = await database
           .select({ count: sql<number>`count(*)` })
           .from(tagScopes)
-          .where(eq(tagScopes.workspaceId, DEFAULT_WORKSPACE_ID))
           .get();
         statements.push(
           prepare(
             environment.DB,
-            'INSERT INTO tag_scopes (id, workspace_id, prefix, color, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)',
+            'INSERT INTO tag_scopes (id, prefix, color, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
           ).bind(
             targetScopeId,
-            DEFAULT_WORKSPACE_ID,
             patch.name.prefix,
             nextTagColor(Number(scopeCount?.count ?? 0)),
             timestamp,
@@ -1740,7 +1643,6 @@ export const updateTag = async (
         const tagCount = await database
           .select({ count: sql<number>`count(*)` })
           .from(tags)
-          .where(eq(tags.workspaceId, DEFAULT_WORKSPACE_ID))
           .get();
         targetColor = nextTagColor(Number(tagCount?.count ?? 0));
       }
@@ -1752,15 +1654,8 @@ export const updateTag = async (
     statements.push(
       prepare(
         environment.DB,
-        'UPDATE tags SET name = ?, scope_id = ?, color = ?, updated_at = ? WHERE id = ? AND workspace_id = ?',
-      ).bind(
-        patch.name.name,
-        targetScopeId,
-        targetColor,
-        timestamp,
-        tagId,
-        DEFAULT_WORKSPACE_ID,
-      ),
+        'UPDATE tags SET name = ?, scope_id = ?, color = ?, updated_at = ? WHERE id = ?',
+      ).bind(patch.name.name, targetScopeId, targetColor, timestamp, tagId),
     );
     // Always reconcile the denormalized join scope to the tag's actual scope
     // inside the same batch. Comparing only against the read snapshot is
@@ -1771,11 +1666,9 @@ export const updateTag = async (
       prepare(
         environment.DB,
         `UPDATE lead_tags
-          SET scope_id = (
-            SELECT scope_id FROM tags WHERE id = ? AND workspace_id = ?
-          )
-          WHERE tag_id = ? AND workspace_id = ?`,
-      ).bind(tagId, DEFAULT_WORKSPACE_ID, tagId, DEFAULT_WORKSPACE_ID),
+          SET scope_id = (SELECT scope_id FROM tags WHERE id = ?)
+          WHERE tag_id = ?`,
+      ).bind(tagId, tagId),
     );
   }
 
@@ -1784,15 +1677,15 @@ export const updateTag = async (
       statements.push(
         prepare(
           environment.DB,
-          'UPDATE tag_scopes SET color = ?, updated_at = ? WHERE id = ? AND workspace_id = ?',
-        ).bind(patch.color, timestamp, targetScopeId, DEFAULT_WORKSPACE_ID),
+          'UPDATE tag_scopes SET color = ?, updated_at = ? WHERE id = ?',
+        ).bind(patch.color, timestamp, targetScopeId),
       );
     } else {
       statements.push(
         prepare(
           environment.DB,
-          'UPDATE tags SET color = ?, updated_at = ? WHERE id = ? AND workspace_id = ?',
-        ).bind(patch.color, timestamp, tagId, DEFAULT_WORKSPACE_ID),
+          'UPDATE tags SET color = ?, updated_at = ? WHERE id = ?',
+        ).bind(patch.color, timestamp, tagId),
       );
     }
   }
@@ -1804,8 +1697,8 @@ export const updateTag = async (
     statements.push(
       prepare(
         environment.DB,
-        'DELETE FROM tag_scopes WHERE id = ? AND workspace_id = ? AND NOT EXISTS (SELECT 1 FROM tags WHERE scope_id = ?)',
-      ).bind(oldScopeId, DEFAULT_WORKSPACE_ID, oldScopeId),
+        'DELETE FROM tag_scopes WHERE id = ? AND NOT EXISTS (SELECT 1 FROM tags WHERE scope_id = ?)',
+      ).bind(oldScopeId, oldScopeId),
     );
   }
 
@@ -1846,12 +1739,7 @@ export const updateTagScope = async (
   const current = await database
     .select()
     .from(tagScopes)
-    .where(
-      and(
-        eq(tagScopes.workspaceId, DEFAULT_WORKSPACE_ID),
-        eq(tagScopes.id, scopeId),
-      ),
-    )
+    .where(eq(tagScopes.id, scopeId))
     .get();
   if (!current) {
     return { kind: 'not-found' };
@@ -1861,13 +1749,12 @@ export const updateTagScope = async (
     await executeAtomically(environment.DB, [
       prepare(
         environment.DB,
-        'UPDATE tag_scopes SET color = ?, prefix = ?, updated_at = ? WHERE id = ? AND workspace_id = ?',
+        'UPDATE tag_scopes SET color = ?, prefix = ?, updated_at = ? WHERE id = ?',
       ).bind(
         patch.color ?? asTagColor(current.color),
         patch.prefix ?? current.prefix,
         now().getTime(),
         scopeId,
-        DEFAULT_WORKSPACE_ID,
       ),
     ]);
   } catch (error) {
@@ -1897,7 +1784,7 @@ export const deleteTag = async (
   const current = await database
     .select({ scopeId: tags.scopeId })
     .from(tags)
-    .where(and(eq(tags.workspaceId, DEFAULT_WORKSPACE_ID), eq(tags.id, tagId)))
+    .where(eq(tags.id, tagId))
     .get();
   if (!current) {
     return { kind: 'not-found' };
@@ -1910,21 +1797,17 @@ export const deleteTag = async (
     .where(and(eq(leadTags.tagId, tagId), isNull(leads.deletedAt)))
     .get();
   const statements: Statement[] = [
-    prepare(
-      environment.DB,
-      'DELETE FROM lead_tags WHERE tag_id = ? AND workspace_id = ?',
-    ).bind(tagId, DEFAULT_WORKSPACE_ID),
-    prepare(
-      environment.DB,
-      'DELETE FROM tags WHERE id = ? AND workspace_id = ?',
-    ).bind(tagId, DEFAULT_WORKSPACE_ID),
+    prepare(environment.DB, 'DELETE FROM lead_tags WHERE tag_id = ?').bind(
+      tagId,
+    ),
+    prepare(environment.DB, 'DELETE FROM tags WHERE id = ?').bind(tagId),
   ];
   if (current.scopeId) {
     statements.push(
       prepare(
         environment.DB,
-        'DELETE FROM tag_scopes WHERE id = ? AND workspace_id = ? AND NOT EXISTS (SELECT 1 FROM tags WHERE scope_id = ?)',
-      ).bind(current.scopeId, DEFAULT_WORKSPACE_ID, current.scopeId),
+        'DELETE FROM tag_scopes WHERE id = ? AND NOT EXISTS (SELECT 1 FROM tags WHERE scope_id = ?)',
+      ).bind(current.scopeId, current.scopeId),
     );
   }
 
@@ -1948,10 +1831,7 @@ const resolveAssignmentsByIds = async (
     .select({ id: tags.id, scopeId: tags.scopeId })
     .from(tags)
     .where(
-      and(
-        eq(tags.workspaceId, DEFAULT_WORKSPACE_ID),
-        sql`${tags.id} IN (SELECT value FROM json_each(${JSON.stringify(unique)}))`,
-      ),
+      sql`${tags.id} IN (SELECT value FROM json_each(${JSON.stringify(unique)}))`,
     );
   const byId = new Map<string, null | string>(
     rows.map((row) => [row.id, row.scopeId]),
@@ -1996,13 +1876,7 @@ export const setLeadTags = async (
   const lead = await database
     .select({ id: leads.id })
     .from(leads)
-    .where(
-      and(
-        eq(leads.workspaceId, DEFAULT_WORKSPACE_ID),
-        eq(leads.id, leadId),
-        isNull(leads.deletedAt),
-      ),
-    )
+    .where(and(eq(leads.id, leadId), isNull(leads.deletedAt)))
     .get();
   if (!lead) {
     return { kind: 'not-found' };
@@ -2015,10 +1889,9 @@ export const setLeadTags = async (
     }
 
     const statements: Statement[] = [
-      prepare(
-        environment.DB,
-        'DELETE FROM lead_tags WHERE lead_id = ? AND workspace_id = ?',
-      ).bind(leadId, DEFAULT_WORKSPACE_ID),
+      prepare(environment.DB, 'DELETE FROM lead_tags WHERE lead_id = ?').bind(
+        leadId,
+      ),
       ...leadTagStatements(
         environment,
         leadId,
@@ -2103,15 +1976,10 @@ export const bulkTag = async (
       prepare(
         environment.DB,
         `DELETE FROM lead_tags
-          WHERE workspace_id = ?
-            AND lead_id IN (SELECT value FROM json_each(?))
+          WHERE lead_id IN (SELECT value FROM json_each(?))
             AND tag_id IN (SELECT value FROM json_each(?))
           RETURNING lead_id AS leadId`,
-      ).bind(
-        DEFAULT_WORKSPACE_ID,
-        JSON.stringify(uniqueLeads),
-        JSON.stringify(uniqueTags),
-      ),
+      ).bind(JSON.stringify(uniqueLeads), JSON.stringify(uniqueTags)),
     ];
     try {
       const results = await executeAtomicallyWithResults(
@@ -2156,8 +2024,7 @@ export const bulkTag = async (
       prepare(
         environment.DB,
         `DELETE FROM lead_tags
-          WHERE workspace_id = ?
-            AND lead_id IN (SELECT value FROM json_each(?))
+          WHERE lead_id IN (SELECT value FROM json_each(?))
             AND (
               tag_id IN (SELECT value FROM json_each(?))
               OR scope_id IN (
@@ -2166,17 +2033,15 @@ export const bulkTag = async (
               )
             )`,
       ).bind(
-        DEFAULT_WORKSPACE_ID,
         JSON.stringify(uniqueLeads),
         JSON.stringify(winnerTagIds),
         JSON.stringify(winnerTagIds),
       ),
       prepare(
         environment.DB,
-        `INSERT INTO lead_tags (id, workspace_id, lead_id, tag_id, scope_id, created_at)
+        `INSERT INTO lead_tags (id, lead_id, tag_id, scope_id, created_at)
           SELECT
             '0' || substr(hex(randomblob(13)), 1, 25),
-            l.workspace_id,
             l.id,
             tag.id,
             tag.scope_id,
@@ -2184,19 +2049,15 @@ export const bulkTag = async (
           FROM json_each(?) AS ids
           JOIN leads AS l
             ON l.id = ids.value
-            AND l.workspace_id = ?
             AND l.deleted_at IS NULL
           CROSS JOIN json_each(?) AS tids
           JOIN tags AS tag
             ON tag.id = tids.value
-            AND tag.workspace_id = ?
           RETURNING lead_id AS leadId`,
       ).bind(
         timestamp,
         JSON.stringify(uniqueLeads),
-        DEFAULT_WORKSPACE_ID,
         JSON.stringify(winnerTagIds),
-        DEFAULT_WORKSPACE_ID,
       ),
     ];
     try {
@@ -2247,13 +2108,12 @@ export const createLeadAtomically = async (
   const leadStatement = prepare(
     environment.DB,
     `INSERT INTO leads (
-        id, workspace_id, email, first_name, last_name,
+        id, email, first_name, last_name,
         source, estimated_value, custom_fields, raw_payload, skipped_fields,
         origin, token_id, created_at, updated_at, deleted_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
   ).bind(
     leadId,
-    DEFAULT_WORKSPACE_ID,
     email,
     input.firstName ?? null,
     input.lastName ?? null,
@@ -2270,11 +2130,10 @@ export const createLeadAtomically = async (
   const activityStatement = prepare(
     environment.DB,
     `INSERT INTO activities (
-        id, workspace_id, lead_id, kind, body, metadata, created_at
-      ) VALUES (?, ?, ?, 'intake', ?, ?, ?)`,
+        id, lead_id, kind, body, metadata, created_at
+      ) VALUES (?, ?, 'intake', ?, ?, ?)`,
   ).bind(
     activityId,
-    DEFAULT_WORKSPACE_ID,
     leadId,
     `Received from ${input.source}`,
     JSON.stringify({ source: input.source }),
@@ -2282,14 +2141,8 @@ export const createLeadAtomically = async (
   );
   const idempotencyStatement = prepare(
     environment.DB,
-    'INSERT INTO idempotency_keys (workspace_id, key, request_hash, response_json, created_at) VALUES (?, ?, ?, ?, ?)',
-  ).bind(
-    DEFAULT_WORKSPACE_ID,
-    idempotencyKey,
-    requestHash,
-    JSON.stringify(response),
-    timestamp,
-  );
+    'INSERT INTO idempotency_keys (key, request_hash, response_json, created_at) VALUES (?, ?, ?, ?)',
+  ).bind(idempotencyKey, requestHash, JSON.stringify(response), timestamp);
   // Recipient selection and notification are best-effort event work now: the
   // lead and its idempotency row commit here, and the application command
   // publishes `lead.created` only after this function reports a new commit.
@@ -2349,13 +2202,12 @@ export const createLead = async (
   const leadStatement = prepare(
     environment.DB,
     `INSERT INTO leads (
-        id, workspace_id, email, first_name, last_name,
+        id, email, first_name, last_name,
         source, estimated_value, custom_fields, raw_payload, skipped_fields,
         origin, token_id, created_at, updated_at, deleted_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, NULL)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?, NULL)`,
   ).bind(
     leadId,
-    DEFAULT_WORKSPACE_ID,
     email,
     firstName,
     lastName,
@@ -2402,13 +2254,7 @@ export const updateLead = async (
   const existing = await database
     .select({ source: leads.source })
     .from(leads)
-    .where(
-      and(
-        eq(leads.workspaceId, DEFAULT_WORKSPACE_ID),
-        eq(leads.id, leadId),
-        isNull(leads.deletedAt),
-      ),
-    )
+    .where(and(eq(leads.id, leadId), isNull(leads.deletedAt)))
     .get();
   if (!existing) {
     return null;
@@ -2447,13 +2293,13 @@ export const updateLead = async (
     binds.push(input.source);
   }
 
-  binds.push(leadId, DEFAULT_WORKSPACE_ID);
+  binds.push(leadId);
   // Patch-specific UPDATE: fields absent from the request are left untouched,
   // so a concurrent edit to another field is never clobbered by a stale read.
   const updateStatement = prepare(
     environment.DB,
     `UPDATE leads SET ${assignments.join(', ')}
-      WHERE id = ? AND workspace_id = ? AND deleted_at IS NULL`,
+      WHERE id = ? AND deleted_at IS NULL`,
   ).bind(...binds);
 
   const newSource = input.source;
@@ -2485,12 +2331,12 @@ export const updateLead = async (
       prepare(
         environment.DB,
         `DELETE FROM lead_tags
-          WHERE lead_id = ? AND workspace_id = ?
+          WHERE lead_id = ?
             AND scope_id IN (
               SELECT id FROM tag_scopes
-              WHERE workspace_id = ? AND prefix = 'source'
+              WHERE prefix = 'source'
             )`,
-      ).bind(leadId, DEFAULT_WORKSPACE_ID, DEFAULT_WORKSPACE_ID),
+      ).bind(leadId),
       ...leadTagStatements(environment, leadId, plan.assignments, timestamp),
     ];
     try {
@@ -2532,7 +2378,6 @@ export const softDeleteLeads = async (
     .set({ deletedAt: now() })
     .where(
       and(
-        eq(leads.workspaceId, DEFAULT_WORKSPACE_ID),
         isNull(leads.deletedAt),
         sql`${leads.id} IN (SELECT value FROM json_each(${JSON.stringify(uniqueIds)}))`,
       ),
@@ -2561,7 +2406,6 @@ export const createLeadActivity = async (
     kind,
     leadId,
     metadata: {},
-    workspaceId: DEFAULT_WORKSPACE_ID,
   };
   await getDatabase(environment).insert(activities).values(record);
   return record;
@@ -2586,12 +2430,7 @@ export const getNotificationPreference = async (
   const row = await getDatabase(environment)
     .select()
     .from(notificationPreferences)
-    .where(
-      and(
-        eq(notificationPreferences.workspaceId, DEFAULT_WORKSPACE_ID),
-        eq(notificationPreferences.userId, userId),
-      ),
-    )
+    .where(eq(notificationPreferences.userId, userId))
     .get();
   return row ?? null;
 };
@@ -2608,14 +2447,10 @@ export const upsertNotificationPreference = async (
       newLeadEmail,
       updatedAt: timestamp,
       userId,
-      workspaceId: DEFAULT_WORKSPACE_ID,
     })
     .onConflictDoUpdate({
       set: { newLeadEmail, updatedAt: timestamp },
-      target: [
-        notificationPreferences.workspaceId,
-        notificationPreferences.userId,
-      ],
+      target: notificationPreferences.userId,
     });
 };
 
@@ -2640,7 +2475,6 @@ export const listLeadCreatedRecipients = async (
     .innerJoin(user, eq(user.id, notificationPreferences.userId))
     .where(
       and(
-        eq(notificationPreferences.workspaceId, DEFAULT_WORKSPACE_ID),
         eq(notificationPreferences.newLeadEmail, true),
         isNull(user.disabledAt),
         actorUserId === null
@@ -2653,11 +2487,12 @@ export const listLeadCreatedRecipients = async (
 
 // --- Installation configuration ---------------------------------------------
 //
-// One singleton JSON document per workspace, validated against the versioned
-// Effect Schema in src/domain/schemas.ts on every read and before every write.
-// Drizzle never types the document shape; `write_version` is the internal
-// compare-and-swap token. A corrupt or unsupported document throws
-// `InstallationConfigDecodeError` and is never silently replaced.
+// One singleton JSON document per installation. The JSON column is typed with
+// the domain schema for compile-time safety, while authoritative validation
+// still happens in src/domain/schemas.ts on every read and before every write.
+// `write_version` is the internal compare-and-swap token. A corrupt or
+// unsupported document throws `InstallationConfigDecodeError` and is never
+// silently replaced.
 
 export type InstallationConfigRow = {
   document: InstallationConfig;
@@ -2683,7 +2518,7 @@ export const readInstallationConfig = async (
         writeVersion: installationConfig.writeVersion,
       })
       .from(installationConfig)
-      .where(eq(installationConfig.workspaceId, DEFAULT_WORKSPACE_ID))
+      .where(eq(installationConfig.id, INSTALLATION_CONFIG_ID))
       .get();
   } catch (error) {
     // Drizzle's JSON column mode parses the stored TEXT while mapping the
@@ -2722,17 +2557,16 @@ const auditStatements = (
     return prepare(
       environment.DB,
       `INSERT INTO audit_log (
-          id, workspace_id, actor_user_id, created_at, action, resource_type,
+          id, actor_user_id, created_at, action, resource_type,
           resource_id, changes_json
         )
-        SELECT ?, ?, ?, ?, ?, ?, ?, ?
+        SELECT ?, ?, ?, ?, ?, ?, ?
         WHERE EXISTS (
           SELECT 1 FROM installation_config
-          WHERE workspace_id = ? AND write_token = ?
+          WHERE id = '${INSTALLATION_CONFIG_ID}' AND write_token = ?
         )`,
     ).bind(
       crypto.randomUUID(),
-      DEFAULT_WORKSPACE_ID,
       input.actorUserId,
       input.now.getTime(),
       validated.action,
@@ -2742,7 +2576,6 @@ const auditStatements = (
       // batch needs the serialized JSON form here, so serialize once after
       // schema validation.
       JSON.stringify(validated.changes),
-      DEFAULT_WORKSPACE_ID,
       writeToken,
     );
   });
@@ -2785,9 +2618,9 @@ export const writeInstallationConfig = async (
     const insert = prepare(
       environment.DB,
       `INSERT INTO installation_config (
-          workspace_id, document_json, write_version, write_token
-        ) VALUES (?, ?, 1, ?)`,
-    ).bind(DEFAULT_WORKSPACE_ID, documentJson, writeToken);
+          id, document_json, write_version, write_token
+        ) VALUES ('${INSTALLATION_CONFIG_ID}', ?, 1, ?)`,
+    ).bind(documentJson, writeToken);
     try {
       const inserted = await executeAtomicallyWithResults(environment.DB, [
         insert,
@@ -2807,12 +2640,11 @@ export const writeInstallationConfig = async (
     environment.DB,
     `UPDATE installation_config
       SET document_json = ?, write_version = ?, write_token = ?
-      WHERE workspace_id = ? AND write_version = ?`,
+      WHERE id = '${INSTALLATION_CONFIG_ID}' AND write_version = ?`,
   ).bind(
     documentJson,
     nextWriteVersion,
     writeToken,
-    DEFAULT_WORKSPACE_ID,
     input.expectedWriteVersion,
   );
   const results = await executeAtomicallyWithResults(environment.DB, [
@@ -2866,7 +2698,6 @@ export const appendAuditLog = async (
           id: crypto.randomUUID(),
           resourceId: validated.resourceId,
           resourceType: validated.resourceType,
-          workspaceId: DEFAULT_WORKSPACE_ID,
         };
       }),
     );
@@ -2912,7 +2743,7 @@ export const listAuditLog = async (
         resourceType: auditLog.resourceType,
       })
       .from(auditLog)
-      .where(and(eq(auditLog.workspaceId, DEFAULT_WORKSPACE_ID), keyset))
+      .where(keyset)
       .orderBy(desc(auditLog.createdAt), desc(auditLog.id))
       .limit(options.limit + 1);
   } catch (error) {

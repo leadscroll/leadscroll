@@ -1,9 +1,4 @@
-import {
-  DEFAULT_WORKSPACE_ID,
-  type Env,
-  listLeads,
-  softDeleteLeads,
-} from '@/db/repository';
+import { type Env, listLeads, softDeleteLeads } from '@/db/repository';
 import { convertV4MiniflareOptions, Miniflare } from 'miniflare';
 import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -19,7 +14,6 @@ import { expect, test } from 'vitest';
  */
 
 const repoRoot = process.cwd();
-const WORKSPACE = DEFAULT_WORKSPACE_ID;
 
 type BindingGuard = {
   maxBindings: number;
@@ -113,12 +107,13 @@ const startFixture = async (): Promise<LimitsFixture> => {
       .toSorted();
     for (const name of names) {
       const sql = await readFile(join(repoRoot, 'drizzle', name), 'utf8');
-      for (const statement of sql
-        .split('--> statement-breakpoint')
-        .map((chunk) => chunk.trim())
-        .filter(Boolean)) {
-        await raw.prepare(statement).run();
-      }
+      await raw.batch(
+        sql
+          .split('--> statement-breakpoint')
+          .map((chunk) => chunk.trim())
+          .filter(Boolean)
+          .map((statement) => raw.prepare(statement)),
+      );
     }
 
     const { db, guard } = watchBindings(raw);
@@ -154,14 +149,13 @@ const insertLeads = async (
     database
       .prepare(
         `INSERT INTO leads (
-          id, workspace_id, email, first_name, last_name,
+          id, email, first_name, last_name,
           source, estimated_value, custom_fields,
           created_at, updated_at, deleted_at
-        ) VALUES (?, ?, ?, ?, ?, ?, NULL, '{}', ?, ?, NULL)`,
+        ) VALUES (?, ?, ?, ?, ?, NULL, '{}', ?, ?, NULL)`,
       )
       .bind(
         lead.id,
-        WORKSPACE,
         lead.email ?? null,
         'Test',
         'Lead',

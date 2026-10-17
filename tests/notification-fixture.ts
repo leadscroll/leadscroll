@@ -1,7 +1,8 @@
-import { DEFAULT_WORKSPACE_ID, type Env } from '@/db/repository';
+import { type Env } from '@/db/repository';
 import {
   decodeInstallationConfig,
   DEFAULT_INSTALLATION_CONFIG,
+  INSTALLATION_CONFIG_ID,
   type InstallationConfig,
   type InstallationEmailConfig,
 } from '@/domain/schemas';
@@ -79,12 +80,13 @@ const applyMigrationFile = async (
   name: string,
 ): Promise<void> => {
   const sql = await readFile(join(process.cwd(), 'drizzle', name), 'utf8');
-  for (const statement of sql
-    .split('--> statement-breakpoint')
-    .map((chunk) => chunk.trim())
-    .filter(Boolean)) {
-    await database.prepare(statement).run();
-  }
+  await database.batch(
+    sql
+      .split('--> statement-breakpoint')
+      .map((chunk) => chunk.trim())
+      .filter(Boolean)
+      .map((statement) => database.prepare(statement)),
+  );
 };
 
 const applyMigrations = async (database: D1Database): Promise<void> => {
@@ -177,9 +179,9 @@ export const startNotificationFixture = async (
     const readConfigRow = async (): Promise<RawConfigRow> => {
       const row = await database
         .prepare(
-          'SELECT document_json, write_version FROM installation_config WHERE workspace_id = ?',
+          'SELECT document_json, write_version FROM installation_config WHERE id = ?',
         )
-        .bind(DEFAULT_WORKSPACE_ID)
+        .bind(INSTALLATION_CONFIG_ID)
         .first<{ document_json: string; write_version: number }>();
       if (row === null) {
         return {
@@ -201,14 +203,14 @@ export const startNotificationFixture = async (
       await database
         .prepare(
           `INSERT INTO installation_config (
-            workspace_id, document_json, write_version, write_token
+            id, document_json, write_version, write_token
           ) VALUES (?, ?, ?, 'fixture-token')
-          ON CONFLICT(workspace_id) DO UPDATE SET
+          ON CONFLICT(id) DO UPDATE SET
             document_json = excluded.document_json,
             write_version = excluded.write_version,
             write_token = excluded.write_token`,
         )
-        .bind(DEFAULT_WORKSPACE_ID, JSON.stringify(document), writeVersion)
+        .bind(INSTALLATION_CONFIG_ID, JSON.stringify(document), writeVersion)
         .run();
     };
 
@@ -226,7 +228,6 @@ export const startNotificationFixture = async (
         credential = await encryptCredential(TEST_ENCRYPTION_KEY, {
           provider: 'resend',
           value: input.credential,
-          workspaceId: DEFAULT_WORKSPACE_ID,
         });
       }
 
@@ -269,7 +270,6 @@ export const startNotificationFixture = async (
         const credential = await encryptCredential(TEST_ENCRYPTION_KEY, {
           provider: 'resend',
           value,
-          workspaceId: DEFAULT_WORKSPACE_ID,
         });
         await writeDocument(
           { ...current, email: { ...current.email, credential } },
@@ -279,13 +279,13 @@ export const startNotificationFixture = async (
       optIn: async (userId, newLeadEmail = true) => {
         await database
           .prepare(
-            `INSERT INTO notification_preferences (workspace_id, user_id, new_lead_email, updated_at)
-              VALUES (?, ?, ?, ?)
-              ON CONFLICT(workspace_id, user_id) DO UPDATE SET
+            `INSERT INTO notification_preferences (user_id, new_lead_email, updated_at)
+              VALUES (?, ?, ?)
+              ON CONFLICT(user_id) DO UPDATE SET
                 new_lead_email = excluded.new_lead_email,
                 updated_at = excluded.updated_at`,
           )
-          .bind(DEFAULT_WORKSPACE_ID, userId, newLeadEmail ? 1 : 0, now())
+          .bind(userId, newLeadEmail ? 1 : 0, now())
           .run();
       },
       readAuditRows: async () => {
@@ -293,10 +293,9 @@ export const startNotificationFixture = async (
           .prepare(
             `SELECT id, action, actor_user_id, changes_json, resource_type,
                     resource_id, created_at
-             FROM audit_log WHERE workspace_id = ?
+             FROM audit_log
              ORDER BY created_at ASC, id ASC`,
           )
-          .bind(DEFAULT_WORKSPACE_ID)
           .all<{
             action: string;
             actor_user_id: null | string;
@@ -330,15 +329,15 @@ export const startNotificationFixture = async (
         await database
           .prepare(
             `INSERT INTO leads (
-              id, workspace_id, source, custom_fields, email, created_at,
+              id, source, custom_fields, email, created_at,
               updated_at, deleted_at
-            ) VALUES (?, ?, 'Test', '{}', ?, ?, ?, NULL)
+            ) VALUES (?, 'Test', '{}', ?, ?, ?, NULL)
             ON CONFLICT(id) DO UPDATE SET
               email = excluded.email,
               updated_at = excluded.updated_at,
               deleted_at = NULL`,
           )
-          .bind(leadId, DEFAULT_WORKSPACE_ID, email, now(), now())
+          .bind(leadId, email, now(), now())
           .run();
       },
       setEmailBinding: (binding) => {
@@ -351,14 +350,14 @@ export const startNotificationFixture = async (
         await database
           .prepare(
             `INSERT INTO installation_config (
-              workspace_id, document_json, write_version, write_token
+              id, document_json, write_version, write_token
             ) VALUES (?, ?, ?, 'fixture-token')
-            ON CONFLICT(workspace_id) DO UPDATE SET
+            ON CONFLICT(id) DO UPDATE SET
               document_json = excluded.document_json,
               write_version = excluded.write_version,
               write_token = excluded.write_token`,
           )
-          .bind(DEFAULT_WORKSPACE_ID, json, writeVersion)
+          .bind(INSTALLATION_CONFIG_ID, json, writeVersion)
           .run();
       },
       user: async (input) => {
