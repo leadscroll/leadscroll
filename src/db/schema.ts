@@ -1,4 +1,5 @@
 import { user } from './auth-schema';
+import { type AuditChange, type InstallationConfig } from '@/domain/schemas';
 import { sql } from 'drizzle-orm';
 import {
   check,
@@ -222,4 +223,73 @@ export const idempotencyKeys = sqliteTable(
       .notNull(),
   },
   (table) => [uniqueIndex('idempotency_key_unique').on(table.key)],
+);
+
+// --- New-lead email notifications ------------------------------------------
+
+// Personal opt-in, off by default for every existing and future account. The
+// feature is only available when the installation's email settings enable a
+// provider; the preference itself is always writable so a staff member can
+// opt in while email is being configured. One installation has one staff team,
+// so the preference is keyed by the user alone.
+export const notificationPreferences = sqliteTable('notification_preferences', {
+  newLeadEmail: integer('new_lead_email', { mode: 'boolean' })
+    .notNull()
+    .default(false),
+  updatedAt: timestampMs('updated_at').notNull(),
+  userId: text('user_id')
+    .primaryKey()
+    .notNull()
+    .references(() => user.id, { onDelete: 'cascade' }),
+});
+
+// Installation-wide singleton configuration document. The JSON column is
+// typed with the domain schema for compile-time safety, while the
+// authoritative runtime validation (version and excess-property rejection)
+// happens in src/domain/schemas.ts on every read and before every write.
+// The fixed `id = 1` keeps the table a singleton without inventing a tenant
+// identifier. `write_version` is the internal compare-and-swap token bumped on
+// every write (including test-state updates), separate from the user-visible
+// `revision` inside the JSON so a test completion cannot invalidate a
+// settings draft or overwrite a concurrent configuration change. Who and
+// when changed the configuration is the generic audit_log's job, so this row
+// carries no duplicate timestamp/actor metadata.
+export const installationConfig = sqliteTable(
+  'installation_config',
+  {
+    documentJson: text('document_json', { mode: 'json' })
+      .$type<InstallationConfig>()
+      .notNull(),
+    id: integer('id').primaryKey(),
+    // Random token written by every successful save. Audit statements in the
+    // same batch are gated on it, so a compare-and-swap loser whose UPDATE
+    // matched no rows cannot slip its audit rows into the winner's write.
+    writeToken: text('write_token'),
+    writeVersion: integer('write_version').notNull().default(1),
+  },
+  (table) => [check('installation_config_singleton', sql`${table.id} = 1`)],
+);
+
+// Generic, append-only who-changed-what log. The `changes_json` column is
+// typed with the bounded audit schema for compile-time safety; the
+// authoritative runtime validation/redaction happens in
+// src/domain/schemas.ts on every write and read. There is no user-facing
+// audit editor in this release. Configuration changes are the initial
+// producer; the lifecycle is independent of the configuration document.
+export const auditLog = sqliteTable(
+  'audit_log',
+  {
+    action: text('action').notNull(),
+    actorUserId: text('actor_user_id').references(() => user.id, {
+      onDelete: 'set null',
+    }),
+    changesJson: text('changes_json', { mode: 'json' })
+      .$type<readonly AuditChange[]>()
+      .notNull(),
+    createdAt: timestampMs('created_at').notNull(),
+    id: text('id').primaryKey(),
+    resourceId: text('resource_id'),
+    resourceType: text('resource_type').notNull(),
+  },
+  (table) => [index('audit_log_created_idx').on(table.createdAt, table.id)],
 );

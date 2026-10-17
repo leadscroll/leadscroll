@@ -9,6 +9,7 @@ import {
   LayoutList,
   LogOut,
   Mail,
+  Send,
   Tags,
   Users,
 } from 'lucide-react';
@@ -20,6 +21,7 @@ const navigation = [
   { href: '/settings/invites', icon: Mail, label: 'Invitations' },
   { href: '/settings/staff', icon: Users, label: 'Team members' },
   { href: '/settings/tokens', icon: KeyRound, label: 'Intake tokens' },
+  { href: '/settings/email', icon: Send, label: 'Email' },
 ];
 
 export const AppShell = ({

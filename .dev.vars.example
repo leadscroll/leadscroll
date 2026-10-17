@@ -7,3 +7,10 @@ BETTER_AUTH_SECRET=
 # Production requires at least 32 characters after trimming whitespace.
 # Rotate it in the dashboard if it leaks.
 SETUP_TOKEN=
+# Optional dedicated AES-256-GCM root key used to encrypt provider API keys
+# saved through Manage -> Email. Leave empty to keep UI credential storage
+# disabled; Cloudflare's native binding does not need it. Generate with:
+#   openssl rand -base64 32
+# Commented out so the one-click installer keeps BETTER_AUTH_SECRET and
+# SETUP_TOKEN as the only required secrets; remove the leading # to set it.
+# EMAIL_SETTINGS_ENCRYPTION_KEY=
