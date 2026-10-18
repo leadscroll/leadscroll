@@ -213,7 +213,7 @@ describe('notification schema migration', () => {
         now: new Date(base + 1),
       }),
     ]);
-    expect(race.filter((won) => won)).toHaveLength(1);
+    expect(race.filter(Boolean)).toHaveLength(1);
     expect((await readInstallationConfig(fx.env)).updatedAt).toBe(base + 2);
     expect(await fx.count('audit_log')).toBe(3);
   });
