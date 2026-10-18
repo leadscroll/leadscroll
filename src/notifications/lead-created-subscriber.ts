@@ -101,17 +101,8 @@ export const createLeadCreatedEmailSubscriber = (
 
       const state = stateFromDocument(capabilities, configExit.right.document);
       const settings = state.settings;
-      if (
-        settings === null ||
-        settings.provider === 'disabled' ||
-        !settings.enabled
-      ) {
-        skipped(
-          event,
-          settings !== null && settings.provider === 'disabled'
-            ? 'disabled'
-            : 'not_configured',
-        );
+      if (settings === null || settings.provider === 'disabled') {
+        skipped(event, settings === null ? 'not_configured' : 'disabled');
         return;
       }
 

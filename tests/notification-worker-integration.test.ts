@@ -164,7 +164,6 @@ const startIntegrationFixture = async (): Promise<IntegrationFixture> => {
       email: {
         canonicalOrigin: APP_ORIGIN,
         credential: envelope,
-        enabled: true,
         fromEmail: 'notifications@example.test',
         fromName: 'LeadScroll',
         provider: 'resend',

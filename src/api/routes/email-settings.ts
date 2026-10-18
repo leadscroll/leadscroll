@@ -75,7 +75,6 @@ export const createEmailSettingsRoutes = (
             actorUserId: admin.userId,
             canonicalOrigin: resolveAuthOrigin(environment, request),
             credential: parsed.data.credential,
-            enabled: parsed.data.enabled,
             expectedRevision: parsed.data.expectedRevision,
             fromEmail: parsed.data.fromEmail ?? null,
             fromName: parsed.data.fromName ?? null,

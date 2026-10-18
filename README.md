@@ -191,7 +191,7 @@ staff API. Unknown or foreign session ids return `404`; individual success is
 ### Email notifications
 
 Opted-in staff can receive one generic email when a new lead is created.
-Email is disabled until a staff member configures a provider in
+Email sending is off until a staff member configures a method in
 Manage → Email; every enabled authenticated staff account can manage the
 installation configuration, and personal opt-in lives under Account →
 Notifications. Both

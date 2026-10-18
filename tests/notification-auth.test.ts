@@ -160,7 +160,6 @@ afterEach(async () => {
 const saveBody = (overrides: Record<string, unknown> = {}) =>
   JSON.stringify({
     credential: { operation: 'keep' },
-    enabled: false,
     expectedRevision: 0,
     fromEmail: null,
     fromName: null,
@@ -250,7 +249,6 @@ describe('email settings API behavior', () => {
     expect(saved.status).toBe(200);
     expect(saved.headers.get('cache-control')).toBe('no-store');
     expect(saved.json.data).toMatchObject({
-      enabled: false,
       provider: 'disabled',
       revision: 1,
       test: null,
@@ -269,7 +267,6 @@ describe('email settings API behavior', () => {
     const fx = await startApiFixture();
     await fx.request('/v1/settings/email', {
       body: saveBody({
-        enabled: true,
         fromEmail: 'notifications@example.test',
         provider: 'resend',
       }),
@@ -278,7 +275,6 @@ describe('email settings API behavior', () => {
     const replaced = await fx.request('/v1/settings/email', {
       body: saveBody({
         credential: { operation: 'replace', value: 're_super_secret' },
-        enabled: true,
         expectedRevision: 1,
         fromEmail: 'notifications@example.test',
         provider: 'resend',
@@ -310,7 +306,6 @@ describe('email settings API behavior', () => {
     const fx = await startApiFixture();
     await fx.request('/v1/settings/email', {
       body: saveBody({
-        enabled: true,
         fromEmail: 'notifications@example.test',
         provider: 'resend',
       }),
@@ -319,7 +314,6 @@ describe('email settings API behavior', () => {
     await fx.request('/v1/settings/email', {
       body: saveBody({
         credential: { operation: 'replace', value: 're_remove_me' },
-        enabled: true,
         expectedRevision: 1,
         fromEmail: 'notifications@example.test',
         provider: 'resend',
@@ -329,7 +323,6 @@ describe('email settings API behavior', () => {
     const removed = await fx.request('/v1/settings/email', {
       body: saveBody({
         credential: { operation: 'remove' },
-        enabled: true,
         expectedRevision: 2,
         fromEmail: 'notifications@example.test',
         provider: 'resend',
@@ -338,7 +331,6 @@ describe('email settings API behavior', () => {
     });
     expect(removed.status).toBe(200);
     expect(removed.json.data).toMatchObject({
-      enabled: false,
       hasApiKey: false,
       provider: 'disabled',
     });
@@ -355,7 +347,6 @@ describe('email settings API behavior', () => {
     const fx = await startApiFixture();
     const selected = await fx.request('/v1/settings/email', {
       body: saveBody({
-        enabled: true,
         fromEmail: 'notifications@example.test',
         provider: 'cloudflare',
       }),
@@ -377,7 +368,6 @@ describe('email settings API behavior', () => {
     const fx = await startApiFixture();
     await fx.request('/v1/settings/email', {
       body: saveBody({
-        enabled: true,
         fromEmail: 'notifications@example.test',
         provider: 'resend',
       }),
@@ -419,7 +409,6 @@ describe('email settings API behavior', () => {
     const tooLong = await fx.request('/v1/settings/email', {
       body: saveBody({
         credential: { operation: 'replace', value: sentinel },
-        enabled: true,
         fromEmail: 'notifications@example.test',
         provider: 'resend',
       }),
@@ -435,7 +424,6 @@ describe('email settings API behavior', () => {
           operation: 'replace',
           value: { secret: 'SENTINEL-object' },
         },
-        enabled: true,
         expectedRevision: 0,
         fromEmail: 'notifications@example.test',
         fromName: null,
@@ -450,7 +438,6 @@ describe('email settings API behavior', () => {
     const badOperation = await fx.request('/v1/settings/email', {
       body: JSON.stringify({
         credential: { operation: 'overwrite', value: 'SENTINEL-operation' },
-        enabled: true,
         expectedRevision: 0,
         fromEmail: 'notifications@example.test',
         fromName: null,

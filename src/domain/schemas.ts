@@ -424,7 +424,6 @@ export const EmailCredentialOperationSchema = Schema.Struct({
 
 export const UpdateEmailSettingsRequestSchema = Schema.Struct({
   credential: EmailCredentialOperationSchema,
-  enabled: Schema.Boolean,
   expectedRevision: Schema.Number.pipe(Schema.int(), Schema.nonNegative()),
   fromEmail: Schema.optional(Schema.NullOr(EmailSchema)),
   fromName: Schema.optional(
@@ -455,7 +454,7 @@ export type SendEmailTestRequest = Schema.Schema.Type<
 
 // --- Installation configuration document ------------------------------------
 
-export const INSTALLATION_CONFIG_VERSION = 1;
+export const INSTALLATION_CONFIG_VERSION = 2;
 
 // Bounded rolling-window limits for optional test sends. The persisted
 // `recent` array is pruned on every reservation and capped by its schema.
@@ -479,7 +478,6 @@ export type EncryptedCredential = Schema.Schema.Type<
 export const InstallationEmailConfigSchema = Schema.Struct({
   canonicalOrigin: Schema.NullOr(BoundedString(2_048)),
   credential: Schema.NullOr(EncryptedCredentialSchema),
-  enabled: Schema.Boolean,
   fromEmail: Schema.NullOr(BoundedString(320)),
   fromName: Schema.NullOr(BoundedString(120)),
   provider: EmailSettingsProviderSchema,
@@ -570,7 +568,6 @@ export const DEFAULT_INSTALLATION_CONFIG: InstallationConfig = Object.freeze({
   email: Object.freeze({
     canonicalOrigin: null,
     credential: null,
-    enabled: false,
     fromEmail: null,
     fromName: null,
     provider: 'disabled',
@@ -579,6 +576,43 @@ export const DEFAULT_INSTALLATION_CONFIG: InstallationConfig = Object.freeze({
   revision: 0,
   version: INSTALLATION_CONFIG_VERSION,
 }) as InstallationConfig;
+
+/**
+ * v1 stored an installation-wide `enabled` boolean next to the provider. v2
+ * folds that state into `provider`: a paused v1 document becomes `disabled`
+ * while its sender and credential are retained, so switching a method back on
+ * restores the previous setup. Anything that is not a well-formed v1 document
+ * is returned unchanged and rejected by the authoritative decoder.
+ */
+const migrateInstallationConfigV1 = (value: unknown): unknown => {
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    Array.isArray(value) ||
+    (value as { version?: unknown }).version !== 1
+  ) {
+    return value;
+  }
+
+  const email = (value as { email?: unknown }).email;
+  if (typeof email !== 'object' || email === null || Array.isArray(email)) {
+    return value;
+  }
+
+  const { enabled, ...rest } = email as Record<string, unknown>;
+  if (typeof enabled !== 'boolean') {
+    return value;
+  }
+
+  return {
+    ...(value as Record<string, unknown>),
+    email: {
+      ...rest,
+      provider: enabled ? rest.provider : 'disabled',
+    },
+    version: INSTALLATION_CONFIG_VERSION,
+  };
+};
 
 /**
  * Decodes one persisted configuration document from an already-parsed Drizzle
@@ -592,7 +626,7 @@ export const decodeInstallationConfig = (
 ): InstallationConfig | null => {
   try {
     return Schema.decodeUnknownSync(InstallationConfigSchema)(
-      value,
+      migrateInstallationConfigV1(value),
       REJECT_EXCESS_PROPERTIES,
     );
   } catch {
@@ -737,7 +771,6 @@ export type EmailTestView = Schema.Schema.Type<typeof EmailTestViewSchema>;
 
 export const EmailSettingsViewSchema = Schema.Struct({
   canonicalOrigin: Schema.String,
-  enabled: Schema.Boolean,
   environment: Schema.Struct({
     hasCloudflareBinding: Schema.Boolean,
     hasEncryptionKey: Schema.Boolean,

@@ -3,6 +3,9 @@
  * component so the secret-free mutation contract is directly testable: React
  * Query mutation variables never contain the Resend API key, and the request
  * is assembled around a request-scoped secret reference.
+ *
+ * `provider` doubles as the sending method: `disabled` is the explicit Off
+ * choice, so there is no separate installation enable flag.
  */
 
 import { type UpdateEmailSettingsRequest } from '@/domain/schemas';
@@ -10,7 +13,6 @@ import { type UpdateEmailSettingsRequest } from '@/domain/schemas';
 export type ManageEmailFormValues = {
   apiKey: string;
   credentialOperation: 'keep' | 'remove' | 'replace';
-  enabled: boolean;
   fromEmail: string;
   fromName: string;
   provider: 'cloudflare' | 'disabled' | 'resend';
@@ -18,7 +20,6 @@ export type ManageEmailFormValues = {
 
 export type SaveSettingsVariables = {
   credentialOperation: 'keep' | 'remove' | 'replace';
-  enabled: boolean;
   expectedRevision: number;
   fromEmail: null | string;
   fromName: null | string;
@@ -31,7 +32,6 @@ const trimmedOrNull = (value: string): null | string => {
 };
 
 export const toFormValues = (settings: {
-  enabled: boolean;
   fromEmail: null | string;
   fromName: null | string;
   hasApiKey: boolean;
@@ -39,7 +39,6 @@ export const toFormValues = (settings: {
 }): ManageEmailFormValues => ({
   apiKey: '',
   credentialOperation: settings.hasApiKey ? 'keep' : 'replace',
-  enabled: settings.enabled,
   fromEmail: settings.fromEmail ?? '',
   fromName: settings.fromName ?? '',
   provider: settings.provider,
@@ -55,7 +54,6 @@ export const toSaveVariables = (
   expectedRevision: number,
 ): SaveSettingsVariables => ({
   credentialOperation: values.credentialOperation,
-  enabled: values.enabled,
   expectedRevision,
   fromEmail: trimmedOrNull(values.fromEmail),
   fromName: trimmedOrNull(values.fromName),
@@ -97,7 +95,6 @@ export const toUpdateRequest = (
     apiKey,
     hasApiKey,
   ),
-  enabled: variables.enabled,
   expectedRevision: variables.expectedRevision,
   fromEmail: variables.fromEmail,
   fromName: variables.fromName,

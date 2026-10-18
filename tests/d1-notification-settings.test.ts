@@ -45,7 +45,6 @@ const saveInput = (
       | { operation: 'keep' }
       | { operation: 'remove' }
       | { operation: 'replace'; value: string };
-    enabled?: boolean;
     fromEmail?: null | string;
     fromName?: null | string;
     provider?: 'cloudflare' | 'disabled' | 'resend';
@@ -54,7 +53,6 @@ const saveInput = (
   actorUserId: overrides.actorUserId ?? ADMIN_ID,
   canonicalOrigin: SETTINGS_ORIGIN,
   credential: overrides.credential ?? { operation: 'keep' as const },
-  enabled: overrides.enabled ?? true,
   expectedRevision,
   fromEmail:
     overrides.fromEmail === undefined
@@ -99,7 +97,6 @@ describe('installation configuration persistence', () => {
     expect(Either.isRight(saved)).toBe(true);
     if (Either.isRight(saved)) {
       expect(saved.right).toMatchObject({
-        enabled: true,
         hasApiKey: true,
         provider: 'resend',
         revision: 1,
@@ -221,7 +218,6 @@ describe('installation configuration persistence', () => {
     const removed = await readDocument();
     expect(removed.email.credential).toBeNull();
     expect(removed.email.provider).toBe('disabled');
-    expect(removed.email.enabled).toBe(false);
     expect(JSON.stringify(rows)).not.toContain('re_secret_key');
     expect(JSON.stringify(rows)).not.toContain('re_replaced_key');
   });
@@ -311,9 +307,30 @@ describe('installation configuration persistence', () => {
     expect(serialized).not.toContain('ciphertext');
   });
 
-  test('a disabled installation switch is reported as disabled', async () => {
+  test('a stored Resend key stays reported when another method is selected', async () => {
+    await fixture.enableProvider({
+      credential: 're_kept_key',
+      provider: 'resend',
+    });
     const runtime = makeNotificationRuntime(fixture.env);
-    await fixture.enableProvider({ enabled: false, provider: 'cloudflare' });
+    await runEffect(
+      runtime,
+      updateEmailSettingsCommand(saveInput(1, { provider: 'cloudflare' })),
+    );
+
+    const view = await runEffect(
+      runtime,
+      getEmailSettingsViewCommand(SETTINGS_ORIGIN),
+    );
+    expect(view.provider).toBe('cloudflare');
+    // The credential is retained so switching back to Resend does not require
+    // re-entering it. The read view only surfaces it for Resend.
+    expect(view.hasApiKey).toBe(true);
+  });
+
+  test('the Off method is reported as disabled', async () => {
+    const runtime = makeNotificationRuntime(fixture.env);
+    await fixture.enableProvider({ provider: 'disabled' });
     fixture.setEmailBinding({
       send: async () => ({ messageId: 'stub' }),
     });
@@ -322,8 +339,40 @@ describe('installation configuration persistence', () => {
       runtime,
       getEmailSettingsViewCommand(SETTINGS_ORIGIN),
     );
-    expect(view.enabled).toBe(false);
     expect(view.readiness.availability).toBe('disabled');
+  });
+
+  test('saving a migrated v1 document persists v2 without the legacy flag', async () => {
+    await fixture.setRawConfig(
+      JSON.stringify({
+        email: {
+          canonicalOrigin: SETTINGS_ORIGIN,
+          credential: null,
+          enabled: false,
+          fromEmail: 'notifications@example.test',
+          fromName: 'LeadScroll',
+          provider: 'cloudflare',
+        },
+        emailTest: { last: null, recent: [] },
+        revision: 4,
+        version: 1,
+      }),
+      5,
+    );
+    const runtime = makeNotificationRuntime(fixture.env);
+    const saved = await runEffect(
+      runtime,
+      updateEmailSettingsCommand(saveInput(4, { provider: 'disabled' })),
+    );
+    expect(saved).toMatchObject({
+      fromEmail: 'notifications@example.test',
+      provider: 'disabled',
+      revision: 5,
+    });
+
+    const row = await fixture.readConfigRow();
+    expect(row.documentJson).not.toContain('"enabled"');
+    expect(JSON.parse(row.documentJson)).toMatchObject({ version: 2 });
   });
 
   test('a settings no-op records an empty audit change set', async () => {
@@ -748,15 +797,14 @@ describe('administrator test email command', () => {
     expect(calls).toHaveLength(2);
   });
 
-  test('a notifications-off installation can still run an explicit test', async () => {
+  test('an Off installation cannot run a test', async () => {
     await fixture.enableProvider({
       credential: 're_test_key',
-      enabled: false,
-      provider: 'resend',
+      provider: 'disabled',
     });
     const { calls, provider } = recordingProvider({
       kind: 'accepted',
-      messageId: 're-disabled-ok',
+      messageId: 're-off',
       provider: 'resend',
     });
     const runtime = makeNotificationRuntime(
@@ -765,11 +813,14 @@ describe('administrator test email command', () => {
     );
     const outcome = await runEither(
       runtime,
-      sendTestEmailCommand(testInput('notifications-off')),
+      sendTestEmailCommand(testInput('off-method')),
     );
-    expect(Either.isRight(outcome)).toBe(true);
-    expect((await readDocument()).email.enabled).toBe(false);
-    expect(calls).toHaveLength(1);
+    expect(Either.isLeft(outcome)).toBe(true);
+    if (Either.isLeft(outcome)) {
+      expect(outcome.left).toMatchObject({ code: 'email_disabled' });
+    }
+
+    expect(calls).toHaveLength(0);
   });
 
   test('a settings save during an in-flight test preserves both changes', async () => {

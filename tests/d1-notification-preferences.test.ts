@@ -45,7 +45,7 @@ describe('notification preferences', () => {
       (await getNotificationPreference(fixture.env, USER_ID))?.newLeadEmail,
     ).toBe(true);
 
-    await fixture.enableProvider({ enabled: false });
+    await fixture.enableProvider({ provider: 'disabled' });
     const stillSaved = await runEffect(
       runtime,
       getNotificationPreferenceView(fixture.env, USER_ID),
@@ -80,9 +80,8 @@ describe('notification preferences', () => {
     expect(misconfigured.availability).toBe('misconfigured');
     expect(misconfigured.provider).toBe('cloudflare');
 
-    // The installation switch being off is reported separately from a
-    // configuration problem.
-    await fixture.enableProvider({ enabled: false, provider: 'cloudflare' });
+    // The Off method is reported separately from a configuration problem.
+    await fixture.enableProvider({ provider: 'disabled' });
     const disabledRuntime = makeNotificationRuntime(fixture.env);
     expect(
       (

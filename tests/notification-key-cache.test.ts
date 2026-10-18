@@ -24,7 +24,6 @@ const SECRET = 're_SUPER_SECRET_key_value';
 const formValues = (): ManageEmailFormValues => ({
   apiKey: SECRET,
   credentialOperation: 'replace',
-  enabled: true,
   fromEmail: 'notifications@example.test',
   fromName: 'LeadScroll',
   provider: 'resend',
@@ -135,7 +134,6 @@ describe('saved configuration testing', () => {
     overrides: Partial<EmailSettingsView>,
   ): EmailSettingsView => ({
     canonicalOrigin: 'https://crm.example.test',
-    enabled: false,
     environment: { hasCloudflareBinding: true, hasEncryptionKey: true },
     fromEmail: 'notifications@example.test',
     fromName: 'LeadScroll',
@@ -147,12 +145,11 @@ describe('saved configuration testing', () => {
     ...overrides,
   });
 
-  test('a notifications-off configuration can still be tested', () => {
+  test('a configured method can be tested', () => {
     expect(savedConfigurationTestable(settings({}))).toEqual({ ok: true });
     expect(
       savedConfigurationTestable(
         settings({
-          enabled: true,
           readiness: { availability: 'configured', reasonCode: null },
         }),
       ),
@@ -176,6 +173,7 @@ describe('saved configuration testing', () => {
     expect(
       savedConfigurationTestable(settings({ provider: 'disabled' })),
     ).toMatchObject({
+      message: 'Choose a sending method before sending a test.',
       ok: false,
     });
   });

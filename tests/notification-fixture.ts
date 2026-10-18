@@ -24,7 +24,6 @@ export type ConfigSeed = {
   credential?: string;
   credentialRemove?: boolean;
   emailTest?: InstallationConfig['emailTest'];
-  enabled?: boolean;
   fromEmail?: string;
   fromName?: string;
   provider?: 'cloudflare' | 'disabled' | 'resend';
@@ -231,7 +230,6 @@ export const startNotificationFixture = async (
       const email: InstallationEmailConfig = {
         canonicalOrigin: input.canonicalOrigin ?? 'https://crm.example.test',
         credential,
-        enabled: input.enabled ?? true,
         fromEmail: input.fromEmail ?? 'notifications@example.test',
         fromName: input.fromName ?? 'LeadScroll',
         provider: input.provider ?? 'cloudflare',

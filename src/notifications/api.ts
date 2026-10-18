@@ -23,6 +23,7 @@ export {
 } from './queryKeys';
 
 export type {
+  EmailSettingsProvider,
   EmailSettingsView,
   EmailTestOutcome,
   EmailTestView,
