@@ -103,9 +103,9 @@ export default defineConfig(
     },
   },
   {
-    files: ['src/api/logging.ts'],
+    files: ['src/api/logging.ts', 'src/notifications/logging.ts'],
     rules: {
-      // Structured JSON lines on Worker stdout are this module's only purpose
+      // Structured JSON lines on Worker stdout are these modules' only purpose
       'no-console': 0,
     },
   },

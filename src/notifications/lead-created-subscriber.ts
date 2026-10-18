@@ -17,7 +17,6 @@
  * counted. There is no retry, replay, or durable delivery state.
  */
 
-import { logNotificationEventOutcome } from '@/api/logging';
 import { Deployment } from '@/application/deployment';
 import { persist } from '@/application/errors';
 import { InstallationConfigStore } from '@/application/installation-config-store';
@@ -30,6 +29,7 @@ import {
   type LeadCreatedEvent,
   type LeadCreatedSubscriber,
 } from '@/notifications/events';
+import { logNotificationEventOutcome } from '@/notifications/logging';
 import { renderNewLeadNotification } from '@/notifications/templates';
 import { Clock, Effect, Either, Exit, Ref } from 'effect';
 

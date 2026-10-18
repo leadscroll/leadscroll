@@ -13,11 +13,11 @@
  * can record or await publications without a hidden no-op default.
  */
 
-import { logNotificationEventOutcome } from '@/api/logging';
 import { type Deployment } from '@/application/deployment';
 import { type InstallationConfigStore } from '@/application/installation-config-store';
 import { type CredentialCipher } from '@/notifications/credential-cipher';
 import { type EmailProviderResolver } from '@/notifications/email-provider';
+import { logNotificationEventOutcome } from '@/notifications/logging';
 import { Cause, Effect } from 'effect';
 import { type ManagedRuntime } from 'effect/ManagedRuntime';
 
