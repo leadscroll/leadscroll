@@ -111,20 +111,20 @@ describe('notification schema migration', () => {
     expect(await fx.count('installation_config')).toBe(1);
     const stored = await fx.db
       .prepare(
-        'SELECT document_json, write_version FROM installation_config WHERE id = 1',
+        'SELECT document_json, updated_at FROM installation_config WHERE id = 1',
       )
-      .first<{ document_json: string; write_version: number }>();
+      .first<{ document_json: string; updated_at: number }>();
     const document = decodeInstallationConfig(
       JSON.parse(String(stored?.document_json)),
     );
     expect(document?.email.provider).toBe('resend');
     expect(document?.revision).toBe(3);
-    expect(Number(stored?.write_version)).toBe(1);
+    expect(Number(stored?.updated_at)).toBe(1);
 
     await expect(
       fx.db
         .prepare(
-          `INSERT INTO installation_config (id, document_json, write_version, write_token)
+          `INSERT INTO installation_config (id, document_json, updated_at, write_token)
             VALUES (1, '{}', 1, 'sentinel-token')`,
         )
         .run(),
@@ -133,11 +133,89 @@ describe('notification schema migration', () => {
     await expect(
       fx.db
         .prepare(
-          `INSERT INTO installation_config (id, document_json, write_version, write_token)
+          `INSERT INTO installation_config (id, document_json, updated_at, write_token)
             VALUES (2, '{}', 1, 'other-sentinel-token')`,
         )
         .run(),
     ).rejects.toThrow(/CHECK constraint/iu);
+  });
+
+  test('the updated_at CAS token is monotonic and gates audit rows', async () => {
+    const fx = await fixture();
+    const base = Date.now();
+    const audit = [
+      {
+        action: 'email.settings_updated',
+        changes: [
+          { after: 'resend', before: 'disabled', field: 'email.provider' },
+        ],
+        resourceId: null,
+        resourceType: 'installation.email',
+      },
+    ] as const;
+    const firstDocument: InstallationConfig = {
+      ...DEFAULT_INSTALLATION_CONFIG,
+      revision: 1,
+    };
+    expect(
+      await writeInstallationConfig(fx.env, {
+        actorUserId: null,
+        audit,
+        document: firstDocument,
+        expectedUpdatedAt: 0,
+        now: new Date(base),
+      }),
+    ).toBe(true);
+    expect((await readInstallationConfig(fx.env)).updatedAt).toBe(base);
+    expect(await fx.count('audit_log')).toBe(1);
+
+    // A backwards clock must not repeat or lower a successful token.
+    expect(
+      await writeInstallationConfig(fx.env, {
+        actorUserId: null,
+        audit,
+        document: { ...firstDocument, revision: 2 },
+        expectedUpdatedAt: base,
+        now: new Date(base - 5_000),
+      }),
+    ).toBe(true);
+    expect((await readInstallationConfig(fx.env)).updatedAt).toBe(base + 1);
+    expect(await fx.count('audit_log')).toBe(2);
+
+    // A stale token loses without writing the proposed audit row.
+    expect(
+      await writeInstallationConfig(fx.env, {
+        actorUserId: null,
+        audit,
+        document: { ...firstDocument, revision: 3 },
+        expectedUpdatedAt: base,
+        now: new Date(base + 10_000),
+      }),
+    ).toBe(false);
+    expect((await readInstallationConfig(fx.env)).document.revision).toBe(2);
+    expect(await fx.count('audit_log')).toBe(2);
+
+    // Two same-millisecond writers at the same expected token: exactly one
+    // wins, and only that writer's audit row is inserted.
+    const race = await Promise.all([
+      writeInstallationConfig(fx.env, {
+        actorUserId: null,
+        audit,
+        document: { ...firstDocument, revision: 3 },
+        expectedUpdatedAt: base + 1,
+        now: new Date(base + 1),
+      }),
+      writeInstallationConfig(fx.env, {
+        actorUserId: null,
+        audit,
+        document: { ...firstDocument, revision: 4 },
+        expectedUpdatedAt: base + 1,
+        now: new Date(base + 1),
+      }),
+    ]);
+    expect(race.filter((won) => won)).toHaveLength(1);
+    expect((await readInstallationConfig(fx.env)).updatedAt).toBe(base + 2);
+    expect(await fx.count('audit_log')).toBe(3);
   });
 
   test('a corrupt or unsupported document fails closed and is not reset', async () => {
@@ -382,7 +460,7 @@ describe('notification schema migration', () => {
           ...valid,
           email: { ...valid.email, extra: 'WRITE_SENTINEL' },
         } as unknown as InstallationConfig,
-        expectedWriteVersion: 0,
+        expectedUpdatedAt: 0,
         now: new Date(),
       }),
     ).rejects.toThrow();

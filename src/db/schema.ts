@@ -248,12 +248,12 @@ export const notificationPreferences = sqliteTable('notification_preferences', {
 // authoritative runtime validation (version and excess-property rejection)
 // happens in src/domain/schemas.ts on every read and before every write.
 // The fixed `id = 1` keeps the table a singleton without inventing a tenant
-// identifier. `write_version` is the internal compare-and-swap token bumped on
-// every write (including test-state updates), separate from the user-visible
-// `revision` inside the JSON so a test completion cannot invalidate a
-// settings draft or overwrite a concurrent configuration change. Who and
-// when changed the configuration is the generic audit_log's job, so this row
-// carries no duplicate timestamp/actor metadata.
+// identifier. `updated_at` is the internal compare-and-swap token: every write
+// stores a strictly increasing Unix-millisecond value (including test-state
+// updates), separate from the user-visible `revision` inside the JSON so a
+// test completion cannot invalidate a settings draft or overwrite a
+// concurrent configuration change. Who changed the configuration is the
+// generic audit_log's job; this row carries only the concurrency token.
 export const installationConfig = sqliteTable(
   'installation_config',
   {
@@ -261,11 +261,11 @@ export const installationConfig = sqliteTable(
       .$type<InstallationConfig>()
       .notNull(),
     id: integer('id').primaryKey(),
+    updatedAt: timestampMs('updated_at').notNull(),
     // Random token written by every successful save. Audit statements in the
     // same batch are gated on it, so a compare-and-swap loser whose UPDATE
     // matched no rows cannot slip its audit rows into the winner's write.
     writeToken: text('write_token'),
-    writeVersion: integer('write_version').notNull().default(1),
   },
   (table) => [check('installation_config_singleton', sql`${table.id} = 1`)],
 );

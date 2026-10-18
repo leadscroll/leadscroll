@@ -2494,13 +2494,13 @@ export const listLeadCreatedRecipients = async (
 //
 // One installation-wide singleton JSON document, validated against the versioned
 // Effect Schema in src/domain/schemas.ts on every read and before every write.
-// Drizzle never types the document shape; `write_version` is the internal
+// Drizzle never types the document shape; `updated_at` is the internal
 // compare-and-swap token. A corrupt or unsupported document throws
 // `InstallationConfigDecodeError` and is never silently replaced.
 
 export type InstallationConfigRow = {
   document: InstallationConfig;
-  writeVersion: number;
+  updatedAt: number;
 };
 
 export class InstallationConfigDecodeError extends Error {
@@ -2514,12 +2514,12 @@ export const readInstallationConfig = async (
   environment: Env,
 ): Promise<InstallationConfigRow> => {
   let row:
-    undefined | { documentJson: InstallationConfig; writeVersion: number };
+    undefined | { documentJson: InstallationConfig; updatedAt: Date };
   try {
     row = await getDatabase(environment)
       .select({
         documentJson: installationConfig.documentJson,
-        writeVersion: installationConfig.writeVersion,
+        updatedAt: installationConfig.updatedAt,
       })
       .from(installationConfig)
       .where(eq(installationConfig.id, 1))
@@ -2536,7 +2536,7 @@ export const readInstallationConfig = async (
   }
 
   if (row === undefined) {
-    return { document: DEFAULT_INSTALLATION_CONFIG, writeVersion: 0 };
+    return { document: DEFAULT_INSTALLATION_CONFIG, updatedAt: 0 };
   }
 
   const document = decodeInstallationConfig(row.documentJson);
@@ -2544,7 +2544,7 @@ export const readInstallationConfig = async (
     throw new InstallationConfigDecodeError();
   }
 
-  return { document, writeVersion: row.writeVersion };
+  return { document, updatedAt: row.updatedAt.getTime() };
 };
 
 const auditStatements = (
@@ -2588,15 +2588,18 @@ export type InstallationConfigWriteInput = {
   actorUserId: null | string;
   audit?: readonly AuditWrite[];
   document: InstallationConfig;
-  expectedWriteVersion: number;
+  expectedUpdatedAt: number;
   now: Date;
 };
 
 /**
- * Compare-and-swap write. Returns false when `expectedWriteVersion` is stale;
- * the caller re-reads and retries. Audit statements are gated on the write
- * version produced by this same atomic batch, so a lost race cannot leave a
- * phantom audit entry and a successful write always has its audit rows.
+ * Compare-and-swap write. Returns false when `expectedUpdatedAt` is stale; the
+ * caller re-reads and retries. The next token is strictly greater than both
+ * the caller's clock reading and the token it read, so a backwards clock or
+ * two writes in the same millisecond can never reuse a successful token.
+ * Audit statements are gated on the writer-specific token produced by this
+ * same atomic batch, so a lost race cannot leave a phantom audit entry and a
+ * successful write always has its audit rows.
  */
 export const writeInstallationConfig = async (
   environment: Env,
@@ -2606,7 +2609,10 @@ export const writeInstallationConfig = async (
   // JSON column; the raw CAS batch below needs the serialized form.
   const document = validateInstallationConfig(input.document);
   const documentJson = JSON.stringify(document);
-  const nextWriteVersion = input.expectedWriteVersion + 1;
+  const nextUpdatedAt = Math.max(
+    input.now.getTime(),
+    input.expectedUpdatedAt + 1,
+  );
   const writeToken = randomToken('config-');
   const audit = auditStatements(
     environment,
@@ -2618,13 +2624,13 @@ export const writeInstallationConfig = async (
     writeToken,
   );
 
-  if (input.expectedWriteVersion === 0) {
+  if (input.expectedUpdatedAt === 0) {
     const insert = prepare(
       environment.DB,
       `INSERT INTO installation_config (
-          id, document_json, write_version, write_token
-        ) VALUES (1, ?, 1, ?)`,
-    ).bind(documentJson, writeToken);
+          id, document_json, updated_at, write_token
+        ) VALUES (1, ?, ?, ?)`,
+    ).bind(documentJson, nextUpdatedAt, writeToken);
     try {
       const inserted = await executeAtomicallyWithResults(environment.DB, [
         insert,
@@ -2643,13 +2649,13 @@ export const writeInstallationConfig = async (
   const update = prepare(
     environment.DB,
     `UPDATE installation_config
-      SET document_json = ?, write_version = ?, write_token = ?
-      WHERE id = 1 AND write_version = ?`,
+      SET document_json = ?, updated_at = ?, write_token = ?
+      WHERE id = 1 AND updated_at = ?`,
   ).bind(
     documentJson,
-    nextWriteVersion,
+    nextUpdatedAt,
     writeToken,
-    input.expectedWriteVersion,
+    input.expectedUpdatedAt,
   );
   const results = await executeAtomicallyWithResults(environment.DB, [
     update,

@@ -174,7 +174,7 @@ const startIntegrationFixture = async (): Promise<IntegrationFixture> => {
     await database
       .prepare(
         `INSERT INTO installation_config (
-          id, document_json, write_version, write_token
+          id, document_json, updated_at, write_token
         ) VALUES (1, ?, 1, 'integration-token')`,
       )
       .bind(JSON.stringify(document))

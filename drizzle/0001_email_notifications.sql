@@ -14,7 +14,7 @@ CREATE TABLE `installation_config` (
 	`document_json` text NOT NULL,
 	`id` integer PRIMARY KEY NOT NULL,
 	`write_token` text,
-	`write_version` integer DEFAULT 1 NOT NULL,
+	`updated_at` integer NOT NULL,
 	CONSTRAINT "installation_config_singleton" CHECK("installation_config"."id" = 1)
 );
 --> statement-breakpoint

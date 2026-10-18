@@ -856,7 +856,7 @@ describe('administrator test email command', () => {
     const before = await fixture.readConfigRow();
     await runEffect(runtime, sendTestEmailCommand(testInput('test-version')));
     const after = await fixture.readConfigRow();
-    expect(after.writeVersion).toBeGreaterThan(before.writeVersion);
+    expect(after.updatedAt).toBeGreaterThan(before.updatedAt);
     const document = decodeInstallationConfig(JSON.parse(after.documentJson));
     expect(document?.revision).toBe(1);
   });

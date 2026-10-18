@@ -29,7 +29,7 @@ export type ConfigSeed = {
   fromName?: string;
   provider?: 'cloudflare' | 'disabled' | 'resend';
   revision?: number;
-  writeVersion?: number;
+  updatedAt?: number;
 };
 
 export type NotificationFixture = {
@@ -56,7 +56,7 @@ export type NotificationFixture = {
   seedLead: (leadId: string, email?: string) => Promise<void>;
   setEmailBinding: (binding: Env['EMAIL']) => void;
   setEncryptionKey: (value: string | undefined) => void;
-  setRawConfig: (json: string, writeVersion?: number) => Promise<void>;
+  setRawConfig: (json: string, updatedAt?: number) => Promise<void>;
   user: (input: {
     disabled?: boolean;
     email: string;
@@ -66,7 +66,7 @@ export type NotificationFixture = {
 
 export type RawConfigRow = {
   documentJson: string;
-  writeVersion: number;
+  updatedAt: number;
 };
 
 const migrationNames = async (): Promise<string[]> =>
@@ -177,37 +177,37 @@ export const startNotificationFixture = async (
     const readConfigRow = async (): Promise<RawConfigRow> => {
       const row = await database
         .prepare(
-          'SELECT document_json, write_version FROM installation_config WHERE id = 1',
+          'SELECT document_json, updated_at FROM installation_config WHERE id = 1',
         )
-        .first<{ document_json: string; write_version: number }>();
+        .first<{ document_json: string; updated_at: number }>();
       if (row === null) {
         return {
           documentJson: JSON.stringify(DEFAULT_INSTALLATION_CONFIG),
-          writeVersion: 0,
+          updatedAt: 0,
         };
       }
 
       return {
         documentJson: row.document_json,
-        writeVersion: Number(row.write_version),
+        updatedAt: Number(row.updated_at),
       };
     };
 
     const writeDocument = async (
       document: InstallationConfig,
-      writeVersion: number,
+      updatedAt: number,
     ): Promise<void> => {
       await database
         .prepare(
           `INSERT INTO installation_config (
-            id, document_json, write_version, write_token
+            id, document_json, updated_at, write_token
           ) VALUES (1, ?, ?, 'fixture-token')
           ON CONFLICT(id) DO UPDATE SET
             document_json = excluded.document_json,
-            write_version = excluded.write_version,
+            updated_at = excluded.updated_at,
             write_token = excluded.write_token`,
         )
-        .bind(JSON.stringify(document), writeVersion)
+        .bind(JSON.stringify(document), updatedAt)
         .run();
     };
 
@@ -242,7 +242,7 @@ export const startNotificationFixture = async (
         emailTest: input.emailTest ?? current.emailTest,
         revision: input.revision ?? Math.max(current.revision, 1),
       };
-      await writeDocument(document, input.writeVersion ?? row.writeVersion + 1);
+      await writeDocument(document, input.updatedAt ?? row.updatedAt + 1);
       return document.revision;
     };
 
@@ -270,7 +270,7 @@ export const startNotificationFixture = async (
         });
         await writeDocument(
           { ...current, email: { ...current.email, credential } },
-          row.writeVersion + 1,
+          row.updatedAt + 1,
         );
       },
       optIn: async (userId, newLeadEmail = true) => {
@@ -343,18 +343,18 @@ export const startNotificationFixture = async (
       setEncryptionKey: (value) => {
         environment.EMAIL_SETTINGS_ENCRYPTION_KEY = value;
       },
-      setRawConfig: async (json, writeVersion = 1) => {
+      setRawConfig: async (json, updatedAt = 1) => {
         await database
           .prepare(
             `INSERT INTO installation_config (
-              id, document_json, write_version, write_token
+              id, document_json, updated_at, write_token
             ) VALUES (1, ?, ?, 'fixture-token')
             ON CONFLICT(id) DO UPDATE SET
               document_json = excluded.document_json,
-              write_version = excluded.write_version,
+              updated_at = excluded.updated_at,
               write_token = excluded.write_token`,
           )
-          .bind(json, writeVersion)
+          .bind(json, updatedAt)
           .run();
       },
       user: async (input) => {

@@ -6,12 +6,12 @@
  * apply a plan, write, and retry lost races with a narrowly filtered
  * `Effect.retry`).
  *
- * Why the raw CAS columns exist: `write_version` compares the version this
+ * Why the raw CAS columns exist: `updated_at` compares the token this
  * operation read, so inter-request writers cannot silently overwrite each
  * other (an Effect `Ref`/`Mutex` only coordinates inside one isolate). The
  * per-write `write_token` gates the audit INSERT inside the same D1 batch on
  * this exact successful mutation, so a losing writer cannot produce an audit
- * entry for another writer's winning version.
+ * entry for another writer's winning token.
  */
 
 import { type DomainError, PersistenceError } from '@/application/errors';
@@ -128,7 +128,7 @@ export const makeInstallationConfigStore = (
               actorUserId,
               audit: next.audit,
               document: next.document,
-              expectedWriteVersion: current.writeVersion,
+              expectedUpdatedAt: current.updatedAt,
               now: new Date(nowMs),
             }),
         });
