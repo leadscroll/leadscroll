@@ -1,8 +1,8 @@
 # Email notifications
 
-LeadScroll can email opted-in staff when a new lead arrives. The feature is
-disabled by default and stays inside the installation: no third-party template
-service, no tracking pixels, and no contact data in the message. Alerts are
+LeadScroll can email opted-in staff when a new lead arrives. Sending is off
+by default and stays inside the installation: no third-party template
+service, no tracking pixels, and no contact details in the message. Alerts are
 sent only for new leads, never for assignments, tasks, customers, digests, or
 campaigns.
 
@@ -16,11 +16,24 @@ campaigns.
    conflicts, validation failures, and failed transactions publish nothing.
 3. A fixed email subscriber reads the current installation configuration and
    the current opted-in, enabled staff, excludes the manual creator, checks the
-   lead still exists, and sends one generic message per recipient through the
+   lead still exists, and sends one notification per recipient through the
    saved provider.
 4. The subscriber runs on the Worker's `ctx.waitUntil`, so it never delays the
    HTTP response. It uses a small concurrency limit (4), an overall background
    budget (20 seconds), and a per-provider-call timeout (10 seconds).
+
+The message bodies are authored in MJML under `emails/` and compiled to static
+HTML by `pnpm emails:build`; the Worker substitutes the authenticated URLs at
+send time. MJML supplies the fixed table widths, Outlook resets, and table
+button, and the compiler never ships in the Worker. The generated HTML and the
+plain-text alternatives use no remote images, web fonts, tracking pixels, or
+scripts. Regenerate the templates after editing the `.mjml` sources.
+
+New-lead alerts include a display-only preview: **first name, last-name
+initial, and source** (for example, `Sam K. · pricing_form`). The full surname,
+email address, phone number, custom fields, notes, and raw payload never appear
+in the message, and the subject/preheader stay generic. The full surname is
+masked before it reaches the template.
 
 Delivery is **best-effort by design**. There is no outbox, queue, Cron trigger,
 retry engine, replay/reconciliation, or delivery history. A Worker
@@ -39,7 +52,7 @@ encrypted provider credential live in one installation-wide JSON
 document (`installation_config`) that the application validates on every read
 and before every write; compact, bounded test state (the last result plus a
 small rolling rate-limit window) lives in the same document. A missing record
-means disabled defaults; a corrupt or unsupported document fails closed and is
+means Off defaults; a corrupt or unsupported document fails closed and is
 never silently reset.
 
 ### Cloudflare Email Sending
@@ -49,8 +62,8 @@ never silently reset.
 2. Standard installations declare the native `EMAIL` binding in
    `wrangler.jsonc`; it is invoked only when Cloudflare is the saved provider.
    Switching to/from Resend needs no redeploy.
-3. In **Manage → Email**, select Cloudflare, enter the sender address and name,
-   then save and enable. Sending a test is recommended but never required:
+3. In **Manage → Email**, choose Cloudflare, enter the sender address and name,
+   then save. Sending a test is recommended but never required:
 
    > Cloudflare email sending requires a Workers Paid plan. We recommend
    > sending a test email to confirm your setup.
@@ -77,23 +90,24 @@ reported as unknown and left alone.
    stored in D1, never derived from the auth secret, and never sent to the
    browser. Back it up: without it, stored credentials cannot be decrypted and
    must be re-entered (or the old key must be restored).
-3. In **Manage → Email**, select Resend, enter the sender address and name, and
+3. In **Manage → Email**, choose Resend, enter the sender address and name, and
    paste the API key. The key is encrypted with AES-256-GCM before storage and
-   is never returned by the API. Keep, replace, and remove are explicit
-   actions; removing the key that backs the selected provider disables Resend
+   is never returned by the API. A stored key appears as a masked value in the
+   password field: leaving it unchanged keeps the key, typing a new value
+   replaces it, and a separate remove action switches sending to Off
    atomically. Sending uses the official Resend SDK pinned in the lockfile:
    requests carry a namespaced idempotency key and a finite timeout, are
    aborted on timeout, and are never retried automatically.
 
-## Enabling and testing
+## Off, saving, and testing
 
-- Saving settings never sends a message. You can save and enable without ever
-  running a test; the UI shows **Not tested** until an explicit test runs for
-  the current settings.
-- An explicit test works even while the enable switch is off, as long as the
-  saved provider configuration is locally complete. Missing local resources
-  (no binding, no key, no sender) still block the test with a specific setup
-  message.
+- Saving settings never sends a message. You can save without ever running a
+  test; the UI shows **Not tested** until an explicit test runs for the current
+  settings.
+- An explicit test works for any configured method. `Off` has no configuration
+  to test, so the test is disabled until a method is chosen. Missing local
+  resources (no binding, no key, no sender) still block the test with a specific
+  setup message.
 - **Send test email** sends one attempt to the signed-in staff account's own
   account email using the saved configuration and reports accepted, rejected,
   or unknown honestly. It is limited to one per minute and five per rolling
@@ -104,10 +118,10 @@ reported as unknown and left alone.
   action with a new request id.
 - Changing provider, sender, or key increments the settings revision. Previous
   test evidence no longer applies to the new revision, but no test is required
-  to save or enable.
+  to save.
 - A provider rejection is recorded with a redacted reason code and shown for
   the current revision. It never pauses the installation: correct the settings
-  (or disable email) and the next event uses the new configuration.
+  (or choose Off) and the next event uses the new configuration.
 
 ## Staff preferences
 
@@ -160,7 +174,6 @@ serving requests, and never paste a provider key into a SQL command:
 pnpm exec wrangler d1 execute DB --remote --command \
   "SELECT json_extract(document_json, '$.revision') AS revision, \
           json_extract(document_json, '$.email.provider') AS provider, \
-          json_extract(document_json, '$.email.enabled') AS enabled, \
           json_extract(document_json, '$.email.fromEmail') AS from_email \
    FROM installation_config"
 pnpm exec wrangler d1 execute DB --remote --command \
@@ -180,21 +193,25 @@ There is no scheduler to monitor and no delivery-status table to reconcile.
 Migration `0001_email_notifications.sql` adds exactly three tables on top of
 the squashed workspace-free baseline:
 `installation_config` (the singleton typed JSON document, including the
-document revision, the encrypted provider credential, and compact test state),
+document revision, the encrypted provider credential, compact test state, and
+the v1-to-v2 migration from the removed installation enable flag),
 `audit_log` (the reusable who-changed-what log), and
 `notification_preferences` (the per-user opt-in). No outbox, scheduler state,
 or Cron is needed.
 
 ## Rollback
 
-Disabling sending stops future lead events from starting new sends, but a
+Choosing Off stops future lead events from starting new sends, but a
 subscriber snapshot that was already running may still finish its in-flight
 sends; the change is not retroactive and does not cancel work. The schema is
 forward-only: once `0001` has been applied, rolling back to Worker code that
 expected the old email-specific tables requires a version compatible with the
 new schema or restoring the database from a backup taken before the upgrade.
-Provider API keys can be revoked at the provider even though old D1 backups may
-retain ciphertext.
+The configuration document is version 2: v1 documents are migrated on read
+(`enabled: false` becomes `Off`) and the next write persists v2. Code from
+before this change cannot read a v2 document, so roll back only with a document
+backup or a compatible version. Provider API keys can be revoked at the
+provider even though old D1 backups may retain ciphertext.
 
 ## Limits and untested assumptions
 

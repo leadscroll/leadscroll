@@ -1,6 +1,9 @@
 import { type EmailSettingsView } from '@/domain/schemas';
 import {
+  apiKeyValidationError,
   type ManageEmailFormValues,
+  STORED_API_KEY_SENTINEL,
+  toFormValues,
   toSaveVariables,
   toUpdateRequest,
 } from '@/notifications/ManageEmailPage/saveVariables';
@@ -23,11 +26,10 @@ const SECRET = 're_SUPER_SECRET_key_value';
 
 const formValues = (): ManageEmailFormValues => ({
   apiKey: SECRET,
-  credentialOperation: 'replace',
-  enabled: true,
   fromEmail: 'notifications@example.test',
   fromName: 'LeadScroll',
   provider: 'resend',
+  removeKey: false,
 });
 
 const buildMutation = (
@@ -119,6 +121,96 @@ describe('secret-free mutation variables', () => {
   });
 });
 
+describe('stored key sentinel', () => {
+  test('an unchanged sentinel is a keep, never a credential', () => {
+    const values = { ...formValues(), apiKey: STORED_API_KEY_SENTINEL };
+    const variables = toSaveVariables(values, 1);
+    expect(variables.apiKeyUnchanged).toBe(true);
+    expect(JSON.stringify(variables)).not.toContain(SECRET);
+    expect(toUpdateRequest(variables, '', true).credential).toEqual({
+      operation: 'keep',
+    });
+  });
+
+  test('removal is explicit and only applies to Resend', () => {
+    const values = {
+      ...formValues(),
+      apiKey: STORED_API_KEY_SENTINEL,
+      removeKey: true,
+    };
+    const variables = toSaveVariables(values, 1);
+    expect(toUpdateRequest(variables, '', true).credential).toEqual({
+      operation: 'remove',
+    });
+    expect(
+      toUpdateRequest({ ...variables, provider: 'disabled' }, '', true)
+        .credential,
+    ).toEqual({ operation: 'keep' });
+  });
+
+  test('switching method keeps a stored key', () => {
+    const variables = toSaveVariables(
+      { ...formValues(), provider: 'cloudflare' },
+      1,
+    );
+    expect(toUpdateRequest(variables, '', true).credential).toEqual({
+      operation: 'keep',
+    });
+  });
+
+  test('validation distinguishes keep, replace, empty, and partial mask', () => {
+    expect(
+      apiKeyValidationError(
+        { ...formValues(), apiKey: STORED_API_KEY_SENTINEL },
+        true,
+      ),
+    ).toBeNull();
+    expect(
+      apiKeyValidationError({ ...formValues(), apiKey: '' }, true),
+    ).toContain('remove the stored key');
+    expect(
+      apiKeyValidationError({ ...formValues(), apiKey: '•••' }, true),
+    ).toContain('leave the stored key');
+    expect(apiKeyValidationError({ ...formValues(), apiKey: '' }, false)).toBe(
+      'Enter the Resend API key.',
+    );
+    expect(
+      apiKeyValidationError(
+        { ...formValues(), apiKey: '', removeKey: true },
+        true,
+      ),
+    ).toBeNull();
+    expect(
+      apiKeyValidationError(
+        { ...formValues(), apiKey: '', provider: 'cloudflare' },
+        true,
+      ),
+    ).toBeNull();
+  });
+
+  test('toFormValues prefills the mask only when a key is stored', () => {
+    expect(
+      toFormValues({
+        fromEmail: null,
+        fromName: null,
+        hasApiKey: true,
+        provider: 'resend',
+      }),
+    ).toMatchObject({
+      apiKey: STORED_API_KEY_SENTINEL,
+      removeKey: false,
+    });
+    expect(
+      toFormValues({
+        fromEmail: null,
+        fromName: null,
+        hasApiKey: false,
+        provider: 'resend',
+      }).apiKey,
+    ).toBe('');
+  });
+});
+
 describe('identity-scoped query keys', () => {
   test('settings and preference keys differ per user', () => {
     expect(emailSettingsQueryKey('user-a')).not.toEqual(
@@ -135,7 +227,6 @@ describe('saved configuration testing', () => {
     overrides: Partial<EmailSettingsView>,
   ): EmailSettingsView => ({
     canonicalOrigin: 'https://crm.example.test',
-    enabled: false,
     environment: { hasCloudflareBinding: true, hasEncryptionKey: true },
     fromEmail: 'notifications@example.test',
     fromName: 'LeadScroll',
@@ -147,12 +238,11 @@ describe('saved configuration testing', () => {
     ...overrides,
   });
 
-  test('a notifications-off configuration can still be tested', () => {
+  test('a configured method can be tested', () => {
     expect(savedConfigurationTestable(settings({}))).toEqual({ ok: true });
     expect(
       savedConfigurationTestable(
         settings({
-          enabled: true,
           readiness: { availability: 'configured', reasonCode: null },
         }),
       ),
@@ -176,6 +266,7 @@ describe('saved configuration testing', () => {
     expect(
       savedConfigurationTestable(settings({ provider: 'disabled' })),
     ).toMatchObject({
+      message: 'Choose a sending method before sending a test.',
       ok: false,
     });
   });

@@ -1,5 +1,8 @@
 import { emailSettingsQueryKey, notificationsApi } from '../api';
-import { EmailSettingsForm } from './EmailSettingsForm';
+import {
+  EmailAvailabilityChip,
+  EmailSettingsPanel,
+} from './EmailSettingsPanel';
 import { PageHeader } from '@/components/PageHeader';
 import { useSession } from '@/lib/auth-client';
 import { useQuery } from '@tanstack/react-query';
@@ -21,6 +24,13 @@ export const ManageEmailPage = () => {
   return (
     <>
       <PageHeader
+        action={
+          settings.data ? (
+            <EmailAvailabilityChip
+              availability={settings.data.readiness.availability}
+            />
+          ) : undefined
+        }
         eyebrow="Manage"
         title="Email"
       />
@@ -43,7 +53,8 @@ export const ManageEmailPage = () => {
             </button>
           </div>
         ) : settings.data ? (
-          <EmailSettingsForm
+          <EmailSettingsPanel
+            accountEmail={session?.user.email ?? ''}
             settings={settings.data}
             userId={userId}
           />

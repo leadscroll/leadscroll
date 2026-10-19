@@ -190,8 +190,10 @@ staff API. Unknown or foreign session ids return `404`; individual success is
 
 ### Email notifications
 
-Opted-in staff can receive one generic email when a new lead is created.
-Email is disabled until a staff member configures a provider in
+Opted-in staff can receive one email with a minimal lead preview (first name,
+last-name initial, and source) when a new lead is created. Contact details and
+custom fields stay in the app.
+Email sending is off until a staff member configures a method in
 Manage → Email; every enabled authenticated staff account can manage the
 installation configuration, and personal opt-in lives under Account →
 Notifications. Both

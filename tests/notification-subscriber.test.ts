@@ -18,6 +18,7 @@ import {
   NOTIFICATION_BUDGET_MS,
   NOTIFICATION_PROVIDER_TIMEOUT_MS,
 } from '@/notifications/lead-created-subscriber';
+import { NOTIFICATION_SUBJECT } from '@/notifications/templates';
 import { Effect } from 'effect';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
@@ -71,7 +72,11 @@ describe('lead.created email subscriber', () => {
     await seedRecipient('staff-1', 'staff-1@example.test');
     await seedRecipient('staff-2', 'staff-2@example.test', { optIn: false });
     await seedRecipient('staff-3', 'staff-3@example.test', { disabled: true });
-    await fixture.seedLead(LEAD_ID);
+    await fixture.seedLead(LEAD_ID, 'lead@example.test', {
+      firstName: 'Sam',
+      lastName: 'Kovacs',
+      source: 'pricing_form',
+    });
 
     const { calls, provider } = recordingProvider();
     const runtime = makeNotificationRuntime(
@@ -90,12 +95,13 @@ describe('lead.created email subscriber', () => {
       'staff-1@example.test',
     ]);
     const [sentMessage] = calls;
-    expect(sentMessage.envelope.subject).toBe(
-      'A new lead is available in LeadScroll',
-    );
+    expect(sentMessage.envelope.subject).toBe(NOTIFICATION_SUBJECT);
     expect(sentMessage.envelope.html).toContain(
       `https://crm.example.test/leads/${LEAD_ID}`,
     );
+    expect(sentMessage.envelope.html).toContain('Sam K. · pricing_form');
+    expect(sentMessage.envelope.html).not.toContain('Kovacs');
+    expect(sentMessage.envelope.text).toContain('Sam K. · pricing_form');
     expect(sentMessage.envelope.from).toEqual({
       email: 'notifications@example.test',
       name: 'LeadScroll',
@@ -440,6 +446,6 @@ describe('lead.created email subscriber', () => {
     });
     const serialized = JSON.stringify(lines);
     expect(serialized).not.toContain('private-staff@example.test');
-    expect(serialized).not.toContain('A new lead is available');
+    expect(serialized).not.toContain('A new lead just came in');
   });
 });

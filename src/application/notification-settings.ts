@@ -115,14 +115,8 @@ export const stateFromDocument = (
     email,
   );
 
-  let availability: NotificationAvailability;
-  if (!email.enabled) {
-    availability = 'disabled';
-  } else if (readinessReason === null) {
-    availability = 'configured';
-  } else {
-    availability = 'misconfigured';
-  }
+  const availability: NotificationAvailability =
+    readinessReason === null ? 'configured' : 'misconfigured';
 
   return {
     availability,
@@ -158,9 +152,8 @@ export type SavedConfigurationTest =
   { code: string; message: string; ok: false } | { ok: true };
 
 /**
- * Whether the *saved* provider configuration can produce a test message.
- * The installation enable switch being off does not block an explicit test:
- * testing is how setup is confirmed without turning live alerts on.
+ * Whether the *saved* sending method can produce a test message. `Off` cannot:
+ * there is no configuration to test until a method is chosen.
  */
 export const savedConfigurationTestable = (
   state: EmailSettingsState,
@@ -169,7 +162,7 @@ export const savedConfigurationTestable = (
   if (settings === null || settings.provider === 'disabled') {
     return {
       code: 'email_disabled',
-      message: 'Choose a provider before sending a test.',
+      message: 'Choose a sending method before sending a test.',
       ok: false,
     };
   }
@@ -218,17 +211,16 @@ const emailSettingsView = (
   const state = stateFromDocument(capabilities, document);
   return {
     canonicalOrigin: document.email.canonicalOrigin ?? canonicalOriginFallback,
-    enabled: document.email.enabled,
     environment: {
       hasCloudflareBinding: state.hasCloudflareBinding,
       hasEncryptionKey: state.hasEncryptionKey,
     },
     fromEmail: document.email.fromEmail,
     fromName: document.email.fromName,
-    hasApiKey:
-      document.email.provider === 'resend'
-        ? document.email.credential !== null
-        : false,
+    // Credential presence is independent of the selected method: a stored
+    // Resend key is retained when switching away so switching back does not
+    // require re-entering it.
+    hasApiKey: document.email.credential !== null,
     provider: document.email.provider,
     readiness: {
       availability: state.availability,
@@ -274,7 +266,6 @@ export type UpdateEmailSettingsInput = {
     operation: 'keep' | 'remove' | 'replace';
     value?: string;
   };
-  enabled: boolean;
   expectedRevision: number;
   fromEmail: null | string;
   fromName: null | string;
@@ -322,13 +313,13 @@ const nextEmailConfig = (
     credential = null;
   }
 
-  // Removing the credential that backs the selected provider disables that
-  // provider instead of leaving an unroutable configuration enabled.
+  // Removing the credential that backs the selected provider switches it off
+  // instead of leaving an unroutable configuration selected. Sender values are
+  // retained so the method can be restored later.
   if (change.kind === 'remove' && input.provider === 'resend') {
     return {
       canonicalOrigin: input.canonicalOrigin,
       credential,
-      enabled: false,
       fromEmail: input.fromEmail,
       fromName: input.fromName,
       provider: 'disabled',
@@ -338,7 +329,6 @@ const nextEmailConfig = (
   return {
     canonicalOrigin: input.canonicalOrigin,
     credential,
-    enabled: input.enabled,
     fromEmail: input.fromEmail,
     fromName: input.fromName,
     provider: input.provider,
@@ -367,7 +357,6 @@ const settingsAuditChanges = (
   };
 
   push('email.provider', current.provider, next.provider);
-  push('email.enabled', current.enabled, next.enabled);
   push('email.fromEmail', current.fromEmail, next.fromEmail);
   push('email.fromName', current.fromName, next.fromName);
   push('email.canonicalOrigin', current.canonicalOrigin, next.canonicalOrigin);

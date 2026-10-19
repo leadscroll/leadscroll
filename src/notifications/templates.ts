@@ -2,16 +2,20 @@
  * Fixed notification templates for new-lead alerts and explicit test
  * messages.
  *
- * Content is deliberately generic: no contact fields, custom-field values,
- * raw intake payloads, source text, IPs, tracking pixels, or remote images.
- * Both messages link to the authenticated application only. Dynamic values
- * (canonical origin, lead id) are escaped before interpolation.
+ * The MJML sources in `emails/` are compiled to static HTML by
+ * `pnpm emails:build`. The Worker only substitutes the authenticated URLs at
+ * send time, so the MJML compiler and React never ship in the runtime bundle.
+ * The new-lead alert carries only a masked preview (first name, last-name
+ * initial, source). Email, phone, full surname, custom-field values, raw
+ * intake payloads, notes, IPs, tracking pixels, and remote images are
+ * deliberately absent.
  */
 
 import { type EmailEnvelope } from './email';
+import generated from './emails/templates.generated.json';
 
-export const NOTIFICATION_TEMPLATE_VERSION = 1;
-export const NOTIFICATION_SUBJECT = 'A new lead is available in LeadScroll';
+export const NOTIFICATION_TEMPLATE_VERSION = 3;
+export const NOTIFICATION_SUBJECT = 'New lead in LeadScroll';
 export const TEST_SUBJECT = 'LeadScroll test email';
 
 const escapeHtml = (value: string): string =>
@@ -22,27 +26,42 @@ const escapeHtml = (value: string): string =>
     .replaceAll('"', '&quot;')
     .replaceAll("'", '&#39;');
 
+const fillTemplate = (
+  template: string,
+  values: Record<string, string>,
+): string => {
+  let output = template;
+  for (const [key, value] of Object.entries(values)) {
+    output = output.replaceAll(`{{${key}}}`, escapeHtml(value));
+  }
+
+  return output;
+};
+
 export const renderNewLeadNotification = (input: {
   leadId: string;
+  leadSummary: string;
   origin: string;
 }): Pick<EmailEnvelope, 'html' | 'subject' | 'text'> => {
   const leadUrl = `${input.origin}/leads/${encodeURIComponent(input.leadId)}`;
   const preferencesUrl = `${input.origin}/settings/account`;
-  const leadUrlHtml = escapeHtml(leadUrl);
-  const preferencesUrlHtml = escapeHtml(preferencesUrl);
+
+  const summary = input.leadSummary.trim();
 
   return {
-    html: [
-      '<p>A new lead is available in LeadScroll.</p>',
-      `<p><a href="${leadUrlHtml}">Open the lead</a></p>`,
-      `<p>You receive this email because new-lead notifications are on in your <a href="${preferencesUrlHtml}">account settings</a>.</p>`,
-    ].join('\n'),
+    html: fillTemplate(generated.newLead, {
+      LEAD_SUMMARY: summary,
+      LEAD_URL: leadUrl,
+      PREFERENCES_URL: preferencesUrl,
+    }),
     subject: NOTIFICATION_SUBJECT,
     text: [
       'A new lead is available in LeadScroll.',
       '',
+      ...(summary === '' ? [] : [summary, '']),
       `Open the lead: ${leadUrl}`,
       '',
+      'You receive this because new-lead emails are on for your account.',
       `Manage notifications: ${preferencesUrl}`,
     ].join('\n'),
   };
@@ -51,22 +70,20 @@ export const renderNewLeadNotification = (input: {
 export const renderTestEmail = (input: {
   origin: string;
 }): Pick<EmailEnvelope, 'html' | 'subject' | 'text'> => {
-  const preferencesUrl = `${input.origin}/settings/account`;
-  const preferencesUrlHtml = escapeHtml(preferencesUrl);
+  const settingsUrl = `${input.origin}/settings/email`;
 
   return {
-    html: [
-      '<p>This is a test email from LeadScroll.</p>',
-      '<p>New-lead notification email is connected to your provider. If you received this message, sending is configured.</p>',
-      `<p>Manage notifications in your <a href="${preferencesUrlHtml}">account settings</a>.</p>`,
-    ].join('\n'),
+    html: fillTemplate(generated.test, { SETTINGS_URL: settingsUrl }),
     subject: TEST_SUBJECT,
     text: [
-      'This is a test email from LeadScroll.',
+      'LeadScroll test email',
       '',
-      'New-lead notification email is connected to your provider. If you received this message, sending is configured.',
+      'Email is working. This test email was sent to your account address.',
+      'New-lead alerts will use the same sender and provider.',
       '',
-      `Manage notifications: ${preferencesUrl}`,
+      `Open email settings: ${settingsUrl}`,
+      '',
+      'This test was requested from Manage → Email. It does not include lead data.',
     ].join('\n'),
   };
 };

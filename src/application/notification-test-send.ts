@@ -348,7 +348,10 @@ export const sendTestEmailCommand = (input: SendTestEmailInput) =>
 
     if (state.provider === null) {
       return yield* Effect.fail(
-        domainError('email_disabled', 'Choose a provider first.'),
+        domainError(
+          'email_disabled',
+          'Choose a sending method before sending a test.',
+        ),
       );
     }
 
@@ -396,7 +399,10 @@ export const sendTestEmailCommand = (input: SendTestEmailInput) =>
     const reservedSettings = reservedState.settings;
     if (reservedSettings === null || reservedState.provider === null) {
       return yield* Effect.fail(
-        domainError('email_disabled', 'Choose a provider first.'),
+        domainError(
+          'email_disabled',
+          'Choose a sending method before sending a test.',
+        ),
       );
     }
 

@@ -1,0 +1,28 @@
+<mjml lang="en">
+  <mj-head>
+    <mj-title>LeadScroll test email</mj-title>
+    <mj-preview>Your LeadScroll test email was delivered.</mj-preview>
+    <mj-raw>
+      <meta name="color-scheme" content="light only" />
+      <meta name="supported-color-schemes" content="light" />
+    </mj-raw>
+  </mj-head>
+  <mj-body background-color="#f4f1ec" width="600px">
+    <mj-wrapper padding="32px 20px">
+      <mj-section background-color="#ffffff" border-radius="12px" padding="32px">
+        <mj-column>
+          <mj-text color="#1b1e20" font-family="Arial, Helvetica, sans-serif" font-size="14px" font-weight="600" padding="0">
+            <span style="display:inline-block;width:22px;height:22px;background-color:#1b1e20;border-radius:6px;color:#e6a06b;text-align:center;line-height:22px;font-size:11px;font-weight:700;">L</span>&#160;&#160;LeadScroll
+          </mj-text>
+          <mj-divider align="left" border-color="#e6a06b" border-width="2px" padding="22px 0 18px" width="32px" />
+          <mj-text color="#e6a06b" font-family="Arial, Helvetica, sans-serif" font-size="11px" font-weight="700" letter-spacing="1.2px" padding="0 0 8px">EMAIL TEST</mj-text>
+          <mj-text color="#1b1e20" font-family="Arial, Helvetica, sans-serif" font-size="26px" font-weight="600" letter-spacing="-0.5px" line-height="32px" padding="0 0 12px">Email is working</mj-text>
+          <mj-text color="#5f666b" font-family="Arial, Helvetica, sans-serif" font-size="15px" line-height="24px" padding="0 0 26px">This test email was sent to your account address. New-lead alerts will use the same sender and provider.</mj-text>
+          <mj-button align="left" background-color="#e6a06b" border-radius="6px" color="#2a1b10" font-family="Arial, Helvetica, sans-serif" font-size="14px" font-weight="600" href="{{SETTINGS_URL}}" inner-padding="12px 20px" padding="0">Open email settings</mj-button>
+          <mj-divider border-color="#e6e1d9" border-width="1px" padding="28px 0 14px" />
+          <mj-text color="#8a9095" font-family="Arial, Helvetica, sans-serif" font-size="12px" line-height="18px" padding="0">This test was requested from Manage &rarr; Email. It does not include lead data.</mj-text>
+        </mj-column>
+      </mj-section>
+    </mj-wrapper>
+  </mj-body>
+</mjml>

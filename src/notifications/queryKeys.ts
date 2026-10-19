@@ -16,15 +16,17 @@ export type SavedConfigurationTest =
   { message: string; ok: false } | { ok: true };
 
 /**
- * Whether the saved provider configuration can produce a test message. The
- * installation enable switch being off does not block an explicit test:
- * testing is how setup is confirmed without turning live alerts on.
+ * Whether the saved sending method can produce a test message. `Off` cannot:
+ * there is no configuration to test until a method is selected.
  */
 export const savedConfigurationTestable = (
   settings: EmailSettingsView,
 ): SavedConfigurationTest => {
   if (settings.provider === 'disabled') {
-    return { message: 'Choose a provider first.', ok: false };
+    return {
+      message: 'Choose a sending method before sending a test.',
+      ok: false,
+    };
   }
 
   if (settings.fromEmail === null || settings.fromEmail.trim().length === 0) {

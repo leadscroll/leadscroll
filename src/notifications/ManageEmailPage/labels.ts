@@ -4,7 +4,13 @@
  * only translate the closed reason-code set.
  */
 
-import { type EmailTestOutcome } from '../api';
+import { type EmailSettingsProvider, type EmailTestOutcome } from '../api';
+
+export const PROVIDER_LABELS: Record<EmailSettingsProvider, string> = {
+  cloudflare: 'Cloudflare Email Sending',
+  disabled: 'Off',
+  resend: 'Resend',
+};
 
 export const READINESS_REASON_LABELS: Record<string, string> = {
   canonical_origin_missing:
@@ -15,7 +21,7 @@ export const READINESS_REASON_LABELS: Record<string, string> = {
     'The installation configuration is unreadable. Restore it from a backup or ask an operator to repair it.',
   decrypt_failed:
     'The stored credential cannot be decrypted with the current encryption key.',
-  disabled: 'Email sending is turned off.',
+  disabled: 'Email sending is off.',
   encryption_key_invalid:
     'EMAIL_SETTINGS_ENCRYPTION_KEY is not a valid 32-byte base64 or hex key.',
   encryption_key_missing:
@@ -39,6 +45,14 @@ export const TEST_OUTCOME_LABELS: Record<EmailTestOutcome, string> = {
   configuration_error: 'The provider configuration is incorrect.',
   rejected: 'The email service rejected the test message.',
   sending: 'The test email is in progress.',
+};
+
+export const TEST_OUTCOME_TITLES: Record<EmailTestOutcome, string> = {
+  accepted: 'Accepted',
+  ambiguous: 'Outcome unknown',
+  configuration_error: 'Configuration error',
+  rejected: 'Rejected',
+  sending: 'Sending…',
 };
 
 export const testOutcomeLabel = (outcome: EmailTestOutcome): string =>

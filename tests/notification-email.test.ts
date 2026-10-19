@@ -20,9 +20,20 @@ describe('fixed templates', () => {
   test('renders a generic new-lead message with canonical links only', () => {
     const rendered = renderNewLeadNotification({
       leadId: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
+      leadSummary: 'Sam K. · pricing_form',
       origin: 'https://crm.example.test',
     });
     expect(rendered.subject).toBe(NOTIFICATION_SUBJECT);
+    expect(rendered.html.startsWith('<!doctype html>')).toBe(true);
+    // MJML emits the Outlook table resets and a fixed card width.
+    expect(rendered.html).toContain('mso-table-lspace:0pt');
+    expect(rendered.html).toContain('width="560"');
+    expect(rendered.html).toContain('<!--[if mso]>');
+    expect(rendered.html).not.toContain('{{');
+    expect(rendered.html).toContain('A new lead just came in');
+    expect(rendered.html).toContain('Open the lead');
+    expect(rendered.html).toContain('Sam K. · pricing_form');
+    expect(rendered.text).toContain('Sam K. · pricing_form');
     expect(rendered.html).toContain(
       'https://crm.example.test/leads/01ARZ3NDEKTSV4RRFFQ69G5FAV',
     );
@@ -40,9 +51,12 @@ describe('fixed templates', () => {
   test('escapes dynamic values and test messages stay generic', () => {
     const rendered = renderNewLeadNotification({
       leadId: '"><script>',
+      leadSummary: 'Sam & <script>',
       origin: 'https://crm.example.test',
     });
     expect(rendered.html).not.toContain('<script>');
+    expect(rendered.html).toContain('&amp;');
+    expect(rendered.html).toContain('&lt;script&gt;');
     expect(rendered.html).toContain('%22%3E%3Cscript%3E');
 
     // The canonical origin is server-validated before storage; escaping is
@@ -55,6 +69,9 @@ describe('fixed templates', () => {
 
     const testMessage = renderTestEmail({ origin: 'https://crm.example.test' });
     expect(testMessage.subject).toBe(TEST_SUBJECT);
+    expect(testMessage.html.startsWith('<!doctype html>')).toBe(true);
+    expect(testMessage.html).not.toContain('{{');
+    expect(testMessage.html).toContain('Email is working');
     expect(testMessage.html).toContain('test email');
     expect(testMessage.html).not.toMatch(/<(img|script|iframe)/iu);
   });

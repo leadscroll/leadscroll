@@ -164,7 +164,6 @@ const startIntegrationFixture = async (): Promise<IntegrationFixture> => {
       email: {
         canonicalOrigin: APP_ORIGIN,
         credential: envelope,
-        enabled: true,
         fromEmail: 'notifications@example.test',
         fromName: 'LeadScroll',
         provider: 'resend',
@@ -270,7 +269,7 @@ describe('best-effort notification integration', () => {
       to: string[];
     };
     expect(payload.to).toEqual([STAFF_EMAIL]);
-    expect(payload.subject).toBe('A new lead is available in LeadScroll');
+    expect(payload.subject).toBe('New lead in LeadScroll');
     expect(payload.from).toBe('LeadScroll <notifications@example.test>');
     expect(call.headers['idempotency-key']).toMatch(
       /^leadscroll-notification:/u,

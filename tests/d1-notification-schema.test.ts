@@ -140,6 +140,84 @@ describe('notification schema migration', () => {
     ).rejects.toThrow(/CHECK constraint/iu);
   });
 
+  test('v1 documents migrate to v2 on read without rewriting storage', async () => {
+    const fx = await fixture();
+    const v1 = {
+      email: {
+        canonicalOrigin: 'https://crm.example.test',
+        credential: null,
+        enabled: false,
+        fromEmail: 'notifications@example.test',
+        fromName: 'LeadScroll',
+        provider: 'cloudflare',
+      },
+      emailTest: { last: null, recent: [] },
+      revision: 4,
+      version: 1,
+    };
+
+    // A paused v1 installation becomes Off; the sender is retained so the
+    // method can be restored.
+    expect(decodeInstallationConfig(v1)).toMatchObject({
+      email: {
+        fromEmail: 'notifications@example.test',
+        provider: 'disabled',
+      },
+      revision: 4,
+      version: 2,
+    });
+
+    // An enabled v1 installation keeps its method.
+    expect(
+      decodeInstallationConfig({
+        ...v1,
+        email: { ...v1.email, enabled: true, provider: 'resend' },
+      })?.email.provider,
+    ).toBe('resend');
+
+    // Reads migrate in memory only; the stored row is untouched.
+    const raw = JSON.stringify(v1);
+    await fx.setRawConfig(raw, 9);
+    const row = await readInstallationConfig(fx.env);
+    expect(row.document).toMatchObject({
+      email: { provider: 'disabled' },
+      version: 2,
+    });
+    expect((await fx.readConfigRow()).documentJson).toBe(raw);
+  });
+
+  test('v1 is not a valid write shape and enabled is not a v2 property', () => {
+    const v1 = {
+      email: {
+        canonicalOrigin: 'https://crm.example.test',
+        credential: null,
+        enabled: true,
+        fromEmail: 'notifications@example.test',
+        fromName: 'LeadScroll',
+        provider: 'resend',
+      },
+      emailTest: { last: null, recent: [] },
+      revision: 1,
+      version: 1,
+    };
+    expect(() => validateInstallationConfig(v1)).toThrow(
+      InstallationConfigValidationError,
+    );
+
+    const v2 = decodeInstallationConfig(v1);
+    expect(v2).not.toBeNull();
+    if (v2 !== null) {
+      const withLegacyFlag = {
+        ...v2,
+        email: { ...v2.email, enabled: true },
+      };
+      expect(decodeInstallationConfig(withLegacyFlag)).toBeNull();
+      expect(() => validateInstallationConfig(withLegacyFlag)).toThrow(
+        InstallationConfigValidationError,
+      );
+    }
+  });
+
   test('the updated_at CAS token is monotonic and gates audit rows', async () => {
     const fx = await fixture();
     const base = Date.now();
@@ -393,7 +471,6 @@ describe('notification schema migration', () => {
       email: {
         ...valid.email,
         credential: { ciphertext: 'cipher', keyVersion: 1, nonce: 'nonce' },
-        enabled: true,
         fromEmail: 'notifications@example.test',
         provider: 'resend',
       },
@@ -401,6 +478,7 @@ describe('notification schema migration', () => {
 
     const candidates: unknown[] = [
       { ...valid, extra: 'ROOT_SENTINEL' },
+      { ...valid, email: { ...valid.email, enabled: true } },
       { ...valid, email: { ...valid.email, extra: 'EMAIL_SENTINEL' } },
       {
         ...withCredential,

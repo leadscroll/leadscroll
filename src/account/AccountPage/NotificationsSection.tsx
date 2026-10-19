@@ -13,9 +13,9 @@ const AVAILABILITY_NOTES: Record<NotificationAvailability, string> = {
   configured:
     'Alert emails are sent best-effort to your account email when a lead is created. There is no retry or delivery history.',
   disabled:
-    'Email notifications are not enabled on this installation yet. Your preference is saved and applies once an administrator enables a provider.',
+    'Email sending is off on this installation. Your preference is saved and applies when a sending method is turned on.',
   misconfigured:
-    'Email is not fully configured yet. Your preference is saved and alerts start after an administrator finishes setup.',
+    'A sending method is selected but not fully configured. Your preference is saved and alerts start after setup is finished.',
 };
 
 const availabilityNote = (availability: NotificationAvailability): string =>
