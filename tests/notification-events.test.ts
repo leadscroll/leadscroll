@@ -50,6 +50,7 @@ const recordingPublisher = (): LeadCreatedPublisher & {
     publishLeadCreated: (published) => {
       events.push(published);
     },
+    trace: null,
   };
 };
 

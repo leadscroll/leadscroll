@@ -32,7 +32,13 @@ import {
 import { formatLeadSummary } from '@/notifications/lead-summary';
 import { logNotificationEventOutcome } from '@/notifications/logging';
 import { renderNewLeadNotification } from '@/notifications/templates';
-import { Clock, Effect, Exit, Ref, Result } from 'effect';
+import {
+  recordNotificationDelivery,
+  recordProviderAmbiguous,
+  recordProviderDuration,
+} from '@/telemetry/metrics';
+import { telemetryForEnvironment } from '@/telemetry/tracer';
+import { Clock, Context, Effect, Exit, Ref, Result, Tracer } from 'effect';
 
 /**
  * Modest concurrency: provider calls overlap without unbounded fan-out.
@@ -72,20 +78,28 @@ const buildLeadEnvelope = (
   };
 };
 
-const skipped = (event: LeadCreatedEvent, reasonCode: string): void => {
-  logNotificationEventOutcome({
-    eventKind: 'lead.created',
-    leadId: event.leadId,
-    outcome: 'skipped',
-    reasonCode,
+const skipped = (
+  event: LeadCreatedEvent,
+  reasonCode: string,
+  provider?: 'cloudflare' | 'resend',
+): Effect.Effect<void, never, never> =>
+  Effect.gen(function* () {
+    logNotificationEventOutcome({
+      eventKind: 'lead.created',
+      leadId: event.leadId,
+      outcome: 'skipped',
+      reasonCode,
+      ...(event.trace === undefined ? {} : { trace: event.trace }),
+    });
+    yield* recordNotificationDelivery('skipped', provider, 1);
   });
-};
 
 export const createLeadCreatedEmailSubscriber = (
   environment: Env,
 ): LeadCreatedSubscriber => {
-  return (event: LeadCreatedEvent) =>
-    Effect.gen(function* () {
+  const telemetry = telemetryForEnvironment(environment);
+  return (event: LeadCreatedEvent) => {
+    const work = Effect.gen(function* () {
       const store = yield* InstallationConfigStore;
       const capabilities = yield* Deployment;
       const resolver = yield* EmailProviderResolver;
@@ -97,7 +111,7 @@ export const createLeadCreatedEmailSubscriber = (
       if (Result.isFailure(configExit)) {
         // The only failure variants are an unreadable document or a database
         // fault; both are redacted to a skipped configuration outcome.
-        skipped(event, 'config_invalid');
+        yield* skipped(event, 'config_invalid');
         return;
       }
 
@@ -107,24 +121,27 @@ export const createLeadCreatedEmailSubscriber = (
       );
       const settings = state.settings;
       if (settings === null || settings.provider === 'disabled') {
-        skipped(event, settings === null ? 'not_configured' : 'disabled');
+        yield* skipped(
+          event,
+          settings === null ? 'not_configured' : 'disabled',
+        );
         return;
       }
 
       if (state.availability !== 'configured') {
-        skipped(event, state.readinessReason ?? 'not_configured');
+        yield* skipped(event, state.readinessReason ?? 'not_configured');
         return;
       }
 
       const origin = settings.canonicalOrigin;
       if (origin === null || origin.trim().length === 0) {
-        skipped(event, 'canonical_origin_missing');
+        yield* skipped(event, 'canonical_origin_missing');
         return;
       }
 
       const lead = yield* persist(() => getLead(environment, event.leadId));
       if (lead === null || lead.deletedAt !== null) {
-        skipped(event, 'lead_missing');
+        yield* skipped(event, 'lead_missing');
         return;
       }
 
@@ -133,13 +150,13 @@ export const createLeadCreatedEmailSubscriber = (
         listLeadCreatedRecipients(environment, event.actorUserId),
       );
       if (recipients.length === 0) {
-        skipped(event, 'no_recipients');
+        yield* skipped(event, 'no_recipients');
         return;
       }
 
       const providerEither = yield* Effect.result(resolver.resolve(settings));
       if (Result.isFailure(providerEither)) {
-        skipped(event, providerEither.failure.reason);
+        yield* skipped(event, providerEither.failure.reason, settings.provider);
         return;
       }
 
@@ -164,21 +181,33 @@ export const createLeadCreatedEmailSubscriber = (
             return { kind: 'skipped', reason: 'budget_exhausted' } as const;
           }
 
+          const sendStartedAt = yield* Clock.currentTimeMillis;
           const sendExit = yield* Effect.exit(
-            provider.send({
-              deliveryKey: leadDeliveryKey(event.leadId, recipient.userId),
-              envelope: buildLeadEnvelope(
-                settings,
-                origin,
-                event.leadId,
-                leadSummary,
-                recipient.email,
+            provider
+              .send({
+                deliveryKey: leadDeliveryKey(event.leadId, recipient.userId),
+                envelope: buildLeadEnvelope(
+                  settings,
+                  origin,
+                  event.leadId,
+                  leadSummary,
+                  recipient.email,
+                ),
+                timeoutMs: Math.max(
+                  1,
+                  Math.min(NOTIFICATION_PROVIDER_TIMEOUT_MS, remaining),
+                ),
+              })
+              .pipe(
+                Effect.withSpan('email.provider.send', {
+                  attributes: { 'email.provider': provider.kind },
+                  kind: 'client',
+                }),
               ),
-              timeoutMs: Math.max(
-                1,
-                Math.min(NOTIFICATION_PROVIDER_TIMEOUT_MS, remaining),
-              ),
-            }),
+          );
+          yield* recordProviderDuration(
+            provider.kind,
+            (yield* Clock.currentTimeMillis) - sendStartedAt,
           );
           if (Exit.isFailure(sendExit)) {
             return { kind: 'failed', reason: 'unexpected_error' } as const;
@@ -189,12 +218,14 @@ export const createLeadCreatedEmailSubscriber = (
             return { kind: 'accepted' } as const;
           }
 
-          if (
-            result.kind === 'ambiguous' &&
-            result.reason === 'timeout' &&
-            provider.policy.timeoutIsUncancelable
-          ) {
-            yield* Ref.set(stop, true);
+          if (result.kind === 'ambiguous') {
+            yield* recordProviderAmbiguous(provider.kind, result.reason);
+            if (
+              result.reason === 'timeout' &&
+              provider.policy.timeoutIsUncancelable
+            ) {
+              yield* Ref.set(stop, true);
+            }
           }
 
           return { kind: 'failed', reason: result.reason } as const;
@@ -229,6 +260,9 @@ export const createLeadCreatedEmailSubscriber = (
       }
 
       const skippedTotal = budgetSkipped + stoppedSkipped;
+      yield* recordNotificationDelivery('accepted', provider.kind, accepted);
+      yield* recordNotificationDelivery('failed', provider.kind, failed);
+      yield* recordNotificationDelivery('skipped', provider.kind, skippedTotal);
       logNotificationEventOutcome({
         accepted,
         eventKind: 'lead.created',
@@ -240,6 +274,30 @@ export const createLeadCreatedEmailSubscriber = (
         reasonCode: stopped ? 'uncancelable_timeout' : lastReason,
         recipients: recipients.length,
         skipped: skippedTotal,
+        ...(event.trace === undefined ? {} : { trace: event.trace }),
       });
     });
+
+    const trace = event.trace;
+    if (trace === undefined) {
+      return work;
+    }
+
+    return work.pipe(
+      Effect.withSpan('notification.dispatch', {
+        attributes: { 'notification.event': 'lead.created' },
+        kind: 'internal',
+        parent: Tracer.externalSpan({
+          annotations: Context.empty(),
+          sampled: trace.sampled,
+          spanId: trace.spanId,
+          traceId: trace.traceId,
+        }),
+      }),
+      Effect.provideService(Tracer.Tracer, telemetry.tracer),
+      Effect.onExit(() =>
+        Effect.promise(() => telemetry.exportTrace(trace.traceId)),
+      ),
+    );
+  };
 };

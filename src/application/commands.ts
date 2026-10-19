@@ -18,6 +18,7 @@ import {
   type UpdateLeadRequest,
 } from '@/domain/schemas';
 import { type LeadCreatedPublisher } from '@/notifications/events';
+import { recordLeadCreated } from '@/telemetry/metrics';
 import { Effect } from 'effect';
 
 const persist = <A>(operation: () => Promise<A>) =>
@@ -85,6 +86,7 @@ export const createIntakeCommand = (
     // event is scheduled off the response path; a failure to schedule never
     // turns the successful creation into an error.
     if (outcome.kind === 'created') {
+      yield* recordLeadCreated('intake');
       yield* Effect.sync(() =>
         events.publishLeadCreated({
           actorUserId: null,
@@ -94,7 +96,11 @@ export const createIntakeCommand = (
     }
 
     return outcome;
-  });
+  }).pipe(
+    Effect.withSpan('lead.intake', {
+      attributes: { 'lead.entry': 'intake' },
+    }),
+  );
 
 export const createLeadCommand = (
   environment: Env,
@@ -118,11 +124,16 @@ export const createLeadCommand = (
 
     // The manual creator is carried in the event so the subscriber can exclude
     // them; other opted-in staff still receive the alert.
+    yield* recordLeadCreated('manual');
     yield* Effect.sync(() =>
       events.publishLeadCreated({ actorUserId, leadId: lead.id }),
     );
     return lead;
-  });
+  }).pipe(
+    Effect.withSpan('lead.create', {
+      attributes: { 'lead.entry': 'manual' },
+    }),
+  );
 
 export const updateLeadCommand = (
   environment: Env,
