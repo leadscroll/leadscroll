@@ -1,4 +1,5 @@
 import { TEST_ENCRYPTION_KEY } from './notification-fixture';
+import { hashToken, randomToken } from '@/db/shared';
 import { build } from 'esbuild';
 import { convertV4MiniflareOptions, Miniflare } from 'miniflare';
 import { readdir, readFile } from 'node:fs/promises';
@@ -48,6 +49,7 @@ type ApiFixture = {
     init?: {
       body?: string;
       contentType?: null | string;
+      headers?: Record<string, string>;
       method?: string;
       origin?: null | string;
     },
@@ -61,13 +63,15 @@ type ApiFixture = {
 const fixtures: ApiFixture[] = [];
 
 const startApiFixture = async (
-  options: { identity?: boolean } = {},
+  options: { adminEmail?: string; identity?: boolean } = {},
 ): Promise<ApiFixture> => {
   const script = await bundleWorker();
   const mf = new Miniflare(
     convertV4MiniflareOptions({
       bindings: {
-        ...(options.identity === false ? {} : { DEV_ADMIN_EMAIL: ADMIN_EMAIL }),
+        ...(options.identity === false
+          ? {}
+          : { DEV_ADMIN_EMAIL: options.adminEmail ?? ADMIN_EMAIL }),
         EMAIL_SETTINGS_ENCRYPTION_KEY: TEST_ENCRYPTION_KEY,
         ENVIRONMENT: 'test',
         SETUP_TOKEN: 'test-setup-token'.padEnd(32, '!'),
@@ -93,9 +97,9 @@ const startApiFixture = async (
     db: await mf.getD1Database('DB'),
     dispose,
     request: async (path, init = {}) => {
-      const headers: Record<string, string> = {};
+      const headers: Record<string, string> = { ...init.headers };
       const origin = init.origin === undefined ? APP_ORIGIN : init.origin;
-      if (origin !== null) {
+      if (origin !== null && headers.Origin === undefined) {
         headers.Origin = origin;
       }
 
@@ -176,30 +180,51 @@ describe('email settings API guards', () => {
     const preferences = await fx.request('/v1/account/notifications');
     expect(preferences.status).toBe(401);
 
+    const rawToken = randomToken('lsc_');
+    const tokenNow = Date.now();
+    await fx.db
+      .prepare(
+        `INSERT INTO api_tokens (
+          id, name, prefix, token, token_hash, type, scope,
+          created_at, expires_at, revoked_at, last_used_at
+        ) VALUES (?, ?, ?, NULL, ?, 'api', 'intake:write', ?, ?, NULL, NULL)`,
+      )
+      .bind(
+        'intake-token-id',
+        'Intake token',
+        rawToken.slice(0, 12),
+        await hashToken(rawToken),
+        tokenNow,
+        tokenNow + 86_400_000,
+      )
+      .run();
     const bearer = await fx.request('/v1/settings/email', {
+      headers: { Authorization: `Bearer ${rawToken}` },
       origin: null,
     });
     expect(bearer.status).toBe(401);
   });
 
   test('the capability endpoint is removed and every enabled staff account can manage settings', async () => {
-    const fx = await startApiFixture();
-    expect((await fx.request('/v1/account/capabilities')).status).toBe(404);
-
-    const settings = await fx.request('/v1/settings/email');
-    expect(settings.status).toBe(200);
-    expect(settings.json.data).toMatchObject({ provider: 'disabled' });
-
-    // An ordinary (non-bootstrap) staff account has the same access; there is
-    // no per-account permission state to lack.
+    const otherEmail = 'other@example.test';
+    const fx = await startApiFixture({ adminEmail: otherEmail });
     const otherId = 'other-staff-id';
     await fx.db
       .prepare(
         `INSERT INTO user (id, name, email, email_verified, created_at, updated_at)
-          VALUES (?, 'Other', 'other@example.test', 0, ?, ?)`,
+          VALUES (?, 'Other', ?, 0, ?, ?)`,
       )
-      .bind(otherId, Date.now(), Date.now())
+      .bind(otherId, otherEmail, Date.now(), Date.now())
       .run();
+
+    expect((await fx.request('/v1/account/capabilities')).status).toBe(404);
+
+    // This ordinary (non-bootstrap) account is the authenticated identity for
+    // both reads and writes; there is no per-account permission state to lack.
+    const settings = await fx.request('/v1/settings/email');
+    expect(settings.status).toBe(200);
+    expect(settings.json.data).toMatchObject({ provider: 'disabled' });
+
     const saved = await fx.request('/v1/settings/email', {
       body: saveBody(),
       method: 'PUT',
@@ -400,6 +425,18 @@ describe('email settings API behavior', () => {
         )
         .first(),
     ).toMatchObject({ last_test: null });
+  });
+
+  test('rejects a sender address over the persisted 320-character bound', async () => {
+    const fx = await startApiFixture();
+    const longEmail = `${'a'.repeat(308)}@example.test`;
+
+    const response = await fx.request('/v1/settings/email', {
+      body: saveBody({ fromEmail: longEmail, provider: 'disabled' }),
+      method: 'PUT',
+    });
+    expect(response.status).toBe(422);
+    expect(JSON.stringify(response.json)).not.toContain(longEmail);
   });
 
   test('validation failures never echo submitted credential material', async () => {

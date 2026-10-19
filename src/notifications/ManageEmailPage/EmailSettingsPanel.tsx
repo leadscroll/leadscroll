@@ -253,6 +253,17 @@ export const EmailSettingsPanel = ({
   const sendTest = useMutation({
     mutationFn: () =>
       notificationsApi.sendTest(settings.revision, crypto.randomUUID()),
+    onError: (error) => {
+      if (error instanceof ApiClientError && error.status === 409) {
+        void queryClient.invalidateQueries({ queryKey });
+      }
+
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : 'The test email could not be sent.',
+      );
+    },
     onSuccess: (view) => {
       setTestResult(view);
       void queryClient.invalidateQueries({ queryKey });

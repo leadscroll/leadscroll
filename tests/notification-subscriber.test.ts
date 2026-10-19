@@ -18,6 +18,7 @@ import {
   NOTIFICATION_BUDGET_MS,
   NOTIFICATION_PROVIDER_TIMEOUT_MS,
 } from '@/notifications/lead-created-subscriber';
+import { logNotificationEventOutcome } from '@/notifications/logging';
 import { NOTIFICATION_SUBJECT } from '@/notifications/templates';
 import { Effect } from 'effect';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
@@ -447,5 +448,22 @@ describe('lead.created email subscriber', () => {
     const serialized = JSON.stringify(lines);
     expect(serialized).not.toContain('private-staff@example.test');
     expect(serialized).not.toContain('A new lead just came in');
+  });
+
+  test('keeps internal notification reason codes out of unclassified', () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    for (const reasonCode of ['config_invalid', 'binding_failure']) {
+      logNotificationEventOutcome({
+        eventKind: 'lead.created',
+        leadId: LEAD_ID,
+        outcome: 'skipped',
+        reasonCode,
+      });
+    }
+
+    expect(logLines(logSpy).map((line) => line.reason)).toEqual([
+      'config_invalid',
+      'binding_failure',
+    ]);
   });
 });

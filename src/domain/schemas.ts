@@ -425,7 +425,9 @@ export const EmailCredentialOperationSchema = Schema.Struct({
 export const UpdateEmailSettingsRequestSchema = Schema.Struct({
   credential: EmailCredentialOperationSchema,
   expectedRevision: Schema.Number.pipe(Schema.int(), Schema.nonNegative()),
-  fromEmail: Schema.optional(Schema.NullOr(EmailSchema)),
+  fromEmail: Schema.optional(
+    Schema.NullOr(EmailSchema.pipe(Schema.maxLength(320))),
+  ),
   fromName: Schema.optional(
     Schema.NullOr(NonEmptyStringSchema.pipe(Schema.maxLength(120))),
   ),

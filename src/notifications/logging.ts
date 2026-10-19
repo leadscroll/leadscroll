@@ -8,10 +8,12 @@
 const SAFE_NOTIFICATION_REASONS = new Set([
   // Documented Resend error names.
   'application_error',
+  'binding_failure',
   'budget_exhausted',
   'canonical_origin_missing',
   'cloudflare_binding_missing',
   'concurrent_idempotent_requests',
+  'config_invalid',
   'daily_quota_exceeded',
   'decrypt_failed',
   'disabled',
