@@ -133,18 +133,24 @@ const tableColumns = async (
   );
 
 describe('squashed baseline schema', () => {
-  test('is the only migration and creates the final installation schema', async () => {
-    expect(await migrationNames()).toEqual(['0000_leadscroll_baseline.sql']);
+  test('creates the final installation schema before the feature migration', async () => {
+    expect(await migrationNames()).toEqual([
+      '0000_leadscroll_baseline.sql',
+      '0001_email_notifications.sql',
+    ]);
     const { database } = await fixture();
 
     expect(await tableNames(database)).toEqual([
       'account',
       'activities',
       'api_tokens',
+      'audit_log',
       'bootstrap_state',
       'idempotency_keys',
+      'installation_config',
       'lead_tags',
       'leads',
+      'notification_preferences',
       'rate_limit',
       'registration_claims',
       'session',
@@ -160,8 +166,11 @@ describe('squashed baseline schema', () => {
       'activities',
       'api_tokens',
       'idempotency_keys',
+      'audit_log',
+      'installation_config',
       'lead_tags',
       'leads',
+      'notification_preferences',
       'tag_scopes',
       'tags',
     ]) {

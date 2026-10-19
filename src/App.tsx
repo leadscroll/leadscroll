@@ -34,6 +34,7 @@ import {
   toCreateTokenRequest,
   type TokenFormValues,
 } from './lib/tokenFormValues';
+import { ManageEmailPage } from './notifications/ManageEmailPage';
 import { TagsPage } from './tags/TagsPage';
 import { Form } from '@/components/ui/Form';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -1211,6 +1212,9 @@ const AppContent = () => {
         </Route>
         <Route path="/settings/tokens">
           <TokensPage />
+        </Route>
+        <Route path="/settings/email">
+          <ManageEmailPage />
         </Route>
         <Route path="/settings/invites">
           <InvitesPage />
