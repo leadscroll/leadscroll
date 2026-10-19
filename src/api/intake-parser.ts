@@ -1,53 +1,68 @@
+import { errorResponse } from './http';
 import { getStreamAsArrayBuffer, MaxBufferError } from 'get-stream';
 
 export const MAX_INTAKE_BODY_BYTES = 65_536;
 
-class UnsupportedIntakeMediaType extends Error {}
-
-// Elysia owns route matching; get-stream owns byte counting and cancellation.
-// Never fall through to an unbounded framework reader for another media type.
+/**
+ * Reads the raw intake body with a hard byte limit before JSON decoding.
+ * `get-stream` owns byte counting and cancellation, including oversized
+ * streams that are still open.
+ *
+ * The byte limit is enforced before the media-type check and before any
+ * token/idempotency decision: an oversized body is always 413, and malformed
+ * JSON is the framework-compatible 400.
+ */
 export const parseIntakeBody = async (
-  { request }: { request: Request },
-  contentType: string,
-): Promise<unknown> => {
+  request: Request,
+): Promise<{ data: unknown } | { error: Response }> => {
   if (!request.body) {
-    throw new SyntaxError('An intake JSON body is required.');
+    return {
+      error: errorResponse(
+        400,
+        'validation_error',
+        'An intake JSON body is required.',
+      ),
+    } as const;
   }
 
-  const bytes = await getStreamAsArrayBuffer(request.body, {
-    maxBuffer: MAX_INTAKE_BODY_BYTES,
-  });
-  if (contentType.trim().toLowerCase() !== 'application/json') {
-    throw new UnsupportedIntakeMediaType();
-  }
-
-  return JSON.parse(new TextDecoder().decode(bytes));
-};
-
-// Elysia wraps parser errors in ParseError. Only inspect the cause's type:
-// MaxBufferError.bufferedData can contain contact data and must not be logged.
-export const mapIntakeBodyError = (
-  error: unknown,
-  status: (code: number, response: unknown) => unknown,
-): unknown => {
-  if (!(error instanceof Error)) {
-    return undefined;
-  }
-
-  if (error.cause instanceof MaxBufferError) {
-    return status(413, {
-      code: 'payload_too_large',
-      message: `The intake request body must not exceed ${MAX_INTAKE_BODY_BYTES} bytes.`,
+  let bytes: ArrayBuffer;
+  try {
+    bytes = await getStreamAsArrayBuffer(request.body, {
+      maxBuffer: MAX_INTAKE_BODY_BYTES,
     });
+  } catch (error) {
+    // Never inspect or log buffered data: it can contain contact details.
+    if (error instanceof MaxBufferError) {
+      return {
+        error: errorResponse(
+          413,
+          'payload_too_large',
+          `The intake request body must not exceed ${MAX_INTAKE_BODY_BYTES} bytes.`,
+        ),
+      } as const;
+    }
+
+    return {
+      error: errorResponse(400, 'validation_error', 'The request is invalid.'),
+    } as const;
   }
 
-  if (error.cause instanceof UnsupportedIntakeMediaType) {
-    return status(415, {
-      code: 'unsupported_media_type',
-      message: 'Use Content-Type: application/json for intake requests.',
-    });
+  const contentType = request.headers.get('content-type')?.trim().toLowerCase();
+  if (contentType !== 'application/json') {
+    return {
+      error: errorResponse(
+        415,
+        'unsupported_media_type',
+        'Use Content-Type: application/json for intake requests.',
+      ),
+    } as const;
   }
 
-  // Includes the framework's normal 400 handling for malformed/empty JSON.
-  return undefined;
+  try {
+    return { data: JSON.parse(new TextDecoder().decode(bytes)) } as const;
+  } catch {
+    return {
+      error: errorResponse(400, 'validation_error', 'The request is invalid.'),
+    } as const;
+  }
 };

@@ -155,13 +155,13 @@ export const IntakeRequestSchema = Schema.Struct({
 export type IntakeRequest = Schema.Schema.Type<typeof IntakeRequestSchema>;
 
 // Response contracts describe the wire shape (ISO-8601 strings, JSON-encoded
-// dates) shared with the SPA; request contracts validate Elysia input through
-// Standard Schema.
+// dates) shared with the SPA; request contracts are decoded by the API boundary
+// before commands run.
 export const HealthSchema = Schema.Struct({ ok: Schema.Boolean });
 
 // Leads. Response contracts are the wire shape (ISO-8601 strings, JSON-encoded
-// dates) shared with the SPA; request contracts validate Elysia input through
-// Standard Schema.
+// dates) shared with the SPA; request contracts are decoded by the API boundary
+// before commands run.
 export const LeadViewSchema = Schema.Struct({
   createdAt: Schema.String,
   customFields: CustomFieldValuesSchema,

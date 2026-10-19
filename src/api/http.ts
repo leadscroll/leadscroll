@@ -154,6 +154,38 @@ export const redactedParse = async <A, I>(
 /**
  * Copies a response with `Cache-Control: no-store` for settings surfaces.
  */
+/**
+ * Parses a JSON request body for the manually validated routes. A malformed or
+ * empty body is a 422, matching the previous framework-level parser contract.
+ * Sensitive routes use their own redacted parser instead.
+ */
+export const readJsonBody = async (
+  request: Request,
+): Promise<{ data: unknown } | { error: Response }> => {
+  const text = await request.text();
+  if (text.length === 0) {
+    return { data: undefined } as const;
+  }
+
+  try {
+    return { data: JSON.parse(text) } as const;
+  } catch {
+    // Malformed JSON is a parse error, distinct from a schema validation
+    // failure (422), matching the previous HTTP boundary.
+    return {
+      error: errorResponse(400, 'validation_error', 'The request is invalid.'),
+    } as const;
+  }
+};
+
+export type RouteContext<P = Record<string, never>> = {
+  readonly params: P;
+  readonly request: Request;
+};
+
+/**
+ * Copies a response with `Cache-Control: no-store` for settings surfaces.
+ */
 export const withNoStore = (response: Response): Response => {
   const headers = new Headers(response.headers);
   headers.set('Cache-Control', 'no-store');
@@ -165,9 +197,9 @@ export const withNoStore = (response: Response): Response => {
 };
 
 // The public intake route is unauthenticated and cookie-free, so it answers
-// with `*` and no credentials. Scoped here rather than through
-// @elysiajs/cors, whose onRequest hook is global and would add reflected,
-// credentialed CORS headers to staff routes as well.
+// with `*` and no credentials. Scoped to the intake routes here rather than
+// through global middleware, which would add reflected, credentialed CORS
+// headers to staff routes as well.
 export const PUBLIC_CORS_HEADERS = {
   'Access-Control-Allow-Headers': 'Content-Type, Idempotency-Key',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',

@@ -6,7 +6,7 @@ import { startRequestTelemetry } from './telemetry/request';
 import { env } from 'cloudflare:workers';
 
 const workerEnvironment = env as unknown as Environment;
-const app = createApp(workerEnvironment).compile();
+const app = createApp(workerEnvironment);
 const API_PATHS = ['/v1/', '/api/auth/', '/api/invites/', '/health'];
 
 export default {
@@ -15,9 +15,9 @@ export default {
     _environment?: Environment,
     context?: ExecutionContext,
   ): Promise<Response> {
-    // Intake bodies are bounded to 65,536 actual bytes by the Elysia intake
-    // route's get-stream-backed parse hook, so the entry forwards requests
-    // untouched and performs no route matching of its own.
+    // Intake bodies are bounded to 65,536 actual bytes by the intake handler's
+    // get-stream-backed parser, so the entry forwards requests untouched and
+    // performs no route matching of its own.
     //
     // The commit that created a lead schedules best-effort notification work
     // through this bound waitUntil. The registration is per request and is

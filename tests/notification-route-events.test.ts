@@ -31,7 +31,7 @@ afterEach(async () => {
 });
 
 /**
- * Exercises the real Elysia composition and the per-request execution-context
+ * Exercises the real HTTP composition and the per-request execution-context
  * registration: every lead-creating route must hand the publisher the
  * request-scoped waitUntil, and replays must not publish a second event.
  */
@@ -43,7 +43,7 @@ const buildApp = (events: LeadCreatedEvent[]) =>
           events.push(event);
         }),
     ],
-  }).compile();
+  });
 
 const dispatch = async (
   app: ReturnType<typeof buildApp>,

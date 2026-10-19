@@ -169,7 +169,7 @@ export const matchesBootstrapToken = (
 };
 
 // Constructed for each authentication operation. The Worker module can keep
-// the Elysia app compiled globally, but it must never retain a request-derived
+// the HTTP handler constructed globally, but it must never retain a request-derived
 // Better Auth origin across requests. The CLI loads ./cli.ts instead (no
 // bindings are available there), so keep the options below in sync with it.
 export const createAuth = (environment: Env, request: Request) => {

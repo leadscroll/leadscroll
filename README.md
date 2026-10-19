@@ -362,19 +362,19 @@ without a declared `Content-Length`) before JSON parsing. Larger bodies get
 `413 payload_too_large` and write no intake data.
 
 The limit is owned by the intake routes themselves, not by the Worker entry:
-a route-local Elysia `parse` hook reads the streamed body with
+the route-local handler reads the streamed body with
 [`get-stream`](https://github.com/sindresorhus/get-stream)
 (`getStreamAsArrayBuffer`, `maxBuffer: 65_536` bytes), then decodes it with a
-standard `TextDecoder` and `JSON.parse`. Because the hook is attached to the
-route, every accepted alias (`/v1/intakes`, `/v1/intakes/`, and the
-normalized `/v1/intakes/.`) enforces the identical byte limit, and the limit
-applies before token and idempotency checks. On overflow `get-stream` throws
-`MaxBufferError` and cancels the still-open input stream (its async iteration
-also releases the reader lock); the route `error` hook maps that one error
-type to the `413 payload_too_large` response and never returns or logs the
-error instance, which carries the raw submitted bytes. Malformed JSON keeps
-Elysia's ordinary `400` handling. Unsupported media types return 415 after
-the same bounded read; they never fall through to another body parser.
+standard `TextDecoder` and `JSON.parse`. Every accepted alias
+(`/v1/intakes`, `/v1/intakes/`, and the normalized `/v1/intakes/.`) enforces
+the identical byte limit, and the limit applies before token and idempotency
+checks. On overflow `get-stream` throws `MaxBufferError` and cancels the
+still-open input stream (its async iteration also releases the reader lock);
+the handler maps that one error type to the `413 payload_too_large` response
+and never returns or logs the error instance, which carries the raw submitted
+bytes. Malformed JSON keeps the ordinary `400` handling. Unsupported media
+types return 415 after the same bounded read; they never fall through to
+another body parser.
 
 - **Keys.** `Idempotency-Key` is required and must be 1-128 printable ASCII
   characters (`0x21`-`0x7E`, no spaces). A missing key returns
@@ -533,7 +533,7 @@ pnpm run build
 
 `pnpm run check` runs the typecheck and the full test suite; the same gates (plus the build and the deploy dry-run) run in CI.
 
-The public contract is the REST API. Elysia handles HTTP, Effect Schema is the single validation model, and Effect commands contain domain rules. See [`docs/adr`](docs/adr).
+The public contract is the REST API. Effect HttpApi and HttpRouter handle HTTP, Effect Schema is the single validation model, and Effect commands contain domain rules. See [`docs/adr`](docs/adr).
 
 ## Licence
 

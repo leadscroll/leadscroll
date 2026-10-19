@@ -3,8 +3,8 @@
  *
  * Emits one JSON line per API request. Lines are emitted synchronously
  * before the response is returned: a Workers isolate may be suspended as
- * soon as the response is sent, so post-response callbacks (including
- * Elysia's `onAfterResponse` hook) are not a reliable place to log.
+ * soon as the response is sent, so post-response callbacks are not a
+ * reliable place to log.
  *
  * Levels: 5xx statuses and logged failures use `console.error`, everything
  * else uses `console.log`.
