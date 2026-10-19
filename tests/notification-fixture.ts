@@ -31,6 +31,12 @@ export type ConfigSeed = {
   updatedAt?: number;
 };
 
+export type LeadSeed = {
+  firstName?: string;
+  lastName?: string;
+  source?: string;
+};
+
 export type NotificationFixture = {
   count: (table: string) => Promise<number>;
   db: D1Database;
@@ -52,7 +58,11 @@ export type NotificationFixture = {
   >;
   readConfig: () => Promise<InstallationConfig>;
   readConfigRow: () => Promise<RawConfigRow>;
-  seedLead: (leadId: string, email?: string) => Promise<void>;
+  seedLead: (
+    leadId: string,
+    email?: string,
+    details?: LeadSeed,
+  ) => Promise<void>;
   setEmailBinding: (binding: Env['EMAIL']) => void;
   setEncryptionKey: (value: string | undefined) => void;
   setRawConfig: (json: string, updatedAt?: number) => Promise<void>;
@@ -320,19 +330,31 @@ export const startNotificationFixture = async (
         return document;
       },
       readConfigRow,
-      seedLead: async (leadId, email = 'lead@example.test') => {
+      seedLead: async (leadId, email = 'lead@example.test', details = {}) => {
+        const seededAt = now();
         await database
           .prepare(
             `INSERT INTO leads (
-              id, source, custom_fields, email, created_at,
-              updated_at, deleted_at
-            ) VALUES (?, 'Test', '{}', ?, ?, ?, NULL)
+              id, source, custom_fields, email, first_name, last_name,
+              created_at, updated_at, deleted_at
+            ) VALUES (?, ?, '{}', ?, ?, ?, ?, ?, NULL)
             ON CONFLICT(id) DO UPDATE SET
+              source = excluded.source,
               email = excluded.email,
+              first_name = excluded.first_name,
+              last_name = excluded.last_name,
               updated_at = excluded.updated_at,
               deleted_at = NULL`,
           )
-          .bind(leadId, email, now(), now())
+          .bind(
+            leadId,
+            details.source ?? 'Test',
+            email,
+            details.firstName ?? null,
+            details.lastName ?? null,
+            seededAt,
+            seededAt,
+          )
           .run();
       },
       setEmailBinding: (binding) => {

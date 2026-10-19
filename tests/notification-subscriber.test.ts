@@ -72,7 +72,11 @@ describe('lead.created email subscriber', () => {
     await seedRecipient('staff-1', 'staff-1@example.test');
     await seedRecipient('staff-2', 'staff-2@example.test', { optIn: false });
     await seedRecipient('staff-3', 'staff-3@example.test', { disabled: true });
-    await fixture.seedLead(LEAD_ID);
+    await fixture.seedLead(LEAD_ID, 'lead@example.test', {
+      firstName: 'Sam',
+      lastName: 'Kovacs',
+      source: 'pricing_form',
+    });
 
     const { calls, provider } = recordingProvider();
     const runtime = makeNotificationRuntime(
@@ -95,6 +99,9 @@ describe('lead.created email subscriber', () => {
     expect(sentMessage.envelope.html).toContain(
       `https://crm.example.test/leads/${LEAD_ID}`,
     );
+    expect(sentMessage.envelope.html).toContain('Sam K. · pricing_form');
+    expect(sentMessage.envelope.html).not.toContain('Kovacs');
+    expect(sentMessage.envelope.text).toContain('Sam K. · pricing_form');
     expect(sentMessage.envelope.from).toEqual({
       email: 'notifications@example.test',
       name: 'LeadScroll',

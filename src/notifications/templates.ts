@@ -5,8 +5,10 @@
  * The MJML sources in `emails/` are compiled to static HTML by
  * `pnpm emails:build`. The Worker only substitutes the authenticated URLs at
  * send time, so the MJML compiler and React never ship in the runtime bundle.
- * Content is deliberately generic: no contact fields, custom-field values,
- * raw intake payloads, source text, IPs, tracking pixels, or remote images.
+ * The new-lead alert carries only a masked preview (first name, last-name
+ * initial, source). Email, phone, full surname, custom-field values, raw
+ * intake payloads, notes, IPs, tracking pixels, and remote images are
+ * deliberately absent.
  */
 
 import { type EmailEnvelope } from './email';
@@ -38,13 +40,17 @@ const fillTemplate = (
 
 export const renderNewLeadNotification = (input: {
   leadId: string;
+  leadSummary: string;
   origin: string;
 }): Pick<EmailEnvelope, 'html' | 'subject' | 'text'> => {
   const leadUrl = `${input.origin}/leads/${encodeURIComponent(input.leadId)}`;
   const preferencesUrl = `${input.origin}/settings/account`;
 
+  const summary = input.leadSummary.trim();
+
   return {
     html: fillTemplate(generated.newLead, {
+      LEAD_SUMMARY: summary,
       LEAD_URL: leadUrl,
       PREFERENCES_URL: preferencesUrl,
     }),
@@ -52,6 +58,7 @@ export const renderNewLeadNotification = (input: {
     text: [
       'A new lead is available in LeadScroll.',
       '',
+      ...(summary === '' ? [] : [summary, '']),
       `Open the lead: ${leadUrl}`,
       '',
       'You receive this because new-lead emails are on for your account.',

@@ -20,6 +20,7 @@ describe('fixed templates', () => {
   test('renders a generic new-lead message with canonical links only', () => {
     const rendered = renderNewLeadNotification({
       leadId: '01ARZ3NDEKTSV4RRFFQ69G5FAV',
+      leadSummary: 'Sam K. · pricing_form',
       origin: 'https://crm.example.test',
     });
     expect(rendered.subject).toBe(NOTIFICATION_SUBJECT);
@@ -31,6 +32,8 @@ describe('fixed templates', () => {
     expect(rendered.html).not.toContain('{{');
     expect(rendered.html).toContain('A new lead just came in');
     expect(rendered.html).toContain('Open the lead');
+    expect(rendered.html).toContain('Sam K. · pricing_form');
+    expect(rendered.text).toContain('Sam K. · pricing_form');
     expect(rendered.html).toContain(
       'https://crm.example.test/leads/01ARZ3NDEKTSV4RRFFQ69G5FAV',
     );
@@ -48,9 +51,12 @@ describe('fixed templates', () => {
   test('escapes dynamic values and test messages stay generic', () => {
     const rendered = renderNewLeadNotification({
       leadId: '"><script>',
+      leadSummary: 'Sam & <script>',
       origin: 'https://crm.example.test',
     });
     expect(rendered.html).not.toContain('<script>');
+    expect(rendered.html).toContain('&amp;');
+    expect(rendered.html).toContain('&lt;script&gt;');
     expect(rendered.html).toContain('%22%3E%3Cscript%3E');
 
     // The canonical origin is server-validated before storage; escaping is

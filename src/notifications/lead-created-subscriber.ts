@@ -29,6 +29,7 @@ import {
   type LeadCreatedEvent,
   type LeadCreatedSubscriber,
 } from '@/notifications/events';
+import { formatLeadSummary } from '@/notifications/lead-summary';
 import { logNotificationEventOutcome } from '@/notifications/logging';
 import { renderNewLeadNotification } from '@/notifications/templates';
 import { Clock, Effect, Either, Exit, Ref } from 'effect';
@@ -55,9 +56,10 @@ const buildLeadEnvelope = (
   settings: InstallationEmailConfig,
   origin: string,
   leadId: string,
+  leadSummary: string,
   recipientEmail: string,
 ): EmailEnvelope => {
-  const rendered = renderNewLeadNotification({ leadId, origin });
+  const rendered = renderNewLeadNotification({ leadId, leadSummary, origin });
   return {
     from: {
       email: settings.fromEmail ?? '',
@@ -123,6 +125,7 @@ export const createLeadCreatedEmailSubscriber = (
         return;
       }
 
+      const leadSummary = formatLeadSummary(lead);
       const recipients = yield* persist(() =>
         listLeadCreatedRecipients(environment, event.actorUserId),
       );
@@ -165,6 +168,7 @@ export const createLeadCreatedEmailSubscriber = (
                 settings,
                 origin,
                 event.leadId,
+                leadSummary,
                 recipient.email,
               ),
               timeoutMs: Math.max(

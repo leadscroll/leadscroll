@@ -2,7 +2,7 @@
 
 LeadScroll can email opted-in staff when a new lead arrives. Sending is off
 by default and stays inside the installation: no third-party template
-service, no tracking pixels, and no contact data in the message. Alerts are
+service, no tracking pixels, and no contact details in the message. Alerts are
 sent only for new leads, never for assignments, tasks, customers, digests, or
 campaigns.
 
@@ -16,7 +16,7 @@ campaigns.
    conflicts, validation failures, and failed transactions publish nothing.
 3. A fixed email subscriber reads the current installation configuration and
    the current opted-in, enabled staff, excludes the manual creator, checks the
-   lead still exists, and sends one generic message per recipient through the
+   lead still exists, and sends one notification per recipient through the
    saved provider.
 4. The subscriber runs on the Worker's `ctx.waitUntil`, so it never delays the
    HTTP response. It uses a small concurrency limit (4), an overall background
@@ -28,6 +28,12 @@ send time. MJML supplies the fixed table widths, Outlook resets, and table
 button, and the compiler never ships in the Worker. The generated HTML and the
 plain-text alternatives use no remote images, web fonts, tracking pixels, or
 scripts. Regenerate the templates after editing the `.mjml` sources.
+
+New-lead alerts include a display-only preview: **first name, last-name
+initial, and source** (for example, `Sam K. · pricing_form`). The full surname,
+email address, phone number, custom fields, notes, and raw payload never appear
+in the message, and the subject/preheader stay generic. The full surname is
+masked before it reaches the template.
 
 Delivery is **best-effort by design**. There is no outbox, queue, Cron trigger,
 retry engine, replay/reconciliation, or delivery history. A Worker
