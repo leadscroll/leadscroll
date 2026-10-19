@@ -90,11 +90,12 @@ reported as unknown and left alone.
    stored in D1, never derived from the auth secret, and never sent to the
    browser. Back it up: without it, stored credentials cannot be decrypted and
    must be re-entered (or the old key must be restored).
-3. In **Manage → Email**, select Resend, enter the sender address and name, and
+3. In **Manage → Email**, choose Resend, enter the sender address and name, and
    paste the API key. The key is encrypted with AES-256-GCM before storage and
-   is never returned by the API. Keep, replace, and remove are explicit
-   actions; removing the key that backs the selected provider switches sending
-   to Off atomically. Sending uses the official Resend SDK pinned in the lockfile:
+   is never returned by the API. A stored key appears as a masked value in the
+   password field: leaving it unchanged keeps the key, typing a new value
+   replaces it, and a separate remove action switches sending to Off
+   atomically. Sending uses the official Resend SDK pinned in the lockfile:
    requests carry a namespaced idempotency key and a finite timeout, are
    aborted on timeout, and are never retried automatically.
 

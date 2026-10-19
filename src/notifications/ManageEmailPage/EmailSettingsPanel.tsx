@@ -8,7 +8,9 @@ import { EnvironmentDetails } from './EnvironmentDetails';
 import { PROVIDER_LABELS, readinessReasonLabel } from './labels';
 import { MethodPicker } from './MethodPicker';
 import {
+  apiKeyValidationError,
   type ManageEmailFormValues,
+  STORED_API_KEY_SENTINEL,
   toFormValues,
   toSaveVariables,
   toUpdateRequest,
@@ -92,68 +94,68 @@ const ReadValues = ({ settings }: { readonly settings: EmailSettingsView }) => (
   </dl>
 );
 
+const selectStoredKey = (
+  event:
+    React.FocusEvent<HTMLInputElement> | React.MouseEvent<HTMLInputElement>,
+) => {
+  if (event.currentTarget.value === STORED_API_KEY_SENTINEL) {
+    event.currentTarget.select();
+  }
+};
+
 const ResendKeyFields = ({
   apiKeyError,
   hasStoredKey,
   pending,
   register,
-  showsKeyField,
+  removeKey,
 }: {
   readonly apiKeyError?: string;
   readonly hasStoredKey: boolean;
   readonly pending: boolean;
   readonly register: UseFormRegister<ManageEmailFormValues>;
-  readonly showsKeyField: boolean;
+  readonly removeKey: boolean;
 }) => (
   <div className="grid max-w-md gap-3">
+    <Field
+      error={apiKeyError}
+      hint={
+        hasStoredKey
+          ? 'A key is stored. Leave the masked value unchanged to keep it, or type a new key to replace it.'
+          : 'Write-only: it is never redisplayed, cached, or stored in the browser.'
+      }
+      label="Resend API key"
+    >
+      <input
+        autoComplete="new-password"
+        className={inputClass}
+        disabled={pending || removeKey}
+        onClick={selectStoredKey}
+        onFocus={selectStoredKey}
+        placeholder={hasStoredKey ? undefined : 're_…'}
+        type="password"
+        {...register('apiKey')}
+      />
+    </Field>
     {hasStoredKey && (
-      <fieldset
-        className="grid gap-2 text-sm text-slate-200"
-        disabled={pending}
-      >
-        <legend className="field-label">Resend API key</legend>
-        {(
-          [
-            ['keep', 'Keep the stored key'],
-            ['replace', 'Replace the stored key'],
-            ['remove', 'Remove the stored key and turn sending off'],
-          ] as const
-        ).map(([value, label]) => (
-          <label
-            className="flex items-center gap-2"
-            key={value}
-          >
-            <input
-              type="radio"
-              value={value}
-              {...register('credentialOperation')}
-            />
-            {label}
-          </label>
-        ))}
-      </fieldset>
-    )}
-    {showsKeyField && (
-      <Field
-        error={apiKeyError}
-        hint="Write-only: it is never redisplayed, cached, or stored in the browser."
-        label="Resend API key"
-      >
+      <label className="flex items-start gap-2 text-xs text-slate-400">
         <input
-          autoComplete="new-password"
-          className={inputClass}
+          className="mt-0.5"
           disabled={pending}
-          placeholder="re_…"
-          type="password"
-          {...register('apiKey')}
+          type="checkbox"
+          {...register('removeKey')}
         />
-      </Field>
+        <span>
+          Remove the stored key. Saving switches sending to Off and keeps the
+          sender details.
+        </span>
+      </label>
     )}
-    <p className="text-xs text-slate-500">
-      {hasStoredKey
-        ? 'A key is stored. Keep it, replace it, or remove it. The stored value is never shown again.'
-        : 'Enter the send-only Resend API key. It is encrypted before storage and never returned to the browser.'}
-    </p>
+    {removeKey && (
+      <p className="text-xs text-rose-200">
+        The key will be removed and sending will switch to Off when you save.
+      </p>
+    )}
   </div>
 );
 
@@ -181,18 +183,20 @@ export const EmailSettingsPanel = ({
   const baseRevision = useRef(settings.revision);
 
   const {
+    clearErrors,
     formState: { errors, isDirty, isSubmitting },
     handleSubmit,
     register,
     reset,
     setError,
+    setValue,
     watch,
   } = useForm<ManageEmailFormValues>({
     defaultValues: toFormValues(settings),
     mode: 'onTouched',
   });
   const provider = watch('provider');
-  const credentialOperation = watch('credentialOperation');
+  const removeKey = watch('removeKey');
 
   useEffect(
     () => () => {
@@ -211,6 +215,14 @@ export const EmailSettingsPanel = ({
     baseRevision.current = settings.revision;
     reset(toFormValues(settings));
   }, [editing, reset, settings]);
+
+  // Removal is meaningful only while Resend is selected. Clearing it on a
+  // method change avoids a hidden destructive action if the user switches back.
+  useEffect(() => {
+    if (provider !== 'resend') {
+      setValue('removeKey', false);
+    }
+  }, [provider, setValue]);
 
   const save = useMutation({
     mutationFn: (variables: ReturnType<typeof toSaveVariables>) => {
@@ -251,9 +263,6 @@ export const EmailSettingsPanel = ({
   const pending = save.isPending || sendTest.isPending || isSubmitting;
   const externalChange = editing && settings.revision !== baseRevision.current;
   const hasStoredKey = settings.hasApiKey;
-  const showsKeyField =
-    provider === 'resend' &&
-    (!hasStoredKey || credentialOperation === 'replace');
   const cloudflareTested =
     settings.provider === 'cloudflare' &&
     settings.test?.revision === settings.revision &&
@@ -308,17 +317,15 @@ export const EmailSettingsPanel = ({
       return;
     }
 
-    if (
-      values.provider === 'resend' &&
-      (values.credentialOperation === 'replace' || !hasStoredKey) &&
-      values.apiKey.trim() === ''
-    ) {
-      setError('apiKey', { message: 'Enter the Resend API key.' });
+    const keyError = apiKeyValidationError(values, hasStoredKey);
+    if (keyError !== null) {
+      setError('apiKey', { message: keyError });
       return;
     }
 
     submitLock.current = true;
-    apiKeyReference.current = values.apiKey;
+    apiKeyReference.current =
+      values.apiKey === STORED_API_KEY_SENTINEL ? '' : values.apiKey;
     try {
       await save.mutateAsync(toSaveVariables(values, baseRevision.current));
     } catch {
@@ -354,6 +361,7 @@ export const EmailSettingsPanel = ({
           <Form
             className="px-5 py-4"
             onChange={() => {
+              clearErrors('apiKey');
               sendTest.reset();
             }}
             onSubmit={(event) => {
@@ -412,7 +420,7 @@ export const EmailSettingsPanel = ({
                   hasStoredKey={hasStoredKey}
                   pending={pending}
                   register={register}
-                  showsKeyField={showsKeyField}
+                  removeKey={removeKey}
                 />
               )}
 
