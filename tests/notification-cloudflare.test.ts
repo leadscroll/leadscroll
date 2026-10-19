@@ -22,7 +22,7 @@ const bindingWith = (
 const envelope: EmailEnvelope = {
   from: { email: 'notifications@example.test', name: 'LeadScroll' },
   html: '<p>Hi</p>',
-  subject: 'A new lead is available in LeadScroll',
+  subject: 'New lead in LeadScroll',
   text: 'Hi',
   to: 'staff@example.test',
 };
@@ -59,7 +59,7 @@ describe('Cloudflare email provider', () => {
     expect(sent[0]).toMatchObject({
       from: { email: 'notifications@example.test', name: 'LeadScroll' },
       html: '<p>Hi</p>',
-      subject: 'A new lead is available in LeadScroll',
+      subject: 'New lead in LeadScroll',
       text: 'Hi',
       to: 'staff@example.test',
     });

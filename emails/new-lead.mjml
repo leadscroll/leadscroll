@@ -1,0 +1,28 @@
+<mjml lang="en">
+  <mj-head>
+    <mj-title>New lead in LeadScroll</mj-title>
+    <mj-preview>A new lead is available in LeadScroll.</mj-preview>
+    <mj-raw>
+      <meta name="color-scheme" content="light only" />
+      <meta name="supported-color-schemes" content="light" />
+    </mj-raw>
+  </mj-head>
+  <mj-body background-color="#f4f1ec" width="600px">
+    <mj-wrapper padding="32px 20px">
+      <mj-section background-color="#ffffff" border-radius="12px" padding="32px">
+        <mj-column>
+          <mj-text color="#1b1e20" font-family="Arial, Helvetica, sans-serif" font-size="14px" font-weight="600" padding="0">
+            <span style="display:inline-block;width:22px;height:22px;background-color:#1b1e20;border-radius:6px;color:#e6a06b;text-align:center;line-height:22px;font-size:11px;font-weight:700;">L</span>&#160;&#160;LeadScroll
+          </mj-text>
+          <mj-divider align="left" border-color="#e6a06b" border-width="2px" padding="22px 0 18px" width="32px" />
+          <mj-text color="#e6a06b" font-family="Arial, Helvetica, sans-serif" font-size="11px" font-weight="700" letter-spacing="1.2px" padding="0 0 8px">NEW LEAD</mj-text>
+          <mj-text color="#1b1e20" font-family="Arial, Helvetica, sans-serif" font-size="26px" font-weight="600" letter-spacing="-0.5px" line-height="32px" padding="0 0 12px">A new lead just came in</mj-text>
+          <mj-text color="#5f666b" font-family="Arial, Helvetica, sans-serif" font-size="15px" line-height="24px" padding="0 0 26px">Open it in LeadScroll to review the details and follow up.</mj-text>
+          <mj-button align="left" background-color="#e6a06b" border-radius="6px" color="#2a1b10" font-family="Arial, Helvetica, sans-serif" font-size="14px" font-weight="600" href="{{LEAD_URL}}" inner-padding="12px 20px" padding="0">Open the lead</mj-button>
+          <mj-divider border-color="#e6e1d9" border-width="1px" padding="28px 0 14px" />
+          <mj-text color="#8a9095" font-family="Arial, Helvetica, sans-serif" font-size="12px" line-height="18px" padding="0">You receive this because new-lead emails are on for your account. <a href="{{PREFERENCES_URL}}" style="color:#5f666b;text-decoration:underline;">Manage notifications</a>.</mj-text>
+        </mj-column>
+      </mj-section>
+    </mj-wrapper>
+  </mj-body>
+</mjml>

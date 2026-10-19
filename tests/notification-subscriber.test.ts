@@ -18,6 +18,7 @@ import {
   NOTIFICATION_BUDGET_MS,
   NOTIFICATION_PROVIDER_TIMEOUT_MS,
 } from '@/notifications/lead-created-subscriber';
+import { NOTIFICATION_SUBJECT } from '@/notifications/templates';
 import { Effect } from 'effect';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
@@ -90,9 +91,7 @@ describe('lead.created email subscriber', () => {
       'staff-1@example.test',
     ]);
     const [sentMessage] = calls;
-    expect(sentMessage.envelope.subject).toBe(
-      'A new lead is available in LeadScroll',
-    );
+    expect(sentMessage.envelope.subject).toBe(NOTIFICATION_SUBJECT);
     expect(sentMessage.envelope.html).toContain(
       `https://crm.example.test/leads/${LEAD_ID}`,
     );
@@ -440,6 +439,6 @@ describe('lead.created email subscriber', () => {
     });
     const serialized = JSON.stringify(lines);
     expect(serialized).not.toContain('private-staff@example.test');
-    expect(serialized).not.toContain('A new lead is available');
+    expect(serialized).not.toContain('A new lead just came in');
   });
 });

@@ -22,6 +22,13 @@ campaigns.
    HTTP response. It uses a small concurrency limit (4), an overall background
    budget (20 seconds), and a per-provider-call timeout (10 seconds).
 
+The message bodies are authored in MJML under `emails/` and compiled to static
+HTML by `pnpm emails:build`; the Worker substitutes the authenticated URLs at
+send time. MJML supplies the fixed table widths, Outlook resets, and table
+button, and the compiler never ships in the Worker. The generated HTML and the
+plain-text alternatives use no remote images, web fonts, tracking pixels, or
+scripts. Regenerate the templates after editing the `.mjml` sources.
+
 Delivery is **best-effort by design**. There is no outbox, queue, Cron trigger,
 retry engine, replay/reconciliation, or delivery history. A Worker
 interruption, a crash between the commit and publication, a provider timeout,
