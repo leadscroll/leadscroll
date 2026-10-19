@@ -56,7 +56,7 @@ export type NotificationServices =
   | InstallationConfigStore;
 
 const causeErrorClass = (cause: Cause.Cause<unknown>): string => {
-  const failure = Cause.failureOption(cause);
+  const failure = Cause.findErrorOption(cause);
   if (failure._tag === 'Some') {
     const error = failure.value;
     return error instanceof Error
@@ -64,7 +64,7 @@ const causeErrorClass = (cause: Cause.Cause<unknown>): string => {
       : typeof error;
   }
 
-  return Cause.isDie(cause) ? 'Defect' : 'Interrupted';
+  return Cause.hasDies(cause) ? 'Defect' : 'Interrupted';
 };
 
 /**
@@ -78,22 +78,28 @@ export const runLeadCreatedSubscribers = (
   event: LeadCreatedEvent,
 ): Promise<void> =>
   runtime.runPromise(
-    Effect.forEach(
-      subscribers,
-      (subscriber) =>
-        Effect.suspend(() => subscriber(event)).pipe(
-          Effect.catchAllCause((cause) =>
-            Effect.sync(() => {
-              logNotificationEventOutcome({
-                errorClass: causeErrorClass(cause),
-                eventKind: LEAD_CREATED_EVENT,
-                leadId: event.leadId,
-                outcome: 'subscriber_failed',
-              });
-            }),
-          ),
+    // Yield once so the publisher returns to the request before any subscriber
+    // work starts; the Worker still receives the promise through waitUntil.
+    Effect.yieldNow.pipe(
+      Effect.andThen(
+        Effect.forEach(
+          subscribers,
+          (subscriber) =>
+            Effect.suspend(() => subscriber(event)).pipe(
+              Effect.catchCause((cause) =>
+                Effect.sync(() => {
+                  logNotificationEventOutcome({
+                    errorClass: causeErrorClass(cause),
+                    eventKind: LEAD_CREATED_EVENT,
+                    leadId: event.leadId,
+                    outcome: 'subscriber_failed',
+                  });
+                }),
+              ),
+            ),
+          { concurrency: 'unbounded', discard: true },
         ),
-      { concurrency: 'unbounded', discard: true },
+      ),
     ),
   );
 

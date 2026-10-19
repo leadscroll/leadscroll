@@ -205,7 +205,7 @@ const createAppWithAuth = (
         }
       })
       .get('/health', () => ({ ok: true }), {
-        response: { '200': Schema.standardSchemaV1(HealthSchema) },
+        response: { '200': Schema.toStandardSchemaV1(HealthSchema) },
       })
       // Contract spike: Elysia's Standard Schema path yields `code: 'VALIDATION'`
       // errors. Normalize them to the same `{ code, details, message }` envelope

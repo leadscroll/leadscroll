@@ -32,7 +32,7 @@ import {
 import { formatLeadSummary } from '@/notifications/lead-summary';
 import { logNotificationEventOutcome } from '@/notifications/logging';
 import { renderNewLeadNotification } from '@/notifications/templates';
-import { Clock, Effect, Either, Exit, Ref } from 'effect';
+import { Clock, Effect, Exit, Ref, Result } from 'effect';
 
 /**
  * Modest concurrency: provider calls overlap without unbounded fan-out.
@@ -93,15 +93,18 @@ export const createLeadCreatedEmailSubscriber = (
       // Entry time: configuration/lead/recipient reads and credential
       // decryption all consume the budget.
       const startedAt = yield* Clock.currentTimeMillis;
-      const configExit = yield* Effect.either(store.read);
-      if (Either.isLeft(configExit)) {
+      const configExit = yield* Effect.result(store.read);
+      if (Result.isFailure(configExit)) {
         // The only failure variants are an unreadable document or a database
         // fault; both are redacted to a skipped configuration outcome.
         skipped(event, 'config_invalid');
         return;
       }
 
-      const state = stateFromDocument(capabilities, configExit.right.document);
+      const state = stateFromDocument(
+        capabilities,
+        configExit.success.document,
+      );
       const settings = state.settings;
       if (settings === null || settings.provider === 'disabled') {
         skipped(event, settings === null ? 'not_configured' : 'disabled');
@@ -134,13 +137,13 @@ export const createLeadCreatedEmailSubscriber = (
         return;
       }
 
-      const providerEither = yield* Effect.either(resolver.resolve(settings));
-      if (Either.isLeft(providerEither)) {
-        skipped(event, providerEither.left.reason);
+      const providerEither = yield* Effect.result(resolver.resolve(settings));
+      if (Result.isFailure(providerEither)) {
+        skipped(event, providerEither.failure.reason);
         return;
       }
 
-      const provider = providerEither.right;
+      const provider = providerEither.success;
       const deadline = startedAt + NOTIFICATION_BUDGET_MS;
       const stop = yield* Ref.make(false);
 

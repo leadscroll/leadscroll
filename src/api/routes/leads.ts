@@ -59,7 +59,7 @@ export const createLeadsRoutes = (options: LeadsRoutesOptions) => {
         });
         return { data: page.leads, nextCursor: page.nextCursor };
       },
-      { query: Schema.standardSchemaV1(ListLeadsQuerySchema) },
+      { query: Schema.toStandardSchemaV1(ListLeadsQuerySchema) },
     )
     .post(
       '/v1/leads',
@@ -72,7 +72,7 @@ export const createLeadsRoutes = (options: LeadsRoutesOptions) => {
           ? result.error
           : Response.json({ data: result.data }, { status: 201 });
       },
-      { body: Schema.standardSchemaV1(CreateLeadRequestSchema) },
+      { body: Schema.toStandardSchemaV1(CreateLeadRequestSchema) },
     )
     .post(
       '/v1/leads/bulk-delete',
@@ -85,7 +85,7 @@ export const createLeadsRoutes = (options: LeadsRoutesOptions) => {
           ? result.error
           : { data: { deleted: result.data } };
       },
-      { body: Schema.standardSchemaV1(BulkDeleteLeadsRequestSchema) },
+      { body: Schema.toStandardSchemaV1(BulkDeleteLeadsRequestSchema) },
     )
     .patch(
       '/v1/leads/:id',
@@ -102,7 +102,7 @@ export const createLeadsRoutes = (options: LeadsRoutesOptions) => {
           ? { data: result.data }
           : errorResponse(404, 'not_found', 'Lead not found.');
       },
-      { body: Schema.standardSchemaV1(UpdateLeadRequestSchema) },
+      { body: Schema.toStandardSchemaV1(UpdateLeadRequestSchema) },
     )
     .get('/v1/leads/:id/activities', async ({ params }) => {
       return { data: await listLeadActivities(environment, params.id) };
@@ -128,7 +128,7 @@ export const createLeadsRoutes = (options: LeadsRoutesOptions) => {
           ? Response.json({ data: result.data }, { status: 201 })
           : errorResponse(404, 'not_found', 'Lead not found.');
       },
-      { body: Schema.standardSchemaV1(CreateLeadActivityRequestSchema) },
+      { body: Schema.toStandardSchemaV1(CreateLeadActivityRequestSchema) },
     )
     .get('/v1/leads/:id', async ({ params }) => {
       const lead = await getLead(environment, params.id);

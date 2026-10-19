@@ -12,26 +12,23 @@ import { Schema } from 'effect';
 // shared with the SPA. No `Input`/`I` markers: a derived type is not always
 // an input.
 
-const NonEmptyStringSchema = Schema.String.pipe(
-  Schema.trimmed(),
-  Schema.minLength(1),
-);
+const NonEmptyStringSchema = Schema.Trimmed.check(Schema.isMinLength(1));
 
-export const EmailSchema = NonEmptyStringSchema.pipe(
-  Schema.pattern(/^[^\s@]+@[^\s@][^\s.@]*\.[^\s@]+$/u),
-).annotations({ description: 'A valid email address.' });
+export const EmailSchema = NonEmptyStringSchema.check(
+  Schema.isPattern(/^[^\s@]+@[^\s@][^\s.@]*\.[^\s@]+$/u),
+).annotate({ description: 'A valid email address.' });
 
-export const RecordIdSchema = Schema.String.pipe(
-  Schema.pattern(/[0-7][\dA-HJKMNP-TV-Z]{25}/u),
-  Schema.filter((value) => value.length === 26),
-).annotations({ description: 'A ULID record identifier.' });
+export const RecordIdSchema = Schema.String.check(
+  Schema.isPattern(/[0-7][\dA-HJKMNP-TV-Z]{25}/u),
+  Schema.makeFilter((value) => value.length === 26),
+).annotate({ description: 'A ULID record identifier.' });
 
 // Free-form per-lead custom fields: a JSON document with no definition
 // registry.
-export const CustomFieldValuesSchema = Schema.Record({
-  key: Schema.String,
-  value: Schema.Unknown,
-});
+export const CustomFieldValuesSchema = Schema.Record(
+  Schema.String,
+  Schema.Unknown,
+);
 export type CustomFieldValues = Schema.Schema.Type<
   typeof CustomFieldValuesSchema
 >;
@@ -39,26 +36,26 @@ export type CustomFieldValues = Schema.Schema.Type<
 // SDK diagnostics: names of fields the browser SDK refused to send, and why.
 // Values are never included. Bounded because the sender controls the list.
 export const SkippedFieldSchema = Schema.Struct({
-  name: NonEmptyStringSchema.pipe(Schema.maxLength(120)),
-  reason: Schema.Literal('sensitive', 'unmarked'),
+  name: NonEmptyStringSchema.check(Schema.isMaxLength(120)),
+  reason: Schema.Literals(['sensitive', 'unmarked']),
 });
-export const SkippedFieldsSchema = Schema.Array(SkippedFieldSchema).pipe(
-  Schema.maxItems(50),
+export const SkippedFieldsSchema = Schema.Array(SkippedFieldSchema).check(
+  Schema.isMaxLength(50),
 );
 export type SkippedField = Schema.Schema.Type<typeof SkippedFieldSchema>;
 
 // Tags. `prefix:value` tags share a scope and are exclusive per lead; plain
 // tags are standalone. Colors are a closed palette shared by the UI.
 export const TAG_COLORS = ['teal', 'blue', 'violet', 'amber'] as const;
-export const TagColorSchema = Schema.Literal(...TAG_COLORS);
+export const TagColorSchema = Schema.Literals(TAG_COLORS);
 export type TagColor = Schema.Schema.Type<typeof TagColorSchema>;
 
 // A full tag name is `prefix:value` or a plain value: at most 30 characters
 // for the scope, 40 for the value, plus one delimiter. Parsing (rather than
 // this bound) enforces the single delimiter.
-export const TagNameSchema = NonEmptyStringSchema.pipe(Schema.maxLength(71));
-export const TagScopePrefixSchema = NonEmptyStringSchema.pipe(
-  Schema.maxLength(30),
+export const TagNameSchema = NonEmptyStringSchema.check(Schema.isMaxLength(71));
+export const TagScopePrefixSchema = NonEmptyStringSchema.check(
+  Schema.isMaxLength(30),
 );
 
 export const TagScopeViewSchema = Schema.Struct({
@@ -84,7 +81,10 @@ export type TagView = Schema.Schema.Type<typeof TagViewSchema>;
 // Catalog rows additionally report how many active accessible leads use them.
 export const CatalogTagViewSchema = Schema.Struct({
   ...TagViewSchema.fields,
-  leadCount: Schema.Number.pipe(Schema.int(), Schema.nonNegative()),
+  leadCount: Schema.Number.check(
+    Schema.isInt(),
+    Schema.isGreaterThanOrEqualTo(0),
+  ),
 });
 export type CatalogTagView = Schema.Schema.Type<typeof CatalogTagViewSchema>;
 
@@ -116,21 +116,21 @@ export type UpdateTagScopeRequest = Schema.Schema.Type<
 >;
 
 export const SetLeadTagsRequestSchema = Schema.Struct({
-  tagIds: Schema.Array(RecordIdSchema).pipe(Schema.maxItems(100)),
+  tagIds: Schema.Array(RecordIdSchema).check(Schema.isMaxLength(100)),
 });
 export type SetLeadTagsRequest = Schema.Schema.Type<
   typeof SetLeadTagsRequestSchema
 >;
 
 export const BulkTagRequestSchema = Schema.Struct({
-  ids: Schema.Array(RecordIdSchema).pipe(
-    Schema.minItems(1),
-    Schema.maxItems(100),
+  ids: Schema.Array(RecordIdSchema).check(
+    Schema.isMinLength(1),
+    Schema.isMaxLength(100),
   ),
-  mode: Schema.Literal('add', 'remove'),
-  tagIds: Schema.Array(RecordIdSchema).pipe(
-    Schema.minItems(1),
-    Schema.maxItems(100),
+  mode: Schema.Literals(['add', 'remove']),
+  tagIds: Schema.Array(RecordIdSchema).check(
+    Schema.isMinLength(1),
+    Schema.isMaxLength(100),
   ),
 });
 export type BulkTagRequest = Schema.Schema.Type<typeof BulkTagRequestSchema>;
@@ -142,13 +142,15 @@ export const IntakeRequestSchema = Schema.Struct({
   customFields: Schema.optional(CustomFieldValuesSchema),
   email: EmailSchema,
   estimatedValue: Schema.optional(
-    Schema.Number.pipe(Schema.finite(), Schema.nonNegative()),
+    Schema.Number.check(Schema.isFinite(), Schema.isGreaterThanOrEqualTo(0)),
   ),
   firstName: Schema.optional(NonEmptyStringSchema),
   lastName: Schema.optional(NonEmptyStringSchema),
   skippedFields: Schema.optional(SkippedFieldsSchema),
   source: NonEmptyStringSchema,
-  tags: Schema.optional(Schema.Array(TagNameSchema).pipe(Schema.maxItems(100))),
+  tags: Schema.optional(
+    Schema.Array(TagNameSchema).check(Schema.isMaxLength(100)),
+  ),
 });
 export type IntakeRequest = Schema.Schema.Type<typeof IntakeRequestSchema>;
 
@@ -164,7 +166,10 @@ export const LeadViewSchema = Schema.Struct({
   createdAt: Schema.String,
   customFields: CustomFieldValuesSchema,
   deletedAt: Schema.NullOr(Schema.String),
-  duplicateCount: Schema.Number.pipe(Schema.int(), Schema.nonNegative()),
+  duplicateCount: Schema.Number.check(
+    Schema.isInt(),
+    Schema.isGreaterThanOrEqualTo(0),
+  ),
   email: Schema.NullOr(Schema.String),
   estimatedValue: Schema.NullOr(Schema.Number),
   firstName: Schema.NullOr(Schema.String),
@@ -177,7 +182,9 @@ export const LeadViewSchema = Schema.Struct({
   tags: Schema.Array(TagViewSchema),
   tokenId: Schema.NullOr(Schema.String),
   tokenName: Schema.optional(Schema.NullOr(Schema.String)),
-  tokenType: Schema.optional(Schema.NullOr(Schema.Literal('api', 'browser'))),
+  tokenType: Schema.optional(
+    Schema.NullOr(Schema.Literals(['api', 'browser'])),
+  ),
   updatedAt: Schema.String,
 });
 export type LeadView = Schema.Schema.Type<typeof LeadViewSchema>;
@@ -204,10 +211,10 @@ export const LeadActivitiesSchema = Schema.Struct({
 export const ListLeadsQuerySchema = Schema.Struct({
   cursor: Schema.optional(NonEmptyStringSchema),
   limit: Schema.optional(
-    Schema.NumberFromString.pipe(
-      Schema.int(),
-      Schema.greaterThanOrEqualTo(1),
-      Schema.lessThanOrEqualTo(100),
+    Schema.NumberFromString.check(
+      Schema.isInt(),
+      Schema.isGreaterThanOrEqualTo(1),
+      Schema.isLessThanOrEqualTo(100),
     ),
   ),
   query: Schema.optional(NonEmptyStringSchema),
@@ -225,12 +232,14 @@ export const CreateLeadRequestSchema = Schema.Struct({
   customFields: Schema.optional(CustomFieldValuesSchema),
   email: Schema.optional(EmailSchema),
   estimatedValue: Schema.optional(
-    Schema.Number.pipe(Schema.finite(), Schema.nonNegative()),
+    Schema.Number.check(Schema.isFinite(), Schema.isGreaterThanOrEqualTo(0)),
   ),
   firstName: Schema.optional(NonEmptyStringSchema),
   lastName: Schema.optional(NonEmptyStringSchema),
   source: Schema.optional(NonEmptyStringSchema),
-  tags: Schema.optional(Schema.Array(TagNameSchema).pipe(Schema.maxItems(100))),
+  tags: Schema.optional(
+    Schema.Array(TagNameSchema).check(Schema.isMaxLength(100)),
+  ),
 });
 export type CreateLeadRequest = Schema.Schema.Type<
   typeof CreateLeadRequestSchema
@@ -240,7 +249,9 @@ export const UpdateLeadRequestSchema = Schema.Struct({
   customFields: Schema.optional(CustomFieldValuesSchema),
   email: Schema.optional(Schema.NullOr(EmailSchema)),
   estimatedValue: Schema.optional(
-    Schema.NullOr(Schema.Number.pipe(Schema.finite(), Schema.nonNegative())),
+    Schema.NullOr(
+      Schema.Number.check(Schema.isFinite(), Schema.isGreaterThanOrEqualTo(0)),
+    ),
   ),
   firstName: Schema.optional(Schema.NullOr(NonEmptyStringSchema)),
   lastName: Schema.optional(Schema.NullOr(NonEmptyStringSchema)),
@@ -251,9 +262,9 @@ export type UpdateLeadRequest = Schema.Schema.Type<
 >;
 
 export const BulkDeleteLeadsRequestSchema = Schema.Struct({
-  ids: Schema.Array(RecordIdSchema).pipe(
-    Schema.minItems(1),
-    Schema.maxItems(100),
+  ids: Schema.Array(RecordIdSchema).check(
+    Schema.isMinLength(1),
+    Schema.isMaxLength(100),
   ),
 });
 export type BulkDeleteLeadsRequest = Schema.Schema.Type<
@@ -262,7 +273,7 @@ export type BulkDeleteLeadsRequest = Schema.Schema.Type<
 
 export const CreateLeadActivityRequestSchema = Schema.Struct({
   body: NonEmptyStringSchema,
-  kind: Schema.optional(Schema.Literal('note', 'contact_attempt')),
+  kind: Schema.optional(Schema.Literals(['note', 'contact_attempt'])),
 });
 export type CreateLeadActivityRequest = Schema.Schema.Type<
   typeof CreateLeadActivityRequestSchema
@@ -270,12 +281,11 @@ export type CreateLeadActivityRequest = Schema.Schema.Type<
 
 // A future UTC ISO-8601 date (optional time, offset, or Z) for expiry
 // overrides on API tokens and staff invitations.
-const FutureIsoDateSchema = Schema.String.pipe(
-  Schema.pattern(
+const FutureIsoDateSchema = Schema.String.check(
+  Schema.isPattern(
     /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:\d{2})?)?$/u,
   ),
-
-  Schema.filter((value) => {
+  Schema.makeFilter((value) => {
     const time = Date.parse(value);
     return Number.isFinite(time) && time > Date.now();
   }),
@@ -284,8 +294,8 @@ const FutureIsoDateSchema = Schema.String.pipe(
 export const CreateTokenRequestSchema = Schema.Struct({
   expiresAt: Schema.optional(Schema.NullOr(FutureIsoDateSchema)),
   name: NonEmptyStringSchema,
-  type: Schema.optional(Schema.Literal('api', 'browser')),
-}).annotations({
+  type: Schema.optional(Schema.Literals(['api', 'browser'])),
+}).annotate({
   description:
     'Creates an intake token (90 days by default; null never expires). Browser tokens are safe to embed in a website and can only create leads.',
 });
@@ -296,7 +306,7 @@ export type CreateTokenRequest = Schema.Schema.Type<
 export const CreateInviteRequestSchema = Schema.Struct({
   expiresAt: Schema.optional(FutureIsoDateSchema),
   name: NonEmptyStringSchema,
-}).annotations({
+}).annotate({
   description: 'Creates a single-use staff invitation (7 days by default).',
 });
 export type CreateInviteRequest = Schema.Schema.Type<
@@ -305,7 +315,7 @@ export type CreateInviteRequest = Schema.Schema.Type<
 
 export const ValidateInviteRequestSchema = Schema.Struct({
   token: Schema.String,
-}).annotations({
+}).annotate({
   description:
     'Checks a registration grant without consuming it. Any token is an input; only 200 vs 403 differ.',
 });
@@ -315,7 +325,7 @@ export type ValidateInviteRequest = Schema.Schema.Type<
 
 export const SetStaffDisabledRequestSchema = Schema.Struct({
   disabled: Schema.Boolean,
-}).annotations({
+}).annotate({
   description:
     'Enables or disables a staff account. Disabling also revokes every session of that account; re-enabling preserves the credentials but never restores old sessions.',
 });
@@ -326,7 +336,7 @@ export type SetStaffDisabledRequest = Schema.Schema.Type<
 export const PaginationSchema = Schema.Struct({
   cursor: Schema.optional(RecordIdSchema),
   limit: Schema.optional(
-    Schema.Number.pipe(Schema.int(), Schema.greaterThanOrEqualTo(1)),
+    Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(1)),
   ),
   query: Schema.optional(NonEmptyStringSchema),
 });
@@ -344,21 +354,21 @@ export const normalizeEmail = (email: string): string =>
 
 // Self-service account contracts. Better Auth session ids are opaque strings.
 export const UpdateAccountProfileRequestSchema = Schema.Struct({
-  name: NonEmptyStringSchema.pipe(Schema.maxLength(200)),
+  name: NonEmptyStringSchema.check(Schema.isMaxLength(200)),
 });
 export type UpdateAccountProfileRequest = Schema.Schema.Type<
   typeof UpdateAccountProfileRequestSchema
 >;
 
 export const ChangeAccountPasswordRequestSchema = Schema.Struct({
-  currentPassword: Schema.String.pipe(
-    Schema.minLength(1),
-    Schema.maxLength(CURRENT_PASSWORD_MAX),
+  currentPassword: Schema.String.check(
+    Schema.isMinLength(1),
+    Schema.isMaxLength(CURRENT_PASSWORD_MAX),
   ),
-  newPassword: Schema.String.pipe(
-    Schema.minLength(PASSWORD_MIN),
-    Schema.maxLength(PASSWORD_MAX),
-    Schema.filter((value) => value.trim().length > 0),
+  newPassword: Schema.String.check(
+    Schema.isMinLength(PASSWORD_MIN),
+    Schema.isMaxLength(PASSWORD_MAX),
+    Schema.makeFilter((value) => value.trim().length > 0),
   ),
 });
 export type ChangeAccountPasswordRequest = Schema.Schema.Type<
@@ -380,18 +390,18 @@ export type AccountSessionView = Schema.Schema.Type<
 // New-lead email notifications. Personal preferences stay separate from
 // installation-level email settings; "availability" is a closed, safe summary
 // computed from the saved provider configuration.
-export const NotificationAvailabilitySchema = Schema.Literal(
+export const NotificationAvailabilitySchema = Schema.Literals([
   'configured',
   'disabled',
   'misconfigured',
-);
+]);
 export type NotificationAvailability = Schema.Schema.Type<
   typeof NotificationAvailabilitySchema
 >;
 
 export const UpdateNotificationPreferenceRequestSchema = Schema.Struct({
   newLeadEmail: Schema.Boolean,
-}).annotations({
+}).annotate({
   description:
     'Opt in or out of email alerts for newly created leads. Defaults off.',
 });
@@ -405,34 +415,37 @@ export type UpdateNotificationPreferenceRequest = Schema.Schema.Type<
 // credential. The persisted document is validated against this schema on
 // every read and before every write; a corrupt or unsupported document fails
 // closed and is never silently reset.
-export const EmailSettingsProviderSchema = Schema.Literal(
+export const EmailSettingsProviderSchema = Schema.Literals([
   'cloudflare',
   'disabled',
   'resend',
-);
+]);
 export type EmailSettingsProvider = Schema.Schema.Type<
   typeof EmailSettingsProviderSchema
 >;
 
 export const EmailCredentialOperationSchema = Schema.Struct({
-  operation: Schema.Literal('keep', 'remove', 'replace'),
-  value: Schema.optional(Schema.String.pipe(Schema.maxLength(512))),
-}).annotations({
+  operation: Schema.Literals(['keep', 'remove', 'replace']),
+  value: Schema.optional(Schema.String.check(Schema.isMaxLength(512))),
+}).annotate({
   description:
     'keep preserves the stored provider key, replace stores the supplied value, remove deletes it and disables the affected provider.',
 });
 
 export const UpdateEmailSettingsRequestSchema = Schema.Struct({
   credential: EmailCredentialOperationSchema,
-  expectedRevision: Schema.Number.pipe(Schema.int(), Schema.nonNegative()),
+  expectedRevision: Schema.Number.check(
+    Schema.isInt(),
+    Schema.isGreaterThanOrEqualTo(0),
+  ),
   fromEmail: Schema.optional(
-    Schema.NullOr(EmailSchema.pipe(Schema.maxLength(320))),
+    Schema.NullOr(EmailSchema.check(Schema.isMaxLength(320))),
   ),
   fromName: Schema.optional(
-    Schema.NullOr(NonEmptyStringSchema.pipe(Schema.maxLength(120))),
+    Schema.NullOr(NonEmptyStringSchema.check(Schema.isMaxLength(120))),
   ),
   provider: EmailSettingsProviderSchema,
-}).annotations({
+}).annotate({
   description:
     'Saves installation email settings. Never sends a test automatically and never accepts a client-chosen origin or provider base URL.',
 });
@@ -444,9 +457,12 @@ export type UpdateEmailSettingsRequest = Schema.Schema.Type<
 >;
 
 export const SendEmailTestRequestSchema = Schema.Struct({
-  expectedRevision: Schema.Number.pipe(Schema.int(), Schema.nonNegative()),
-  requestId: NonEmptyStringSchema.pipe(Schema.maxLength(64)),
-}).annotations({
+  expectedRevision: Schema.Number.check(
+    Schema.isInt(),
+    Schema.isGreaterThanOrEqualTo(0),
+  ),
+  requestId: NonEmptyStringSchema.check(Schema.isMaxLength(64)),
+}).annotate({
   description:
     'Sends one optional test message to the signed-in administrator using the saved configuration; requestId deduplicates retries.',
 });
@@ -466,12 +482,12 @@ export const EMAIL_TEST_ROLLING_LIMIT = 5;
 export const EMAIL_TEST_RECENT_CAP = 5;
 
 const BoundedString = (maximum: number) =>
-  Schema.String.pipe(Schema.maxLength(maximum));
+  Schema.String.check(Schema.isMaxLength(maximum));
 
 export const EncryptedCredentialSchema = Schema.Struct({
-  ciphertext: BoundedString(4_096).pipe(Schema.minLength(1)),
-  keyVersion: Schema.Number.pipe(Schema.int(), Schema.positive()),
-  nonce: BoundedString(512).pipe(Schema.minLength(1)),
+  ciphertext: BoundedString(4_096).check(Schema.isMinLength(1)),
+  keyVersion: Schema.Number.check(Schema.isInt(), Schema.isGreaterThan(0)),
+  nonce: BoundedString(512).check(Schema.isMinLength(1)),
 });
 export type EncryptedCredential = Schema.Schema.Type<
   typeof EncryptedCredentialSchema
@@ -488,13 +504,13 @@ export type InstallationEmailConfig = Schema.Schema.Type<
   typeof InstallationEmailConfigSchema
 >;
 
-export const EmailTestOutcomeSchema = Schema.Literal(
+export const EmailTestOutcomeSchema = Schema.Literals([
   'accepted',
   'ambiguous',
   'configuration_error',
   'rejected',
   'sending',
-);
+]);
 export type EmailTestOutcome = Schema.Schema.Type<
   typeof EmailTestOutcomeSchema
 >;
@@ -504,20 +520,23 @@ export type EmailTestOutcome = Schema.Schema.Type<
 // most recent attempt is retained, so duplicate protection is finite and
 // documented rather than a durable replay engine.
 export const EmailTestStateSchema = Schema.Struct({
-  actorUserId: BoundedString(64).pipe(Schema.minLength(1)),
-  at: Schema.Number.pipe(Schema.int(), Schema.nonNegative()),
-  configRevision: Schema.Number.pipe(Schema.int(), Schema.nonNegative()),
+  actorUserId: BoundedString(64).check(Schema.isMinLength(1)),
+  at: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+  configRevision: Schema.Number.check(
+    Schema.isInt(),
+    Schema.isGreaterThanOrEqualTo(0),
+  ),
   outcome: EmailTestOutcomeSchema,
-  provider: Schema.NullOr(Schema.Literal('cloudflare', 'resend')),
+  provider: Schema.NullOr(Schema.Literals(['cloudflare', 'resend'])),
   providerMessageId: Schema.NullOr(BoundedString(256)),
   reasonCode: Schema.NullOr(BoundedString(64)),
-  requestId: NonEmptyStringSchema.pipe(Schema.maxLength(64)),
+  requestId: NonEmptyStringSchema.check(Schema.isMaxLength(64)),
 });
 export type EmailTestState = Schema.Schema.Type<typeof EmailTestStateSchema>;
 
 export const EmailTestRateEntrySchema = Schema.Struct({
-  actorUserId: BoundedString(64).pipe(Schema.minLength(1)),
-  at: Schema.Number.pipe(Schema.int(), Schema.nonNegative()),
+  actorUserId: BoundedString(64).check(Schema.isMinLength(1)),
+  at: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
 });
 export type EmailTestRateEntry = Schema.Schema.Type<
   typeof EmailTestRateEntrySchema
@@ -527,11 +546,14 @@ export const InstallationConfigSchema = Schema.Struct({
   email: InstallationEmailConfigSchema,
   emailTest: Schema.Struct({
     last: Schema.NullOr(EmailTestStateSchema),
-    recent: Schema.Array(EmailTestRateEntrySchema).pipe(
-      Schema.maxItems(EMAIL_TEST_RECENT_CAP),
+    recent: Schema.Array(EmailTestRateEntrySchema).check(
+      Schema.isMaxLength(EMAIL_TEST_RECENT_CAP),
     ),
   }),
-  revision: Schema.Number.pipe(Schema.int(), Schema.nonNegative()),
+  revision: Schema.Number.check(
+    Schema.isInt(),
+    Schema.isGreaterThanOrEqualTo(0),
+  ),
   version: Schema.Literal(INSTALLATION_CONFIG_VERSION),
 });
 export type InstallationConfig = Schema.Schema.Type<
@@ -663,35 +685,35 @@ export const validateInstallationConfig = (
  * size so an audit row cannot grow without limit.
  */
 export const AuditValueSchema = Schema.NullOr(
-  Schema.Union(
+  Schema.Union([
     BoundedString(512),
-    Schema.Number.pipe(Schema.finite()),
+    Schema.Number.check(Schema.isFinite()),
     Schema.Boolean,
-  ),
+  ]),
 );
 export type AuditValue = Schema.Schema.Type<typeof AuditValueSchema>;
 
 export const AuditChangeSchema = Schema.Struct({
   after: AuditValueSchema,
   before: AuditValueSchema,
-  field: NonEmptyStringSchema.pipe(Schema.maxLength(128)),
+  field: NonEmptyStringSchema.check(Schema.isMaxLength(128)),
 });
 export type AuditChange = Schema.Schema.Type<typeof AuditChangeSchema>;
 
-export const AuditChangesSchema = Schema.Array(AuditChangeSchema).pipe(
-  Schema.maxItems(32),
+export const AuditChangesSchema = Schema.Array(AuditChangeSchema).check(
+  Schema.isMaxLength(32),
 );
 
 export const AuditWriteSchema = Schema.Struct({
-  action: NonEmptyStringSchema.pipe(
-    Schema.maxLength(64),
-    Schema.pattern(/^[a-z][a-z0-9_.]*$/u),
+  action: NonEmptyStringSchema.check(
+    Schema.isMaxLength(64),
+    Schema.isPattern(/^[a-z][a-z0-9_.]*$/u),
   ),
   changes: AuditChangesSchema,
-  resourceId: Schema.NullOr(NonEmptyStringSchema.pipe(Schema.maxLength(64))),
-  resourceType: NonEmptyStringSchema.pipe(
-    Schema.maxLength(64),
-    Schema.pattern(/^[a-z][a-z0-9_.]*$/u),
+  resourceId: Schema.NullOr(NonEmptyStringSchema.check(Schema.isMaxLength(64))),
+  resourceType: NonEmptyStringSchema.check(
+    Schema.isMaxLength(64),
+    Schema.isPattern(/^[a-z][a-z0-9_.]*$/u),
   ),
 });
 export type AuditWrite = Schema.Schema.Type<typeof AuditWriteSchema>;
@@ -767,7 +789,10 @@ export const EmailTestViewSchema = Schema.Struct({
   outcome: EmailTestOutcomeSchema,
   providerMessageId: Schema.NullOr(Schema.String),
   reasonCode: Schema.NullOr(Schema.String),
-  revision: Schema.Number.pipe(Schema.int(), Schema.nonNegative()),
+  revision: Schema.Number.check(
+    Schema.isInt(),
+    Schema.isGreaterThanOrEqualTo(0),
+  ),
 });
 export type EmailTestView = Schema.Schema.Type<typeof EmailTestViewSchema>;
 
@@ -785,7 +810,10 @@ export const EmailSettingsViewSchema = Schema.Struct({
     availability: NotificationAvailabilitySchema,
     reasonCode: Schema.NullOr(Schema.String),
   }),
-  revision: Schema.Number.pipe(Schema.int(), Schema.nonNegative()),
+  revision: Schema.Number.check(
+    Schema.isInt(),
+    Schema.isGreaterThanOrEqualTo(0),
+  ),
   test: Schema.NullOr(EmailTestViewSchema),
 });
 export type EmailSettingsView = Schema.Schema.Type<
@@ -795,7 +823,7 @@ export type EmailSettingsView = Schema.Schema.Type<
 export const NotificationPreferenceViewSchema = Schema.Struct({
   availability: NotificationAvailabilitySchema,
   newLeadEmail: Schema.Boolean,
-  provider: Schema.NullOr(Schema.Literal('cloudflare', 'resend')),
+  provider: Schema.NullOr(Schema.Literals(['cloudflare', 'resend'])),
 });
 export type NotificationPreferenceView = Schema.Schema.Type<
   typeof NotificationPreferenceViewSchema

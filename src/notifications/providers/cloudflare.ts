@@ -108,28 +108,30 @@ export const createCloudflareEmailProvider = (
   kind: 'cloudflare',
   policy: { timeoutIsUncancelable: true },
   send: ({ envelope, timeoutMs }) =>
-    Effect.tryPromise({
-      catch: (cause) => cause,
-      try: () => binding.send(buildMessage(envelope)),
-    }).pipe(
-      Effect.timeout(Duration.millis(timeoutMs)),
-      Effect.map((result): SendResult => {
-        const messageId =
-          typeof result?.messageId === 'string' && result.messageId.length > 0
-            ? result.messageId
-            : undefined;
-        return {
-          kind: 'accepted',
-          ...(messageId === undefined ? {} : { messageId }),
-          provider: 'cloudflare',
-        };
-      }),
-      Effect.catchAll((error) =>
+    // eslint-disable-next-line promise/prefer-await-to-then, promise/valid-params -- Effect.catch is not Promise.catch
+    Effect.catch(
+      Effect.tryPromise({
+        catch: (cause) => cause,
+        try: () => binding.send(buildMessage(envelope)),
+      }).pipe(
+        Effect.timeout(Duration.millis(timeoutMs)),
+        Effect.map((result): SendResult => {
+          const messageId =
+            typeof result?.messageId === 'string' && result.messageId.length > 0
+              ? result.messageId
+              : undefined;
+          return {
+            kind: 'accepted',
+            ...(messageId === undefined ? {} : { messageId }),
+            provider: 'cloudflare',
+          };
+        }),
+      ),
+      (error) =>
         Effect.succeed<SendResult>(
-          Cause.isTimeoutException(error)
+          Cause.isTimeoutError(error)
             ? { kind: 'ambiguous', provider: 'cloudflare', reason: 'timeout' }
             : classifyCloudflareError(error),
         ),
-      ),
     ),
 });

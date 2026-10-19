@@ -63,7 +63,7 @@ export const formatResendFrom = (from: EmailEnvelope['from']): string =>
 
 const decodeAcceptedResponse = Schema.decodeUnknownOption(
   Schema.Struct({
-    id: Schema.String.pipe(Schema.minLength(1), Schema.maxLength(256)),
+    id: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(256)),
   }),
 );
 
@@ -165,25 +165,28 @@ export const createResendEmailProvider = (
     // The SDK request is aborted when the Effect is interrupted or timed out.
     policy: { timeoutIsUncancelable: false },
     send: ({ deliveryKey, envelope, timeoutMs }) =>
-      Effect.tryPromise({
-        catch: (cause) => cause,
-        try: (signal) =>
-          client.emails.send(
-            {
-              from: formatResendFrom(envelope.from),
-              html: envelope.html,
-              subject: envelope.subject,
-              text: envelope.text,
-              to: [envelope.to],
-            },
-            { idempotencyKey: deliveryKey, signal },
-          ),
-      }).pipe(
-        Effect.timeout(Duration.millis(timeoutMs)),
-        Effect.map((response) => classifyResendResult(response)),
-        Effect.catchAll((error) =>
+      // eslint-disable-next-line promise/prefer-await-to-then, promise/valid-params -- Effect.catch is not Promise.catch
+      Effect.catch(
+        Effect.tryPromise({
+          catch: (cause) => cause,
+          try: (signal) =>
+            client.emails.send(
+              {
+                from: formatResendFrom(envelope.from),
+                html: envelope.html,
+                subject: envelope.subject,
+                text: envelope.text,
+                to: [envelope.to],
+              },
+              { idempotencyKey: deliveryKey, signal },
+            ),
+        }).pipe(
+          Effect.timeout(Duration.millis(timeoutMs)),
+          Effect.map((response) => classifyResendResult(response)),
+        ),
+        (error) =>
           Effect.succeed<SendResult>(
-            Cause.isTimeoutException(error)
+            Cause.isTimeoutError(error)
               ? {
                   kind: 'ambiguous',
                   provider: 'resend',
@@ -195,7 +198,6 @@ export const createResendEmailProvider = (
                   reason: 'transport_error',
                 },
           ),
-        ),
       ),
   };
 };

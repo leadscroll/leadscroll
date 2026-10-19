@@ -33,7 +33,7 @@ import {
   type CredentialCipherService,
 } from '@/notifications/credential-cipher';
 import { type EmailProvider } from '@/notifications/email';
-import { Effect, Either } from 'effect';
+import { Effect, Result } from 'effect';
 
 export type EmailSettingsState = {
   availability: NotificationAvailability;
@@ -142,9 +142,9 @@ export const loadEmailSettingsState: Effect.Effect<
 > = Effect.gen(function* () {
   const store = yield* InstallationConfigStore;
   const capabilities = yield* Deployment;
-  const outcome = yield* Effect.either(store.read);
-  return Either.isRight(outcome)
-    ? stateFromDocument(capabilities, outcome.right.document)
+  const outcome = yield* Effect.result(store.read);
+  return Result.isSuccess(outcome)
+    ? stateFromDocument(capabilities, outcome.success.document)
     : unavailableState(capabilities);
 });
 

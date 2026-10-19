@@ -24,7 +24,7 @@ import {
   validateAuditWrite,
   validateInstallationConfig,
 } from '@/domain/schemas';
-import { Either } from 'effect';
+import { Result } from 'effect';
 import { afterEach, describe, expect, test } from 'vitest';
 
 const fixtures: NotificationFixture[] = [];
@@ -563,9 +563,9 @@ describe('notification schema migration', () => {
       runtime,
       getEmailSettingsViewCommand('https://crm.example.test'),
     );
-    expect(Either.isLeft(outcome)).toBe(true);
-    if (Either.isLeft(outcome)) {
-      expect(outcome.left).toMatchObject({ code: 'config_unavailable' });
+    expect(Result.isFailure(outcome)).toBe(true);
+    if (Result.isFailure(outcome)) {
+      expect(outcome.failure).toMatchObject({ code: 'config_unavailable' });
     }
 
     expect(JSON.stringify(outcome)).not.toContain('ROW_SENTINEL');
