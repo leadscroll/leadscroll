@@ -1,8 +1,52 @@
+import { StaffApiErrors } from './errors';
+import { ApiSchemaErrors } from './schema-errors';
+import { StaffAuth } from './staff-auth';
+import {
+  BulkDeleteLeadsRequestSchema,
+  BulkTagRequestSchema,
+  CreateLeadActivityRequestSchema,
+  CreateLeadRequestSchema,
+  LeadActivitiesSchema,
+  LeadActivitySchema,
+  LeadViewSchema,
+  ListLeadsQuerySchema,
+  SetLeadTagsRequestSchema,
+  TagViewSchema,
+  UpdateLeadRequestSchema,
+} from '@/domain/schemas';
 import { Schema } from 'effect';
-import { HttpApi, HttpApiEndpoint, HttpApiGroup } from 'effect/http-api';
+import {
+  HttpApi,
+  HttpApiEndpoint,
+  HttpApiGroup,
+  HttpApiSchema,
+} from 'effect/http-api';
 
 const idParameters = { id: Schema.String };
 const tokenParameters = { token: Schema.String };
+
+const LeadDataResponse = Schema.Struct({ data: LeadViewSchema });
+const LeadCreatedResponse = LeadDataResponse.pipe(HttpApiSchema.status(201));
+const LeadsPageResponse = Schema.Struct({
+  data: Schema.Array(LeadViewSchema),
+  nextCursor: Schema.NullOr(Schema.String),
+});
+const LeadDeletedResponse = Schema.Struct({
+  data: Schema.Struct({
+    deleted: Schema.Number.check(Schema.isInt()),
+  }),
+});
+const LeadActivityCreatedResponse = Schema.Struct({
+  data: LeadActivitySchema,
+}).pipe(HttpApiSchema.status(201));
+const LeadTagsResponse = Schema.Struct({
+  data: Schema.Array(TagViewSchema),
+});
+const BulkTagResponse = Schema.Struct({
+  data: Schema.Struct({
+    affected: Schema.Number.check(Schema.isInt()),
+  }),
+});
 
 const healthEndpoint = HttpApiEndpoint.get('health', '/health', {
   disableCodecs: true,
@@ -27,33 +71,53 @@ const intakeEndpoints = [
 ] as const;
 
 const leadEndpoints = [
-  HttpApiEndpoint.get('listLeads', '/v1/leads', { disableCodecs: true }),
-  HttpApiEndpoint.post('createLead', '/v1/leads', { disableCodecs: true }),
+  HttpApiEndpoint.get('listLeads', '/v1/leads', {
+    error: StaffApiErrors,
+    query: ListLeadsQuerySchema,
+    success: LeadsPageResponse,
+  }),
+  HttpApiEndpoint.post('createLead', '/v1/leads', {
+    error: StaffApiErrors,
+    payload: CreateLeadRequestSchema,
+    success: LeadCreatedResponse,
+  }),
   HttpApiEndpoint.post('bulkDeleteLeads', '/v1/leads/bulk-delete', {
-    disableCodecs: true,
+    error: StaffApiErrors,
+    payload: BulkDeleteLeadsRequestSchema,
+    success: LeadDeletedResponse,
   }),
   HttpApiEndpoint.get('getLead', '/v1/leads/:id', {
-    disableCodecs: true,
+    error: StaffApiErrors,
     params: idParameters,
+    success: LeadDataResponse,
   }),
   HttpApiEndpoint.patch('updateLead', '/v1/leads/:id', {
-    disableCodecs: true,
+    error: StaffApiErrors,
     params: idParameters,
+    payload: UpdateLeadRequestSchema,
+    success: LeadDataResponse,
   }),
   HttpApiEndpoint.get('listLeadActivities', '/v1/leads/:id/activities', {
-    disableCodecs: true,
+    error: StaffApiErrors,
     params: idParameters,
+    success: LeadActivitiesSchema,
   }),
   HttpApiEndpoint.post('createLeadActivity', '/v1/leads/:id/activities', {
-    disableCodecs: true,
+    error: StaffApiErrors,
     params: idParameters,
+    payload: CreateLeadActivityRequestSchema,
+    success: LeadActivityCreatedResponse,
   }),
   HttpApiEndpoint.put('setLeadTags', '/v1/leads/:id/tags', {
-    disableCodecs: true,
+    error: StaffApiErrors,
     params: idParameters,
+    payload: SetLeadTagsRequestSchema,
+    success: LeadTagsResponse,
   }),
   HttpApiEndpoint.post('bulkTag', '/v1/leads/tags/bulk', {
-    disableCodecs: true,
+    error: StaffApiErrors,
+    payload: BulkTagRequestSchema,
+    success: BulkTagResponse,
   }),
 ] as const;
 
@@ -135,7 +199,10 @@ export const api = HttpApi.make('leadscroll').add(
   HttpApiGroup.make('health').add(healthEndpoint),
   HttpApiGroup.make('invites').add(inviteValidationEndpoint),
   HttpApiGroup.make('intake').add(...intakeEndpoints),
-  HttpApiGroup.make('leads').add(...leadEndpoints),
+  HttpApiGroup.make('leads')
+    .add(...leadEndpoints)
+    .middleware(StaffAuth)
+    .middleware(ApiSchemaErrors),
   HttpApiGroup.make('tags').add(...tagEndpoints),
   HttpApiGroup.make('access').add(...accessEndpoints),
   HttpApiGroup.make('account').add(...accountEndpoints),

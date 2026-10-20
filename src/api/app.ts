@@ -15,6 +15,9 @@ import { createEmailSettingsHandlers } from './routes/email-settings';
 import { createIntakeHandlers } from './routes/intake';
 import { createLeadsHandlers } from './routes/leads';
 import { createTagsHandlers } from './routes/tags';
+import { ApiSchemaErrorsLayer } from './schema-errors';
+import { ApiEnvironment, NotificationDispatcher } from './services';
+import { StaffAuthLayer } from './staff-auth';
 import { requestWaitUntil } from '@/api/execution-context';
 import { makeRunRequest, type RouteContext } from '@/api/http';
 import { deploymentLayer } from '@/application/deployment';
@@ -177,11 +180,6 @@ const createAppWithAuth = (
     eventsFor,
     runRequest,
   });
-  const leadHandlers = createLeadsHandlers({
-    environment,
-    eventsFor,
-    runRequest,
-  });
   const tagHandlers = createTagsHandlers({ environment, runRequest });
   const accessHandlers = createAccessHandlers({ environment });
   const accountHandlers = createAccountHandlers({ environment, runRequest });
@@ -207,24 +205,25 @@ const createAppWithAuth = (
       publicIntakeOptions: toHandler(intakeHandlers.publicIntakeOptions),
     }),
   );
+  const serviceLayer = Layer.mergeAll(
+    Layer.succeed(ApiEnvironment, environment),
+    Layer.succeed(NotificationDispatcher, { runtime, subscribers }),
+  );
   const leadsLayer = HttpApiBuilder.group(api, 'leads', (handlers) =>
-    handlers.handleAll({
-      bulkDeleteLeads: toHandler(
-        withStaff(resolveStaff, leadHandlers.bulkDeleteLeads),
-      ),
-      bulkTag: toHandler(withStaff(resolveStaff, tagHandlers.bulkTag)),
-      createLead: toHandler(withStaff(resolveStaff, leadHandlers.createLead)),
-      createLeadActivity: toHandler(
-        withStaff(resolveStaff, leadHandlers.createLeadActivity),
-      ),
-      getLead: toHandler(withStaff(resolveStaff, leadHandlers.getLead)),
-      listLeadActivities: toHandler(
-        withStaff(resolveStaff, leadHandlers.listLeadActivities),
-      ),
-      listLeads: toHandler(withStaff(resolveStaff, leadHandlers.listLeads)),
-      setLeadTags: toHandler(withStaff(resolveStaff, tagHandlers.setLeadTags)),
-      updateLead: toHandler(withStaff(resolveStaff, leadHandlers.updateLead)),
+    Effect.gen(function* () {
+      const currentEnvironment = yield* ApiEnvironment;
+      const dispatcher = yield* NotificationDispatcher;
+      return handlers.handleAll(
+        createLeadsHandlers({
+          dispatcher,
+          environment: currentEnvironment,
+        }),
+      );
     }),
+  ).pipe(
+    Layer.provide(ApiSchemaErrorsLayer),
+    Layer.provide(StaffAuthLayer),
+    Layer.provide(serviceLayer),
   );
   const tagsLayer = HttpApiBuilder.group(api, 'tags', (handlers) =>
     handlers.handleAll({

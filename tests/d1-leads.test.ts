@@ -1,3 +1,7 @@
+import { api as contractsApi } from '@/api/contracts';
+import { Effect } from 'effect';
+import { FetchHttpClient } from 'effect/http';
+import { HttpApiClient } from 'effect/http-api';
 import { build } from 'esbuild';
 import { convertV4MiniflareOptions, Miniflare } from 'miniflare';
 import { readdir, readFile } from 'node:fs/promises';
@@ -47,6 +51,7 @@ type LeadsFixture = {
   ) => Promise<{ json: Record<string, unknown>; status: number }>;
   db: D1Database;
   dispose: () => Promise<void>;
+  fetch: typeof fetch;
 };
 
 const startFixture = async (
@@ -117,7 +122,12 @@ const startFixture = async (
       return { json, status: response.status };
     };
 
-    return { api, db: database, dispose };
+    return {
+      api,
+      db: database,
+      dispose,
+      fetch: mf.dispatchFetch.bind(mf) as unknown as typeof fetch,
+    };
   } catch (error) {
     await dispose();
     throw error;
@@ -231,6 +241,38 @@ test('lead list searches, excludes deleted rows, pages, and hints duplicates', a
   }
 });
 
+test('the generated client decodes leads and typed errors end-to-end', async () => {
+  const fx = await startFixture();
+  try {
+    const client = await Effect.runPromise(
+      HttpApiClient.make(contractsApi, {
+        baseUrl: 'https://leads-test.example',
+      }).pipe(
+        Effect.provide(FetchHttpClient.layer),
+        Effect.provideService(FetchHttpClient.Fetch, fx.fetch),
+      ),
+    );
+
+    const page = await Effect.runPromise(
+      client.leads.listLeads({ query: { limit: 2 } }),
+    );
+    expect(page.data).toEqual([]);
+    expect(page.nextCursor).toBeNull();
+
+    const error = await Effect.runPromise(
+      client.leads
+        .getLead({
+          params: { id: '01ARZ3NDEKTSV4RRFFQ69G5FBZ' },
+        })
+        .pipe(Effect.flip),
+    );
+    expect(error._tag).toBe('ApiNotFoundError');
+    expect(error).toMatchObject({ code: 'not_found' });
+  } finally {
+    await fx.dispose();
+  }
+});
+
 test('lead queries validate through Standard Schema', async () => {
   const fx = await startFixture();
   try {
@@ -312,8 +354,15 @@ test('equal createdAt ties order by id DESC and page without gaps', async () => 
   const fx = await startFixture();
   try {
     const fixed = ms(5_000);
-    for (const name of ['alpha', 'beta', 'delta', 'gamma', 'zeta']) {
-      await insertLead(fx.db, { createdAt: fixed, id: name });
+    const ids = [
+      '01ARZ3NDEKTSV4RRFFQ69G5FB0',
+      '01ARZ3NDEKTSV4RRFFQ69G5FB1',
+      '01ARZ3NDEKTSV4RRFFQ69G5FB2',
+      '01ARZ3NDEKTSV4RRFFQ69G5FB3',
+      '01ARZ3NDEKTSV4RRFFQ69G5FB4',
+    ];
+    for (const id of ids) {
+      await insertLead(fx.db, { createdAt: fixed, id });
     }
 
     const page1 = await fx.api('/v1/leads?limit=2');
@@ -322,7 +371,7 @@ test('equal createdAt ties order by id DESC and page without gaps', async () => 
       (page1.json.data as Array<Record<string, unknown>>).map(
         (lead) => lead['id'],
       ),
-    ).toEqual(['zeta', 'gamma']);
+    ).toEqual(['01ARZ3NDEKTSV4RRFFQ69G5FB4', '01ARZ3NDEKTSV4RRFFQ69G5FB3']);
     expect(typeof page1.json.nextCursor).toBe('string');
 
     const page2 = await fx.api(
@@ -332,7 +381,7 @@ test('equal createdAt ties order by id DESC and page without gaps', async () => 
       (page2.json.data as Array<Record<string, unknown>>).map(
         (lead) => lead['id'],
       ),
-    ).toEqual(['delta', 'beta']);
+    ).toEqual(['01ARZ3NDEKTSV4RRFFQ69G5FB2', '01ARZ3NDEKTSV4RRFFQ69G5FB1']);
 
     const page3 = await fx.api(
       `/v1/leads?limit=2&cursor=${encodeURIComponent(String(page2.json.nextCursor))}`,
@@ -341,7 +390,7 @@ test('equal createdAt ties order by id DESC and page without gaps', async () => 
       (page3.json.data as Array<Record<string, unknown>>).map(
         (lead) => lead['id'],
       ),
-    ).toEqual(['alpha']);
+    ).toEqual(['01ARZ3NDEKTSV4RRFFQ69G5FB0']);
     expect(page3.json.nextCursor).toBeNull();
   } finally {
     await fx.dispose();

@@ -1,3 +1,4 @@
+import { domainErrorStatus } from './errors';
 import { logRequest } from './logging';
 import { type DomainError, type PersistenceError } from '@/application/errors';
 import {
@@ -20,27 +21,6 @@ export const errorResponse = (
       status,
     },
   );
-
-/**
- * Domain codes that map to a non-422 status; everything else is 422.
- */
-const DOMAIN_ERROR_STATUS: Record<string, number> = {
-  // A corrupt installation configuration fails closed and is never echoed or
-  // silently reset; the operator restores it out of band.
-  config_unavailable: 500,
-  conflict: 409,
-  not_found: 404,
-  revision_conflict: 409,
-  scope_conflict: 409,
-  scope_exists: 409,
-  tag_exists: 409,
-  test_daily_limited: 429,
-  test_rate_limited: 429,
-  test_request_conflict: 409,
-};
-
-export const domainErrorStatus = (code: string): number =>
-  DOMAIN_ERROR_STATUS[code] ?? 422;
 
 export type RunRequest = <A>(
   request: Request,
