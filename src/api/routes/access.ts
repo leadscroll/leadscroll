@@ -1,5 +1,14 @@
-import { rejectUntrustedOrigin, type StaffContext } from '../guards';
-import { errorResponse, parse, readJsonBody, type RouteContext } from '../http';
+import {
+  ApiConflictError,
+  ApiForbiddenError,
+  ApiInternalError,
+  ApiNotFoundError,
+} from '../errors';
+import { rejectUntrustedOrigin } from '../guards';
+import { runBoundary } from '../handler-utilities';
+import { CurrentStaff } from '../services';
+import { toApiTokenView, toInviteView, toStaffAccountView } from '../views';
+import { persist } from '@/application/errors';
 import { matchesBootstrapToken } from '@/auth';
 import {
   checkStaffInviteAvailability,
@@ -15,20 +24,22 @@ import {
   setStaffAccountDisabled,
 } from '@/db/repository';
 import {
-  CreateInviteRequestSchema,
-  CreateTokenRequestSchema,
-  SetStaffDisabledRequestSchema,
-  ValidateInviteRequestSchema,
+  type CreateInviteRequest,
+  type CreateTokenRequest,
+  type SetStaffDisabledRequest,
+  type ValidateInviteRequest,
 } from '@/domain/schemas';
+import { Effect } from 'effect';
+import { HttpServerRequest } from 'effect/http';
 
-export type IdParameters = { id: string };
+type InviteValidationOptions = { environment: Env };
 
-type InviteValidationOptions = {
-  environment: Env;
-};
+type ParametersArguments = RequestArguments & { params: { id: string } };
 
-type StaffRoute<P = Record<string, never>> = RouteContext<P> & {
-  staff: StaffContext;
+type PayloadArguments<A> = RequestArguments & { payload: A };
+
+type RequestArguments = {
+  request: HttpServerRequest.HttpServerRequest;
 };
 
 export const createInviteValidationHandlers = (
@@ -37,160 +48,202 @@ export const createInviteValidationHandlers = (
   const { environment } = options;
 
   return {
-    validateInvite: async ({ request }: RouteContext) => {
-      const rejectedOrigin = rejectUntrustedOrigin(environment, request);
-      if (rejectedOrigin !== null) {
-        return rejectedOrigin;
-      }
-
-      const body = await readJsonBody(request);
-      if ('error' in body) {
-        return body.error;
-      }
-
-      const parsed = await parse(ValidateInviteRequestSchema, body.data);
-      if ('error' in parsed) {
-        return parsed.error;
-      }
-
-      // Non-consuming: a valid grant is reported without touching
-      // used_at or any other column.
-      const valid = matchesBootstrapToken(environment, parsed.data.token)
-        ? await isBootstrapGrantAvailable(environment)
-        : await checkStaffInviteAvailability(environment, parsed.data.token);
-      return valid
-        ? { valid: true }
-        : errorResponse(
-            403,
-            'invite_unavailable',
-            'Invitation is unavailable.',
+    validateInvite: ({
+      payload,
+      request,
+    }: PayloadArguments<ValidateInviteRequest>) =>
+      Effect.gen(function* () {
+        const web = yield* HttpServerRequest.toWeb(request).pipe(Effect.orDie);
+        const rejected = rejectUntrustedOrigin(environment, web);
+        if (rejected !== null) {
+          return yield* Effect.fail(
+            rejected.status === 403
+              ? new ApiForbiddenError({
+                  code: 'forbidden',
+                  message: 'The request origin is not trusted.',
+                })
+              : new ApiInternalError({
+                  code: 'internal_error',
+                  message: 'The invitation could not be checked.',
+                }),
           );
-    },
+        }
+
+        const valid = matchesBootstrapToken(environment, payload.token)
+          ? yield* persist(() => isBootstrapGrantAvailable(environment)).pipe(
+              Effect.mapError(
+                () =>
+                  new ApiInternalError({
+                    code: 'persistence_error',
+                    message: 'The invitation could not be checked.',
+                  }),
+              ),
+            )
+          : yield* persist(() =>
+              checkStaffInviteAvailability(environment, payload.token),
+            ).pipe(
+              Effect.mapError(
+                () =>
+                  new ApiInternalError({
+                    code: 'persistence_error',
+                    message: 'The invitation could not be checked.',
+                  }),
+              ),
+            );
+        return valid
+          ? { valid: true }
+          : yield* Effect.fail(
+              new ApiForbiddenError({
+                code: 'invite_unavailable',
+                message: 'Invitation is unavailable.',
+              }),
+            );
+      }),
   };
 };
 
-type AccessHandlerOptions = {
-  environment: Env;
-};
+type AccessHandlerOptions = { environment: Env };
 
 export const createAccessHandlers = (options: AccessHandlerOptions) => {
   const { environment } = options;
 
   return {
-    createInvite: async ({ request }: StaffRoute) => {
-      const body = await readJsonBody(request);
-      if ('error' in body) {
-        return body.error;
-      }
-
-      const parsed = await parse(CreateInviteRequestSchema, body.data);
-      if ('error' in parsed) {
-        return parsed.error;
-      }
-
-      const invite = await createStaffInvite(
-        environment,
-        parsed.data.name,
-        parsed.data.expiresAt,
-      );
-      return Response.json(
-        {
-          data: {
-            createdAt: invite.createdAt,
-            expiresAt: invite.expiresAt,
-            id: invite.id,
-            name: invite.name,
-            prefix: invite.prefix,
-            // The raw token is returned exactly once, at creation.
-            token: invite.token,
-          },
-        },
-        { status: 201 },
-      );
-    },
-    createToken: async ({ request }: StaffRoute) => {
-      const body = await readJsonBody(request);
-      if ('error' in body) {
-        return body.error;
-      }
-
-      const parsed = await parse(CreateTokenRequestSchema, body.data);
-      if ('error' in parsed) {
-        return parsed.error;
-      }
-
-      return Response.json(
-        {
-          data: await createApiToken(environment, {
-            expiresAt: parsed.data.expiresAt,
-            name: parsed.data.name,
-            type: parsed.data.type ?? 'api',
-          }),
-        },
-        { status: 201 },
-      );
-    },
-    listInvites: async () => {
-      return { data: await listStaffInvites(environment) };
-    },
-    listStaff: async () => {
-      return { data: await listStaffAccounts(environment) };
-    },
-    listTokens: async () => {
-      return { data: await listApiTokens(environment) };
-    },
-    revokeInvite: async ({ params }: StaffRoute<IdParameters>) => {
-      return (await revokeStaffInvite(environment, params.id))
-        ? new Response(null, { status: 204 })
-        : errorResponse(404, 'not_found', 'Invitation not found.');
-    },
-    revokeToken: async ({ params }: StaffRoute<IdParameters>) => {
-      return (await revokeApiToken(environment, params.id))
-        ? new Response(null, { status: 204 })
-        : errorResponse(404, 'not_found', 'Token not found.');
-    },
-    setStaffDisabled: async ({
-      params,
+    createInvite: ({
+      payload,
       request,
-      staff,
-    }: StaffRoute<IdParameters>) => {
-      const body = await readJsonBody(request);
-      if ('error' in body) {
-        return body.error;
-      }
-
-      const parsed = await parse(SetStaffDisabledRequestSchema, body.data);
-      if ('error' in parsed) {
-        return parsed.error;
-      }
-
-      const outcome = await setStaffAccountDisabled(
-        environment,
-        params.id,
-        parsed.data.disabled,
-        staff.adminEmail,
-      );
-      if (outcome.kind === 'not-found') {
-        return errorResponse(404, 'not_found', 'Staff account not found.');
-      }
-
-      if (outcome.kind === 'self') {
-        return errorResponse(
-          409,
-          'conflict',
-          'An account cannot disable itself.',
+    }: PayloadArguments<CreateInviteRequest>) =>
+      Effect.gen(function* () {
+        const invite = yield* runBoundary(
+          request,
+          persist(() =>
+            createStaffInvite(environment, payload.name, payload.expiresAt),
+          ),
         );
-      }
+        return {
+          data: { ...toInviteView(invite), token: invite.token },
+        };
+      }),
 
-      if (outcome.kind === 'last-enabled') {
-        return errorResponse(
-          409,
-          'conflict',
-          'The last enabled staff account cannot be disabled.',
+    createToken: ({ payload, request }: PayloadArguments<CreateTokenRequest>) =>
+      Effect.gen(function* () {
+        const token = yield* runBoundary(
+          request,
+          persist(() =>
+            createApiToken(environment, {
+              expiresAt: payload.expiresAt,
+              name: payload.name,
+              type: payload.type ?? 'api',
+            }),
+          ),
         );
-      }
+        return { data: toApiTokenView(token) };
+      }),
 
-      return { data: outcome.record };
-    },
+    listInvites: ({ request }: RequestArguments) =>
+      Effect.gen(function* () {
+        const invites = yield* runBoundary(
+          request,
+          persist(() => listStaffInvites(environment)),
+        );
+        return { data: invites.map(toInviteView) };
+      }),
+
+    listStaff: ({ request }: RequestArguments) =>
+      Effect.gen(function* () {
+        const staff = yield* runBoundary(
+          request,
+          persist(() => listStaffAccounts(environment)),
+        );
+        return { data: staff.map(toStaffAccountView) };
+      }),
+
+    listTokens: ({ request }: RequestArguments) =>
+      Effect.gen(function* () {
+        const tokens = yield* runBoundary(
+          request,
+          persist(() => listApiTokens(environment)),
+        );
+        return { data: tokens.map(toApiTokenView) };
+      }),
+
+    revokeInvite: ({ params, request }: ParametersArguments) =>
+      Effect.gen(function* () {
+        const revoked = yield* runBoundary(
+          request,
+          persist(() => revokeStaffInvite(environment, params.id)),
+        );
+        return revoked
+          ? undefined
+          : yield* Effect.fail(
+              new ApiNotFoundError({
+                code: 'not_found',
+                message: 'Invitation not found.',
+              }),
+            );
+      }),
+
+    revokeToken: ({ params, request }: ParametersArguments) =>
+      Effect.gen(function* () {
+        const revoked = yield* runBoundary(
+          request,
+          persist(() => revokeApiToken(environment, params.id)),
+        );
+        return revoked
+          ? undefined
+          : yield* Effect.fail(
+              new ApiNotFoundError({
+                code: 'not_found',
+                message: 'Token not found.',
+              }),
+            );
+      }),
+
+    setStaffDisabled: ({
+      params,
+      payload,
+      request,
+    }: ParametersArguments & { payload: SetStaffDisabledRequest }) =>
+      Effect.gen(function* () {
+        const staff = yield* CurrentStaff;
+        const outcome = yield* runBoundary(
+          request,
+          persist(() =>
+            setStaffAccountDisabled(
+              environment,
+              params.id,
+              payload.disabled,
+              staff.adminEmail,
+            ),
+          ),
+        );
+        if (outcome.kind === 'not-found') {
+          return yield* Effect.fail(
+            new ApiNotFoundError({
+              code: 'not_found',
+              message: 'Staff account not found.',
+            }),
+          );
+        }
+
+        if (outcome.kind === 'self') {
+          return yield* Effect.fail(
+            new ApiConflictError({
+              code: 'conflict',
+              message: 'An account cannot disable itself.',
+            }),
+          );
+        }
+
+        if (outcome.kind === 'last-enabled') {
+          return yield* Effect.fail(
+            new ApiForbiddenError({
+              code: 'conflict',
+              message: 'The last enabled staff account cannot be disabled.',
+            }),
+          );
+        }
+
+        return { data: toStaffAccountView(outcome.record) };
+      }),
   };
 };

@@ -14,10 +14,11 @@ import {
   type LeadCreatedPublisher,
   type LeadCreatedSubscriber,
   type NotificationRuntime,
+  type NotificationServices,
 } from '@/notifications/events';
 import { requestTrace } from '@/telemetry/request';
 import { type TraceContext } from '@/telemetry/trace-context';
-import { Context } from 'effect';
+import { Context, Effect } from 'effect';
 
 export type NotificationDispatcherShape = {
   readonly runtime: NotificationRuntime;
@@ -42,6 +43,21 @@ export class NotificationDispatcher extends Context.Service<
  * framework request to a Web Request. The trace ids are read from the same
  * request instance the Worker entry registered.
  */
+/**
+ * Runs an application command with the notification composition's services
+ * (Deployment, InstallationConfigStore, CredentialCipher, provider resolver).
+ * The ManagedRuntime remains the integration boundary for background email
+ * work and configuration services.
+ */
+export const withNotificationServices = <A, E, R extends NotificationServices>(
+  dispatcher: NotificationDispatcherShape,
+  effect: Effect.Effect<A, E, R>,
+): Effect.Effect<A, E, Exclude<R, NotificationServices>> =>
+  Effect.gen(function* () {
+    const context = yield* Effect.promise(() => dispatcher.runtime.context());
+    return yield* effect.pipe(Effect.provideContext(context));
+  });
+
 export const publisherFor = (
   dispatcher: NotificationDispatcherShape,
   request: Request,

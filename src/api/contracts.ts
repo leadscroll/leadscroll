@@ -1,18 +1,36 @@
-import { StaffApiErrors } from './errors';
+import { IntakeApiErrors, StaffApiErrors } from './errors';
 import { ApiSchemaErrors } from './schema-errors';
 import { StaffAuth } from './staff-auth';
 import {
+  AccountSessionViewSchema,
   BulkDeleteLeadsRequestSchema,
   BulkTagRequestSchema,
+  CreateInviteRequestSchema,
   CreateLeadActivityRequestSchema,
   CreateLeadRequestSchema,
+  CreateTagRequestSchema,
+  CreateTokenRequestSchema,
+  EmailSettingsViewSchema,
+  EmailTestViewSchema,
+  HealthSchema,
+  IntakeRequestSchema,
   LeadActivitiesSchema,
   LeadActivitySchema,
   LeadViewSchema,
   ListLeadsQuerySchema,
+  NotificationPreferenceViewSchema,
+  SendEmailTestRequestSchema,
   SetLeadTagsRequestSchema,
+  SetStaffDisabledRequestSchema,
+  TagCatalogSchema,
+  TagScopeViewSchema,
   TagViewSchema,
+  UpdateEmailSettingsRequestSchema,
   UpdateLeadRequestSchema,
+  UpdateNotificationPreferenceRequestSchema,
+  UpdateTagRequestSchema,
+  UpdateTagScopeRequestSchema,
+  ValidateInviteRequestSchema,
 } from '@/domain/schemas';
 import { Schema } from 'effect';
 import {
@@ -47,26 +65,107 @@ const BulkTagResponse = Schema.Struct({
     affected: Schema.Number.check(Schema.isInt()),
   }),
 });
+const TagCatalogResponse = Schema.Struct({ data: TagCatalogSchema });
+const TagDataResponse = Schema.Struct({ data: TagViewSchema });
+const TagCreatedResponse = TagDataResponse.pipe(HttpApiSchema.status(201));
+const TagScopeDataResponse = Schema.Struct({ data: TagScopeViewSchema });
+const TagDeletedResponse = Schema.Struct({
+  data: Schema.Struct({ removed: Schema.Number.check(Schema.isInt()) }),
+});
+const ApiTokenViewSchema = Schema.Struct({
+  createdAt: Schema.String,
+  expiresAt: Schema.NullOr(Schema.String),
+  id: Schema.String,
+  lastUsedAt: Schema.optional(Schema.NullOr(Schema.String)),
+  name: Schema.String,
+  prefix: Schema.String,
+  revokedAt: Schema.NullOr(Schema.String),
+  scope: Schema.String,
+  token: Schema.NullOr(Schema.String),
+  type: Schema.Literals(['api', 'browser']),
+});
+const InviteViewSchema = Schema.Struct({
+  createdAt: Schema.String,
+  expiresAt: Schema.String,
+  id: Schema.String,
+  name: Schema.String,
+  prefix: Schema.String,
+  revokedAt: Schema.NullOr(Schema.String),
+  usedAt: Schema.NullOr(Schema.String),
+});
+const StaffAccountViewSchema = Schema.Struct({
+  disabledAt: Schema.NullOr(Schema.String),
+  email: Schema.String,
+  id: Schema.String,
+  name: Schema.String,
+});
+const InviteValidationResponse = Schema.Struct({ valid: Schema.Boolean });
+const ApiTokenListResponse = Schema.Struct({
+  data: Schema.Array(ApiTokenViewSchema),
+});
+const ApiTokenCreatedResponse = Schema.Struct({
+  data: ApiTokenViewSchema,
+}).pipe(HttpApiSchema.status(201));
+const InviteListResponse = Schema.Struct({
+  data: Schema.Array(InviteViewSchema),
+});
+const InviteCreatedResponse = Schema.Struct({
+  data: Schema.Struct({ ...InviteViewSchema.fields, token: Schema.String }),
+}).pipe(HttpApiSchema.status(201));
+const StaffListResponse = Schema.Struct({
+  data: Schema.Array(StaffAccountViewSchema),
+});
+const StaffAccountResponse = Schema.Struct({ data: StaffAccountViewSchema });
+const AccountSessionListResponse = Schema.Struct({
+  data: Schema.Array(AccountSessionViewSchema),
+});
+const RevokedSessionsResponse = Schema.Struct({
+  data: Schema.Struct({ revoked: Schema.Number.check(Schema.isInt()) }),
+});
+const NotificationPreferenceResponse = Schema.Struct({
+  data: NotificationPreferenceViewSchema,
+});
+const EmailSettingsResponse = Schema.Struct({
+  data: EmailSettingsViewSchema,
+});
+const EmailTestResponse = Schema.Struct({ data: EmailTestViewSchema });
 
 const healthEndpoint = HttpApiEndpoint.get('health', '/health', {
-  disableCodecs: true,
+  success: HealthSchema,
 });
 
 const inviteValidationEndpoint = HttpApiEndpoint.post(
   'validateInvite',
   '/api/invites/validate',
-  { disableCodecs: true },
+  {
+    error: StaffApiErrors,
+    payload: ValidateInviteRequestSchema,
+    success: InviteValidationResponse,
+  },
 );
 
+const IntakeCreatedResponse = Schema.Struct({
+  data: Schema.Struct({ created: Schema.Boolean, leadId: Schema.String }),
+}).pipe(HttpApiSchema.status(201));
+const PublicIntakeCreatedResponse = Schema.Struct({
+  data: Schema.Struct({ created: Schema.Literal(true) }),
+}).pipe(HttpApiSchema.status(201));
+
 const intakeEndpoints = [
-  HttpApiEndpoint.post('createIntake', '/v1/intakes', { disableCodecs: true }),
+  HttpApiEndpoint.post('createIntake', '/v1/intakes', {
+    error: IntakeApiErrors,
+    payload: IntakeRequestSchema,
+    success: IntakeCreatedResponse,
+  }),
   HttpApiEndpoint.post('createPublicIntake', '/v1/public/intakes/:token', {
-    disableCodecs: true,
+    error: IntakeApiErrors,
     params: tokenParameters,
+    payload: IntakeRequestSchema,
+    success: PublicIntakeCreatedResponse,
   }),
   HttpApiEndpoint.options('publicIntakeOptions', '/v1/public/intakes/:token', {
-    disableCodecs: true,
     params: tokenParameters,
+    success: HttpApiSchema.NoContent,
   }),
 ] as const;
 
@@ -122,76 +221,126 @@ const leadEndpoints = [
 ] as const;
 
 const tagEndpoints = [
-  HttpApiEndpoint.get('listTags', '/v1/tags', { disableCodecs: true }),
-  HttpApiEndpoint.post('createTag', '/v1/tags', { disableCodecs: true }),
+  HttpApiEndpoint.get('listTags', '/v1/tags', {
+    error: StaffApiErrors,
+    success: TagCatalogResponse,
+  }),
+  HttpApiEndpoint.post('createTag', '/v1/tags', {
+    error: StaffApiErrors,
+    payload: CreateTagRequestSchema,
+    success: TagCreatedResponse,
+  }),
   HttpApiEndpoint.patch('updateTag', '/v1/tags/:id', {
-    disableCodecs: true,
+    error: StaffApiErrors,
     params: idParameters,
+    payload: UpdateTagRequestSchema,
+    success: TagDataResponse,
   }),
   HttpApiEndpoint.delete('deleteTag', '/v1/tags/:id', {
-    disableCodecs: true,
+    error: StaffApiErrors,
     params: idParameters,
+    success: TagDeletedResponse,
   }),
   HttpApiEndpoint.patch('updateTagScope', '/v1/tag-scopes/:id', {
-    disableCodecs: true,
+    error: StaffApiErrors,
     params: idParameters,
+    payload: UpdateTagScopeRequestSchema,
+    success: TagScopeDataResponse,
   }),
 ] as const;
 
 const accessEndpoints = [
-  HttpApiEndpoint.get('listTokens', '/v1/tokens', { disableCodecs: true }),
-  HttpApiEndpoint.post('createToken', '/v1/tokens', { disableCodecs: true }),
+  HttpApiEndpoint.get('listTokens', '/v1/tokens', {
+    error: StaffApiErrors,
+    success: ApiTokenListResponse,
+  }),
+  HttpApiEndpoint.post('createToken', '/v1/tokens', {
+    error: StaffApiErrors,
+    payload: CreateTokenRequestSchema,
+    success: ApiTokenCreatedResponse,
+  }),
   HttpApiEndpoint.delete('revokeToken', '/v1/tokens/:id', {
-    disableCodecs: true,
+    error: StaffApiErrors,
     params: idParameters,
+    success: HttpApiSchema.NoContent,
   }),
-  HttpApiEndpoint.get('listInvites', '/v1/invites', { disableCodecs: true }),
-  HttpApiEndpoint.post('createInvite', '/v1/invites', { disableCodecs: true }),
+  HttpApiEndpoint.get('listInvites', '/v1/invites', {
+    error: StaffApiErrors,
+    success: InviteListResponse,
+  }),
+  HttpApiEndpoint.post('createInvite', '/v1/invites', {
+    error: StaffApiErrors,
+    payload: CreateInviteRequestSchema,
+    success: InviteCreatedResponse,
+  }),
   HttpApiEndpoint.delete('revokeInvite', '/v1/invites/:id', {
-    disableCodecs: true,
+    error: StaffApiErrors,
     params: idParameters,
+    success: HttpApiSchema.NoContent,
   }),
-  HttpApiEndpoint.get('listStaff', '/v1/staff', { disableCodecs: true }),
+  HttpApiEndpoint.get('listStaff', '/v1/staff', {
+    error: StaffApiErrors,
+    success: StaffListResponse,
+  }),
   HttpApiEndpoint.patch('setStaffDisabled', '/v1/staff/:id', {
-    disableCodecs: true,
+    error: StaffApiErrors,
     params: idParameters,
+    payload: SetStaffDisabledRequestSchema,
+    success: StaffAccountResponse,
   }),
 ] as const;
 
 const accountEndpoints = [
   HttpApiEndpoint.get('listSessions', '/v1/account/sessions', {
-    disableCodecs: true,
+    error: StaffApiErrors,
+    success: AccountSessionListResponse,
   }),
   HttpApiEndpoint.delete('revokeSession', '/v1/account/sessions/:id', {
-    disableCodecs: true,
+    error: StaffApiErrors,
     params: idParameters,
+    success: HttpApiSchema.NoContent,
   }),
   HttpApiEndpoint.post(
     'revokeOtherSessions',
     '/v1/account/sessions/revoke-others',
-    { disableCodecs: true },
+    {
+      error: StaffApiErrors,
+      success: RevokedSessionsResponse,
+    },
   ),
   HttpApiEndpoint.get(
     'getNotificationPreference',
     '/v1/account/notifications',
-    { disableCodecs: true },
+    {
+      error: StaffApiErrors,
+      success: NotificationPreferenceResponse,
+    },
   ),
   HttpApiEndpoint.put(
     'updateNotificationPreference',
     '/v1/account/notifications',
-    { disableCodecs: true },
+    {
+      error: StaffApiErrors,
+      payload: UpdateNotificationPreferenceRequestSchema,
+      success: NotificationPreferenceResponse,
+    },
   ),
 ] as const;
 
 const emailEndpoints = [
   HttpApiEndpoint.get('getEmailSettings', '/v1/settings/email', {
-    disableCodecs: true,
+    error: StaffApiErrors,
+    success: EmailSettingsResponse,
   }),
   HttpApiEndpoint.put('updateEmailSettings', '/v1/settings/email', {
-    disableCodecs: true,
+    error: StaffApiErrors,
+    payload: UpdateEmailSettingsRequestSchema,
+    success: EmailSettingsResponse,
   }),
   HttpApiEndpoint.post('sendTestEmail', '/v1/settings/email/test', {
-    disableCodecs: true,
+    error: StaffApiErrors,
+    payload: SendEmailTestRequestSchema,
+    success: EmailTestResponse,
   }),
 ] as const;
 
@@ -203,8 +352,20 @@ export const api = HttpApi.make('leadscroll').add(
     .add(...leadEndpoints)
     .middleware(StaffAuth)
     .middleware(ApiSchemaErrors),
-  HttpApiGroup.make('tags').add(...tagEndpoints),
-  HttpApiGroup.make('access').add(...accessEndpoints),
-  HttpApiGroup.make('account').add(...accountEndpoints),
-  HttpApiGroup.make('email').add(...emailEndpoints),
+  HttpApiGroup.make('tags')
+    .add(...tagEndpoints)
+    .middleware(StaffAuth)
+    .middleware(ApiSchemaErrors),
+  HttpApiGroup.make('access')
+    .add(...accessEndpoints)
+    .middleware(StaffAuth)
+    .middleware(ApiSchemaErrors),
+  HttpApiGroup.make('account')
+    .add(...accountEndpoints)
+    .middleware(StaffAuth)
+    .middleware(ApiSchemaErrors),
+  HttpApiGroup.make('email')
+    .add(...emailEndpoints)
+    .middleware(StaffAuth)
+    .middleware(ApiSchemaErrors),
 );

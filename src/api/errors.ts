@@ -215,9 +215,13 @@ export const StaffAuthErrors = [
 export const IntakeApiErrors = [
   ApiBadRequestError,
   ApiUnauthorizedError,
+  ApiForbiddenError,
+  ApiNotFoundError,
   ApiPayloadTooLargeError,
   ApiUnsupportedMediaTypeError,
   ApiConflictError,
   ApiValidationError,
+  ApiRateLimitError,
   ApiInternalError,
+  ApiServiceUnavailableError,
 ] as const;

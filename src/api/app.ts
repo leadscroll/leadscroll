@@ -1,11 +1,6 @@
 import { createAuthHandler } from './auth-handler';
 import { api } from './contracts';
-import {
-  rejectUntrustedStaffWrite,
-  requireAdmin,
-  type ResolveStaff,
-  type StaffContext,
-} from './guards';
+import { PUBLIC_CORS_HEADERS } from './http';
 import {
   createAccessHandlers,
   createInviteValidationHandlers,
@@ -18,8 +13,6 @@ import { createTagsHandlers } from './routes/tags';
 import { ApiSchemaErrorsLayer } from './schema-errors';
 import { ApiEnvironment, NotificationDispatcher } from './services';
 import { StaffAuthLayer } from './staff-auth';
-import { requestWaitUntil } from '@/api/execution-context';
-import { makeRunRequest, type RouteContext } from '@/api/http';
 import { deploymentLayer } from '@/application/deployment';
 import { installationConfigStoreLayer } from '@/application/installation-config-store';
 import { type Auth, createAuth } from '@/auth';
@@ -27,21 +20,12 @@ import { type Env } from '@/db/repository';
 import { credentialCipherLayer } from '@/notifications/credential-cipher';
 import { emailProviderResolverLayer } from '@/notifications/email-provider';
 import {
-  createLeadCreatedPublisher,
-  type LeadCreatedPublisher,
   type LeadCreatedSubscriber,
   type NotificationRuntime,
 } from '@/notifications/events';
 import { createLeadCreatedEmailSubscriber } from '@/notifications/lead-created-subscriber';
-import { requestTrace } from '@/telemetry/request';
-import { Effect, FileSystem, Layer, ManagedRuntime, Path } from 'effect';
-import {
-  Etag,
-  HttpPlatform,
-  HttpRouter,
-  HttpServerRequest,
-  HttpServerResponse,
-} from 'effect/http';
+import { Effect, Layer, ManagedRuntime } from 'effect';
+import { HttpRouter, HttpServer } from 'effect/http';
 import { HttpApiBuilder } from 'effect/http-api';
 
 export type CreateAppOptions = {
@@ -57,52 +41,6 @@ export type CreateAppOptions = {
    */
   notificationSubscribers?: readonly LeadCreatedSubscriber[];
 };
-
-type HandlerResult = JsonObject | Response | undefined;
-type JsonObject = Record<string, unknown>;
-
-const respond = (
-  value: HandlerResult,
-): HttpServerResponse.HttpServerResponse =>
-  value instanceof Response
-    ? HttpServerResponse.fromWeb(value)
-    : value === undefined
-      ? HttpServerResponse.empty()
-      : HttpServerResponse.jsonUnsafe(value);
-
-const toHandler =
-  <P>(function_: (context: RouteContext<P>) => Promise<HandlerResult>) =>
-  (raw: {
-    readonly params?: P;
-    readonly request: HttpServerRequest.HttpServerRequest;
-  }): Effect.Effect<HttpServerResponse.HttpServerResponse> =>
-    Effect.gen(function* () {
-      const request = yield* HttpServerRequest.toWeb(raw.request).pipe(
-        Effect.orDie,
-      );
-      const value = yield* Effect.promise(() =>
-        function_({ params: (raw.params ?? {}) as P, request }),
-      );
-      return respond(value);
-    });
-
-type StaffHandler<P> = (
-  context: RouteContext<P> & { staff: StaffContext },
-) => Promise<HandlerResult>;
-
-const withStaff =
-  <P>(
-    resolveStaff: ResolveStaff,
-    function_: StaffHandler<P>,
-  ): ((context: RouteContext<P>) => Promise<HandlerResult>) =>
-  async (context) => {
-    const staff = await resolveStaff(context.request);
-    if ('error' in staff) {
-      return staff.error;
-    }
-
-    return function_({ ...context, staff });
-  };
 
 const createAppWithAuth = (
   environment: Env,
@@ -129,86 +67,37 @@ const createAppWithAuth = (
     options.notificationSubscribers ?? [
       createLeadCreatedEmailSubscriber(environment),
     ];
-  const eventsFor = (request: Request): LeadCreatedPublisher =>
-    createLeadCreatedPublisher({
-      runtime,
-      subscribers,
-      trace: requestTrace(request),
-      waitUntil: (promise) => {
-        const waitUntil = requestWaitUntil(request);
-        if (waitUntil === null) {
-          // Never silently drop the event: the publisher catches this and
-          // logs a scheduling_failed line while the lead stays committed.
-          throw new Error(
-            'No Worker execution context is registered for this request.',
-          );
-        }
-
-        waitUntil(promise);
-      },
-    });
-  const runRequest = makeRunRequest(runtime);
-  // Staff routes share this one guard. A resolved context is passed directly
-  // to each handler, so it stays scoped to that handler and never reaches
-  // public routes.
-  const resolveStaff: ResolveStaff = async (request) => {
-    const admin = await requireAdmin(request, getAuth, environment);
-    if (admin.error !== undefined) {
-      return { error: admin.error };
-    }
-
-    const rejectedWrite = rejectUntrustedStaffWrite(environment, request);
-    if (rejectedWrite !== null) {
-      return { error: rejectedWrite };
-    }
-
-    return {
-      adminEmail: admin.identity.email,
-      // The account-sessions routes need the caller's own session row; no raw
-      // token is propagated into application context.
-      adminSession: admin.identity.session,
-      // Durable account id, used for self-suppression and per-user
-      // notification state. Null for the development bypass when no matching
-      // account row exists; such routes fail closed.
-      adminUserId: admin.identity.userId,
-    };
-  };
-
-  const inviteHandlers = createInviteValidationHandlers({ environment });
-  const intakeHandlers = createIntakeHandlers({
-    environment,
-    eventsFor,
-    runRequest,
-  });
-  const tagHandlers = createTagsHandlers({ environment, runRequest });
-  const accessHandlers = createAccessHandlers({ environment });
-  const accountHandlers = createAccountHandlers({ environment, runRequest });
-  const emailHandlers = createEmailSettingsHandlers({
-    environment,
-    runRequest,
-  });
-
-  const healthLayer = HttpApiBuilder.group(api, 'health', (handlers) =>
-    handlers.handleAll({
-      health: toHandler(async () => ({ ok: true })),
-    }),
-  );
-  const invitesLayer = HttpApiBuilder.group(api, 'invites', (handlers) =>
-    handlers.handleAll({
-      validateInvite: toHandler(inviteHandlers.validateInvite),
-    }),
-  );
-  const intakeLayer = HttpApiBuilder.group(api, 'intake', (handlers) =>
-    handlers.handleAll({
-      createIntake: toHandler(intakeHandlers.createIntake),
-      createPublicIntake: toHandler(intakeHandlers.createPublicIntake),
-      publicIntakeOptions: toHandler(intakeHandlers.publicIntakeOptions),
-    }),
-  );
   const serviceLayer = Layer.mergeAll(
     Layer.succeed(ApiEnvironment, environment),
     Layer.succeed(NotificationDispatcher, { runtime, subscribers }),
   );
+  const healthLayer = HttpApiBuilder.group(api, 'health', (handlers) =>
+    handlers.handleAll({
+      health: () => Effect.succeed({ ok: true }),
+    }),
+  );
+  const invitesLayer = HttpApiBuilder.group(api, 'invites', (handlers) =>
+    Effect.gen(function* () {
+      const currentEnvironment = yield* ApiEnvironment;
+      return handlers.handleAll(
+        createInviteValidationHandlers({ environment: currentEnvironment }),
+      );
+    }),
+  ).pipe(Layer.provide(ApiSchemaErrorsLayer), Layer.provide(serviceLayer));
+  const intakeLayer = HttpApiBuilder.group(api, 'intake', (handlers) =>
+    Effect.gen(function* () {
+      const currentEnvironment = yield* ApiEnvironment;
+      const dispatcher = yield* NotificationDispatcher;
+      const implementations = createIntakeHandlers({
+        dispatcher,
+        environment: currentEnvironment,
+      });
+      return handlers
+        .handleRaw('createIntake', implementations.createIntake)
+        .handleRaw('createPublicIntake', implementations.createPublicIntake)
+        .handle('publicIntakeOptions', implementations.publicIntakeOptions);
+    }),
+  ).pipe(Layer.provide(ApiSchemaErrorsLayer), Layer.provide(serviceLayer));
   const leadsLayer = HttpApiBuilder.group(api, 'leads', (handlers) =>
     Effect.gen(function* () {
       const currentEnvironment = yield* ApiEnvironment;
@@ -226,84 +115,69 @@ const createAppWithAuth = (
     Layer.provide(serviceLayer),
   );
   const tagsLayer = HttpApiBuilder.group(api, 'tags', (handlers) =>
-    handlers.handleAll({
-      createTag: toHandler(withStaff(resolveStaff, tagHandlers.createTag)),
-      deleteTag: toHandler(withStaff(resolveStaff, tagHandlers.deleteTag)),
-      listTags: toHandler(withStaff(resolveStaff, tagHandlers.listTags)),
-      updateTag: toHandler(withStaff(resolveStaff, tagHandlers.updateTag)),
-      updateTagScope: toHandler(
-        withStaff(resolveStaff, tagHandlers.updateTagScope),
-      ),
+    Effect.gen(function* () {
+      const currentEnvironment = yield* ApiEnvironment;
+      return handlers.handleAll(
+        createTagsHandlers({ environment: currentEnvironment }),
+      );
     }),
+  ).pipe(
+    Layer.provide(ApiSchemaErrorsLayer),
+    Layer.provide(StaffAuthLayer),
+    Layer.provide(serviceLayer),
   );
   const accessLayer = HttpApiBuilder.group(api, 'access', (handlers) =>
-    handlers.handleAll({
-      createInvite: toHandler(
-        withStaff(resolveStaff, accessHandlers.createInvite),
-      ),
-      createToken: toHandler(
-        withStaff(resolveStaff, accessHandlers.createToken),
-      ),
-      listInvites: toHandler(
-        withStaff(resolveStaff, accessHandlers.listInvites),
-      ),
-      listStaff: toHandler(withStaff(resolveStaff, accessHandlers.listStaff)),
-      listTokens: toHandler(withStaff(resolveStaff, accessHandlers.listTokens)),
-      revokeInvite: toHandler(
-        withStaff(resolveStaff, accessHandlers.revokeInvite),
-      ),
-      revokeToken: toHandler(
-        withStaff(resolveStaff, accessHandlers.revokeToken),
-      ),
-      setStaffDisabled: toHandler(
-        withStaff(resolveStaff, accessHandlers.setStaffDisabled),
-      ),
+    Effect.gen(function* () {
+      const currentEnvironment = yield* ApiEnvironment;
+      return handlers.handleAll(
+        createAccessHandlers({ environment: currentEnvironment }),
+      );
     }),
+  ).pipe(
+    Layer.provide(ApiSchemaErrorsLayer),
+    Layer.provide(StaffAuthLayer),
+    Layer.provide(serviceLayer),
   );
   const accountLayer = HttpApiBuilder.group(api, 'account', (handlers) =>
-    handlers.handleAll({
-      getNotificationPreference: toHandler(
-        withStaff(resolveStaff, accountHandlers.getNotificationPreference),
-      ),
-      listSessions: toHandler(
-        withStaff(resolveStaff, accountHandlers.listSessions),
-      ),
-      revokeOtherSessions: toHandler(
-        withStaff(resolveStaff, accountHandlers.revokeOtherSessions),
-      ),
-      revokeSession: toHandler(
-        withStaff(resolveStaff, accountHandlers.revokeSession),
-      ),
-      updateNotificationPreference: toHandler(
-        withStaff(resolveStaff, accountHandlers.updateNotificationPreference),
-      ),
+    Effect.gen(function* () {
+      const currentEnvironment = yield* ApiEnvironment;
+      const dispatcher = yield* NotificationDispatcher;
+      return handlers.handleAll(
+        createAccountHandlers({
+          dispatcher,
+          environment: currentEnvironment,
+        }),
+      );
     }),
+  ).pipe(
+    Layer.provide(ApiSchemaErrorsLayer),
+    Layer.provide(StaffAuthLayer),
+    Layer.provide(serviceLayer),
   );
   const emailLayer = HttpApiBuilder.group(api, 'email', (handlers) =>
-    handlers.handleAll({
-      getEmailSettings: toHandler(
-        withStaff(resolveStaff, emailHandlers.getEmailSettings),
-      ),
-      sendTestEmail: toHandler(
-        withStaff(resolveStaff, emailHandlers.sendTestEmail),
-      ),
-      updateEmailSettings: toHandler(
-        withStaff(resolveStaff, emailHandlers.updateEmailSettings),
-      ),
+    Effect.gen(function* () {
+      const currentEnvironment = yield* ApiEnvironment;
+      const dispatcher = yield* NotificationDispatcher;
+      const implementations = createEmailSettingsHandlers({
+        dispatcher,
+        environment: currentEnvironment,
+      });
+      return handlers
+        .handle('getEmailSettings', implementations.getEmailSettings)
+        .handleRaw('updateEmailSettings', implementations.updateEmailSettings)
+        .handleRaw('sendTestEmail', implementations.sendTestEmail);
     }),
+  ).pipe(
+    Layer.provide(ApiSchemaErrorsLayer),
+    Layer.provide(StaffAuthLayer),
+    Layer.provide(serviceLayer),
   );
 
-  const platformLayer = Layer.mergeAll(
-    Etag.layer,
-    FileSystem.layerNoop({}),
-    Path.layer,
-    HttpPlatform.layer.pipe(Layer.provide(FileSystem.layerNoop({}))),
-  );
   const apiLayer = HttpApiBuilder.layer(api);
   const appLayer = apiLayer.pipe(
     Layer.provide(
       Layer.mergeAll(
-        platformLayer,
+        HttpServer.layerServices,
         healthLayer,
         invitesLayer,
         intakeLayer,
@@ -327,7 +201,29 @@ const createAppWithAuth = (
         return handleAuth(request);
       }
 
-      return handler(request);
+      const response = await handler(request);
+      const headers = new Headers(response.headers);
+      if (
+        pathname === '/v1/settings/email' ||
+        pathname.startsWith('/v1/settings/email/')
+      ) {
+        headers.set('cache-control', 'no-store');
+      }
+
+      if (
+        pathname === '/v1/public/intakes' ||
+        pathname.startsWith('/v1/public/intakes/')
+      ) {
+        for (const [name, value] of Object.entries(PUBLIC_CORS_HEADERS)) {
+          headers.set(name, value);
+        }
+      }
+
+      return new Response(response.body, {
+        headers,
+        status: response.status,
+        statusText: response.statusText,
+      });
     },
   };
 };

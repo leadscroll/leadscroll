@@ -1,11 +1,14 @@
-import { type StaffContext } from '../guards';
 import {
-  errorResponse,
-  parse,
-  readJsonBody,
-  type RouteContext,
-  type RunRequest,
-} from '../http';
+  ApiConflictError,
+  ApiNotFoundError,
+  ApiUnauthorizedError,
+} from '../errors';
+import { runBoundary } from '../handler-utilities';
+import {
+  CurrentStaff,
+  type NotificationDispatcherShape,
+  withNotificationServices,
+} from '../services';
 import {
   listAccountSessionsCommand,
   revokeAccountSessionCommand,
@@ -16,134 +19,155 @@ import {
   updateNotificationPreferenceCommand,
 } from '@/application/notification-preferences';
 import { type Env } from '@/db/repository';
-import { UpdateNotificationPreferenceRequestSchema } from '@/domain/schemas';
+import { Effect } from 'effect';
+import { type HttpServerRequest } from 'effect/http';
 
-export type IdParameters = { id: string };
-
-type AccountHandlerOptions = {
+type HandlerOptions = {
+  dispatcher: NotificationDispatcherShape;
   environment: Env;
-  runRequest: RunRequest;
 };
 
-type StaffRoute<P = Record<string, never>> = RouteContext<P> & {
-  staff: StaffContext;
+type ParametersArguments = RequestArguments & { params: { id: string } };
+
+type PayloadArguments<A> = RequestArguments & { payload: A };
+
+type RequestArguments = {
+  request: HttpServerRequest.HttpServerRequest;
 };
 
-export const createAccountHandlers = (options: AccountHandlerOptions) => {
-  const { environment, runRequest } = options;
+export const createAccountHandlers = (options: HandlerOptions) => {
+  const { dispatcher, environment } = options;
 
   return {
-    getNotificationPreference: async ({ request, staff }: StaffRoute) => {
-      if (staff.adminUserId === null) {
-        return errorResponse(
-          401,
-          'unauthorized',
-          'A real session is required.',
-        );
-      }
+    getNotificationPreference: ({ request }: RequestArguments) =>
+      Effect.gen(function* () {
+        const staff = yield* CurrentStaff;
+        if (staff.adminUserId === null) {
+          return yield* Effect.fail(
+            new ApiUnauthorizedError({
+              code: 'unauthorized',
+              message: 'A real session is required.',
+            }),
+          );
+        }
 
-      const result = await runRequest(
-        request,
-        getNotificationPreferenceView(environment, staff.adminUserId),
-      );
-      return 'error' in result ? result.error : { data: result.data };
-    },
-    listSessions: async ({ request, staff }: StaffRoute) => {
-      if (!staff.adminSession) {
-        return errorResponse(
-          401,
-          'unauthorized',
-          'A real session is required.',
+        const preference = yield* runBoundary(
+          request,
+          withNotificationServices(
+            dispatcher,
+            getNotificationPreferenceView(environment, staff.adminUserId),
+          ),
         );
-      }
+        return { data: preference };
+      }),
 
-      const result = await runRequest(
-        request,
-        listAccountSessionsCommand(environment, staff.adminSession),
-      );
-      return 'error' in result ? result.error : { data: result.data };
-    },
-    revokeOtherSessions: async ({ request, staff }: StaffRoute) => {
-      if (!staff.adminSession) {
-        return errorResponse(
-          401,
-          'unauthorized',
-          'A real session is required.',
+    listSessions: ({ request }: RequestArguments) =>
+      Effect.gen(function* () {
+        const staff = yield* CurrentStaff;
+        if (!staff.adminSession) {
+          return yield* Effect.fail(
+            new ApiUnauthorizedError({
+              code: 'unauthorized',
+              message: 'A real session is required.',
+            }),
+          );
+        }
+
+        const sessions = yield* runBoundary(
+          request,
+          listAccountSessionsCommand(environment, staff.adminSession),
         );
-      }
+        return { data: sessions };
+      }),
 
-      const result = await runRequest(
-        request,
-        revokeOtherAccountSessionsCommand(environment, staff.adminSession),
-      );
-      return 'error' in result
-        ? result.error
-        : { data: { revoked: result.data } };
-    },
-    revokeSession: async ({
-      params,
+    revokeOtherSessions: ({ request }: RequestArguments) =>
+      Effect.gen(function* () {
+        const staff = yield* CurrentStaff;
+        if (!staff.adminSession) {
+          return yield* Effect.fail(
+            new ApiUnauthorizedError({
+              code: 'unauthorized',
+              message: 'A real session is required.',
+            }),
+          );
+        }
+
+        const revoked = yield* runBoundary(
+          request,
+          revokeOtherAccountSessionsCommand(environment, staff.adminSession),
+        );
+        return { data: { revoked } };
+      }),
+
+    revokeSession: ({ params, request }: ParametersArguments) =>
+      Effect.gen(function* () {
+        const staff = yield* CurrentStaff;
+        if (!staff.adminSession) {
+          return yield* Effect.fail(
+            new ApiUnauthorizedError({
+              code: 'unauthorized',
+              message: 'A real session is required.',
+            }),
+          );
+        }
+
+        const outcome = yield* runBoundary(
+          request,
+          revokeAccountSessionCommand(
+            environment,
+            staff.adminSession,
+            params.id,
+          ),
+        );
+        if (outcome === 'current') {
+          return yield* Effect.fail(
+            new ApiConflictError({
+              code: 'conflict',
+              message:
+                'The current session cannot revoke itself; use sign out instead.',
+            }),
+          );
+        }
+
+        if (outcome === 'missing') {
+          return yield* Effect.fail(
+            new ApiNotFoundError({
+              code: 'not_found',
+              message: 'Session not found.',
+            }),
+          );
+        }
+
+        return undefined;
+      }),
+
+    updateNotificationPreference: ({
+      payload,
       request,
-      staff,
-    }: StaffRoute<IdParameters>) => {
-      if (!staff.adminSession) {
-        return errorResponse(
-          401,
-          'unauthorized',
-          'A real session is required.',
+    }: PayloadArguments<{ newLeadEmail: boolean }>) =>
+      Effect.gen(function* () {
+        const staff = yield* CurrentStaff;
+        if (staff.adminUserId === null) {
+          return yield* Effect.fail(
+            new ApiUnauthorizedError({
+              code: 'unauthorized',
+              message: 'A real session is required.',
+            }),
+          );
+        }
+
+        const preference = yield* runBoundary(
+          request,
+          withNotificationServices(
+            dispatcher,
+            updateNotificationPreferenceCommand(
+              environment,
+              staff.adminUserId,
+              payload.newLeadEmail,
+            ),
+          ),
         );
-      }
-
-      const result = await runRequest(
-        request,
-        revokeAccountSessionCommand(environment, staff.adminSession, params.id),
-      );
-      if ('error' in result) {
-        return result.error;
-      }
-
-      if (result.data === 'current') {
-        return errorResponse(
-          409,
-          'conflict',
-          'The current session cannot revoke itself; use sign out instead.',
-        );
-      }
-
-      return result.data === 'revoked'
-        ? new Response(null, { status: 204 })
-        : errorResponse(404, 'not_found', 'Session not found.');
-    },
-    updateNotificationPreference: async ({ request, staff }: StaffRoute) => {
-      if (staff.adminUserId === null) {
-        return errorResponse(
-          401,
-          'unauthorized',
-          'A real session is required.',
-        );
-      }
-
-      const body = await readJsonBody(request);
-      if ('error' in body) {
-        return body.error;
-      }
-
-      const parsed = await parse(
-        UpdateNotificationPreferenceRequestSchema,
-        body.data,
-      );
-      if ('error' in parsed) {
-        return parsed.error;
-      }
-
-      const result = await runRequest(
-        request,
-        updateNotificationPreferenceCommand(
-          environment,
-          staff.adminUserId,
-          parsed.data.newLeadEmail,
-        ),
-      );
-      return 'error' in result ? result.error : { data: result.data };
-    },
+        return { data: preference };
+      }),
   };
 };
