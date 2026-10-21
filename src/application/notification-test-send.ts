@@ -41,6 +41,10 @@ import {
 } from '@/notifications/email';
 import { EmailProviderResolver } from '@/notifications/email-provider';
 import { renderTestEmail } from '@/notifications/templates';
+import {
+  recordProviderAmbiguous,
+  recordProviderDuration,
+} from '@/telemetry/metrics';
 import { Clock, Effect, Exit, Result } from 'effect';
 
 export type SendTestEmailInput = {
@@ -420,12 +424,24 @@ export const sendTestEmailCommand = (input: SendTestEmailInput) =>
       };
     } else {
       const provider = providerEither.success;
+      const sendStartedAt = yield* Clock.currentTimeMillis;
       const sendExit = yield* Effect.exit(
-        provider.send({
-          deliveryKey: testDeliveryKeyFor(input.requestId),
-          envelope: buildTestEnvelope(reservedSettings, input),
-          timeoutMs: DEFAULT_PROVIDER_TIMEOUT_MS,
-        }),
+        provider
+          .send({
+            deliveryKey: testDeliveryKeyFor(input.requestId),
+            envelope: buildTestEnvelope(reservedSettings, input),
+            timeoutMs: DEFAULT_PROVIDER_TIMEOUT_MS,
+          })
+          .pipe(
+            Effect.withSpan('email.provider.send', {
+              attributes: { 'email.provider': provider.kind },
+              kind: 'client',
+            }),
+          ),
+      );
+      yield* recordProviderDuration(
+        provider.kind,
+        (yield* Clock.currentTimeMillis) - sendStartedAt,
       );
       const result: SendResult = Exit.isSuccess(sendExit)
         ? sendExit.value
@@ -434,6 +450,10 @@ export const sendTestEmailCommand = (input: SendTestEmailInput) =>
             provider: provider.kind,
             reason: 'unexpected_error',
           };
+      if (result.kind === 'ambiguous') {
+        yield* recordProviderAmbiguous(provider.kind, result.reason);
+      }
+
       const mapped = completionForTestResult(result);
       completion = {
         providerMessageId:
@@ -456,4 +476,4 @@ export const sendTestEmailCommand = (input: SendTestEmailInput) =>
     // return that row; only our own stored attempt or a safe conflict is
     // acceptable.
     return yield* readOwnedTestOrFail(store, input);
-  });
+  }).pipe(Effect.withSpan('email.test'));

@@ -41,6 +41,7 @@ import {
   type NotificationRuntime,
 } from '@/notifications/events';
 import { createLeadCreatedEmailSubscriber } from '@/notifications/lead-created-subscriber';
+import { requestTrace } from '@/telemetry/request';
 import { Layer, ManagedRuntime, Schema } from 'effect';
 import { Elysia } from 'elysia';
 import { CloudflareAdapter } from 'elysia/adapter/cloudflare-worker';
@@ -88,6 +89,7 @@ const createAppWithAuth = (
     createLeadCreatedPublisher({
       runtime,
       subscribers,
+      trace: requestTrace(request),
       waitUntil: (promise) => {
         const waitUntil = requestWaitUntil(request);
         if (waitUntil === null) {

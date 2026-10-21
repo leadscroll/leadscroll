@@ -14,3 +14,11 @@ SETUP_TOKEN=
 # Commented out so the one-click installer keeps BETTER_AUTH_SECRET and
 # SETUP_TOKEN as the only required secrets; remove the leading # to set it.
 # EMAIL_SETTINGS_ENCRYPTION_KEY=
+
+# Optional OTLP/HTTP trace export. Tracing stays off unless an endpoint is set.
+# Workers Logs remains the default sink for request, notification, and metric
+# lines. See docs/telemetry.md for sampling and privacy details.
+# OTEL_EXPORTER_OTLP_ENDPOINT=
+# OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=
+# OTEL_EXPORTER_OTLP_HEADERS=
+# OTEL_TRACES_SAMPLER_ARG=

@@ -44,9 +44,9 @@ afterEach(async () => {
 });
 
 const logLines = (spy: { mock: { calls: unknown[][] } }) =>
-  spy.mock.calls.map(
-    (call) => JSON.parse(String(call[0])) as Record<string, unknown>,
-  );
+  spy.mock.calls
+    .map((call) => JSON.parse(String(call[0])) as Record<string, unknown>)
+    .filter((line) => line.event === 'notification.event');
 
 const cloudflareBinding = (): NonNullable<Env['EMAIL']> => ({
   send: async () => ({ messageId: 'binding-message' }),

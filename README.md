@@ -501,8 +501,11 @@ Fields:
 - `path` — the URL pathname (the actual route path, e.g. `/v1/leads/01...`). Query strings are never logged, so the lead search `query` parameter of `GET /v1/leads` does not reach the logs.
 - `status` — the final HTTP status of the response.
 - `durationMs` — total processing time for the request in milliseconds.
+- `traceId` / `spanId` — present only when optional OTLP tracing is enabled.
 
 Responses with a 5xx status, and failure lines, are written with `console.error`; everything else uses `console.log`. Failure lines additionally carry `errorClass`, and for persistence failures the database error's class as `errorCauseClass` (the cause message is never logged because it can embed SQL with bound values), or for command defects the error `errorMessage`. Log lines never contain headers, request bodies, tokens, emails, query strings, stacks, or SQL.
+
+Metrics are emitted as bounded `telemetry.metric` lines, and notification lines carry the same trace ids when tracing is enabled. OTLP trace export is opt-in and off by default; self-hosted installations need only Workers Logs. See [telemetry](docs/telemetry.md) for configuration, sampling, privacy, and failure behavior.
 
 ## Continuous integration
 

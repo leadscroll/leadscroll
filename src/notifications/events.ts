@@ -18,6 +18,7 @@ import { type InstallationConfigStore } from '@/application/installation-config-
 import { type CredentialCipher } from '@/notifications/credential-cipher';
 import { type EmailProviderResolver } from '@/notifications/email-provider';
 import { logNotificationEventOutcome } from '@/notifications/logging';
+import { type TraceContext } from '@/telemetry/trace-context';
 import { Cause, Effect } from 'effect';
 import { type ManagedRuntime } from 'effect/ManagedRuntime';
 
@@ -30,10 +31,15 @@ export const LEAD_CREATED_EVENT = 'lead.created' as const;
 export type LeadCreatedEvent = {
   actorUserId: null | string;
   leadId: string;
+  /**
+   * Request trace context, present only when tracing is enabled.
+   */
+  trace?: TraceContext;
 };
 
 export type LeadCreatedPublisher = {
   publishLeadCreated: (event: LeadCreatedEvent) => void;
+  readonly trace: null | TraceContext;
 };
 
 export type LeadCreatedSubscriber = (
@@ -112,13 +118,15 @@ export const runLeadCreatedSubscribers = (
 export const createLeadCreatedPublisher = (options: {
   runtime: NotificationRuntime;
   subscribers: readonly LeadCreatedSubscriber[];
+  trace?: null | TraceContext;
   waitUntil: (promise: Promise<unknown>) => void;
 }): LeadCreatedPublisher => {
-  const { runtime, subscribers, waitUntil } = options;
+  const { runtime, subscribers, trace = null, waitUntil } = options;
   return {
     publishLeadCreated(event) {
+      const delivered = trace === null ? event : { ...event, trace };
       try {
-        waitUntil(runLeadCreatedSubscribers(runtime, subscribers, event));
+        waitUntil(runLeadCreatedSubscribers(runtime, subscribers, delivered));
       } catch (error) {
         logNotificationEventOutcome({
           errorClass:
@@ -128,8 +136,10 @@ export const createLeadCreatedPublisher = (options: {
           eventKind: LEAD_CREATED_EVENT,
           leadId: event.leadId,
           outcome: 'scheduling_failed',
+          ...(trace === null ? {} : { trace }),
         });
       }
     },
+    trace,
   };
 };

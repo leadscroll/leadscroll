@@ -2,6 +2,7 @@ import { createApp } from './api/app';
 import { registerRequestWaitUntil } from './api/execution-context';
 import { logRequest, markRequestStart } from './api/logging';
 import { type Env as Environment } from './db/repository';
+import { startRequestTelemetry } from './telemetry/request';
 import { env } from 'cloudflare:workers';
 
 const workerEnvironment = env as unknown as Environment;
@@ -39,20 +40,24 @@ export default {
       // response is returned so it survives isolate suspension. See
       // src/api/logging.ts for the fields and the privacy rules.
       markRequestStart(request);
+      const telemetry = startRequestTelemetry(request, workerEnvironment);
       let response: Response;
       try {
         response = await app.handle(request);
       } catch (error) {
+        const errorClass =
+          error instanceof Error
+            ? error.name || error.constructor.name
+            : typeof error;
+        telemetry?.end(500, errorClass);
         logRequest(request, 500, {
-          errorClass:
-            error instanceof Error
-              ? error.name || error.constructor.name
-              : typeof error,
+          errorClass,
           errorMessage: error instanceof Error ? error.message : String(error),
         });
         throw error;
       }
 
+      telemetry?.end(response.status);
       logRequest(request, response.status);
       return response;
     }

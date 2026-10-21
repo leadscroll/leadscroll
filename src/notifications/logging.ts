@@ -71,6 +71,11 @@ const SAFE_NOTIFICATION_REASONS = new Set([
   'validation_error',
 ]);
 
+export type NotificationTrace = {
+  readonly spanId: string;
+  readonly traceId: string;
+};
+
 const safeNotificationReason = (reasonCode: null | string): null | string => {
   if (reasonCode === null) {
     return null;
@@ -105,6 +110,7 @@ export type NotificationEventOutcome = {
   reasonCode?: null | string;
   recipients?: number;
   skipped?: number;
+  trace?: NotificationTrace;
 };
 
 export const logNotificationEventOutcome = (
@@ -127,6 +133,9 @@ export const logNotificationEventOutcome = (
     ...(outcome.errorClass === undefined
       ? {}
       : { errorClass: outcome.errorClass }),
+    ...(outcome.trace === undefined
+      ? {}
+      : { spanId: outcome.trace.spanId, traceId: outcome.trace.traceId }),
   });
   if (
     outcome.outcome === 'failed' ||

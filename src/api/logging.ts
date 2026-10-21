@@ -19,17 +19,10 @@
  * message can embed SQL with bound values.
  */
 
+import { redactPath } from './redact';
+import { requestTrace } from '@/telemetry/request';
+
 const requestStarts = new WeakMap<object, number>();
-
-// Browser intake tokens travel in the pathname. They are intentionally public
-// and write-only, but the logger's contract is that no token reaches a line —
-// which also keeps an API token pasted into the wrong URL out of the logs.
-const PUBLIC_INTAKE_TOKEN_PATH = /^\/v1\/public\/intakes\/.+$/u;
-
-const redactPath = (pathname: string): string =>
-  PUBLIC_INTAKE_TOKEN_PATH.test(pathname)
-    ? '/v1/public/intakes/:token'
-    : pathname;
 
 const roundMs = (value: number): number => Math.round(value * 100) / 100;
 
@@ -66,6 +59,7 @@ export const logRequest = (
   status: number,
   failure?: FailureFields,
 ): void => {
+  const trace = requestTrace(request);
   const line = JSON.stringify({
     durationMs: durationMs(request),
     event: failure ? 'request.failure' : 'request',
@@ -73,6 +67,7 @@ export const logRequest = (
     path: redactPath(new URL(request.url).pathname),
     status,
     ...failure,
+    ...(trace === null ? {} : { spanId: trace.spanId, traceId: trace.traceId }),
   });
   if (status >= 500) {
     console.error(line);

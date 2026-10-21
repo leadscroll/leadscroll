@@ -5,6 +5,7 @@ import {
   type NotificationRuntime,
   type NotificationServices,
 } from '@/notifications/events';
+import { requestTelemetry } from '@/telemetry/request';
 import { Effect, Result, Schema } from 'effect';
 
 export const errorResponse = (
@@ -54,7 +55,9 @@ export const makeRunRequest =
   (runtime: NotificationRuntime): RunRequest =>
   async (request, effect) => {
     try {
-      const outcome = await runtime.runPromise(Effect.result(effect));
+      const telemetry = requestTelemetry(request);
+      const traced = telemetry === null ? effect : telemetry.provide(effect);
+      const outcome = await runtime.runPromise(Effect.result(traced));
       if (Result.isSuccess(outcome)) {
         return { data: outcome.success } as const;
       }
