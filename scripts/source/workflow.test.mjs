@@ -230,15 +230,15 @@ test('reusable upgrade keeps candidate code away from write authority', async ()
   assert.equal(workflow.match(/persist-credentials: false/gu)?.length, 2);
   assert.match(
     workflow,
-    /actions\/checkout@11d5960a326750d5838078e36cf38b85af677262/u,
+    /actions\/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1/u,
   );
   assert.match(
     workflow,
-    /actions\/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020/u,
+    /actions\/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1/u,
   );
   assert.match(
     workflow,
-    /pnpm\/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1/u,
+    /pnpm\/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86/u,
   );
   assert.doesNotMatch(workflow, /uses: [^\n]+@v\d/u);
   const nodeBlocks = [
