@@ -56,10 +56,10 @@ export type EmailSendInput = {
   readonly timeoutMs: number;
 };
 
-export class EmailProviderResolver extends Context.Tag('EmailProviderResolver')<
+export class EmailProviderResolver extends Context.Service<
   EmailProviderResolver,
   EmailProviderResolverService
->() {}
+>()('EmailProviderResolver') {}
 
 /**
  * The saved configuration cannot produce a sender (redacted reason only).

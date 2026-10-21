@@ -15,7 +15,10 @@ import {
   domainError,
   type PersistenceError,
 } from '@/application/errors';
-import { InstallationConfigStore } from '@/application/installation-config-store';
+import {
+  InstallationConfigStore,
+  type InstallationConfigStoreService,
+} from '@/application/installation-config-store';
 import {
   savedConfigurationTestable,
   stateFromDocument,
@@ -38,7 +41,7 @@ import {
 } from '@/notifications/email';
 import { EmailProviderResolver } from '@/notifications/email-provider';
 import { renderTestEmail } from '@/notifications/templates';
-import { Clock, Effect, Either, Exit } from 'effect';
+import { Clock, Effect, Exit, Result } from 'effect';
 
 export type SendTestEmailInput = {
   actorEmail: string;
@@ -76,7 +79,7 @@ const configurationBusy = () =>
     'The test request could not be committed. Try again.',
   );
 
-const readOrFail = (store: InstallationConfigStore['Type']) =>
+const readOrFail = (store: InstallationConfigStoreService) =>
   store.read.pipe(
     Effect.catchTag('InstallationConfigUnavailable', () =>
       Effect.fail(configUnavailable()),
@@ -89,7 +92,7 @@ const readOrFail = (store: InstallationConfigStore['Type']) =>
  * most recent request id is retained for own-actor duplicate protection.
  */
 const reserveTestAttempt = (
-  store: InstallationConfigStore['Type'],
+  store: InstallationConfigStoreService,
   input: {
     actorUserId: string;
     expectedRevision: number;
@@ -173,7 +176,7 @@ const reserveTestAttempt = (
  * cannot surface another actor's result.
  */
 const reconcileTestOutcome = (
-  store: InstallationConfigStore['Type'],
+  store: InstallationConfigStoreService,
   input: {
     actorUserId: string;
     completion: TestCompletion;
@@ -247,7 +250,7 @@ const reconcileTestOutcome = (
  * Reads the caller's own stored attempt from the current document.
  */
 const readOwnedTest = (
-  store: InstallationConfigStore['Type'],
+  store: InstallationConfigStoreService,
   input: SendTestEmailInput,
 ): Effect.Effect<EmailTestView | null, DomainError | PersistenceError, never> =>
   Effect.gen(function* () {
@@ -265,7 +268,7 @@ const readOwnedTest = (
   });
 
 const readOwnedTestOrFail = (
-  store: InstallationConfigStore['Type'],
+  store: InstallationConfigStoreService,
   input: SendTestEmailInput,
 ) =>
   Effect.gen(function* () {
@@ -407,16 +410,16 @@ export const sendTestEmailCommand = (input: SendTestEmailInput) =>
     }
 
     let completion: TestCompletion;
-    const providerEither = yield* Effect.either(
+    const providerEither = yield* Effect.result(
       resolver.resolve(reservedSettings),
     );
-    if (Either.isLeft(providerEither)) {
+    if (Result.isFailure(providerEither)) {
       completion = {
-        reasonCode: providerEither.left.reason,
+        reasonCode: providerEither.failure.reason,
         status: 'configuration_error',
       };
     } else {
-      const provider = providerEither.right;
+      const provider = providerEither.success;
       const sendExit = yield* Effect.exit(
         provider.send({
           deliveryKey: testDeliveryKeyFor(input.requestId),

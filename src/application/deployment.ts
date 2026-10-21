@@ -12,10 +12,10 @@ export type DeploymentCapabilities = {
   readonly hasCredentialEncryptionKey: boolean;
 };
 
-export class Deployment extends Context.Tag('Deployment')<
+export class Deployment extends Context.Service<
   Deployment,
   DeploymentCapabilities
->() {}
+>()('Deployment') {}
 
 export const deploymentLayer = (environment: Env): Layer.Layer<Deployment> =>
   Layer.succeed(Deployment, {

@@ -11,7 +11,7 @@ import {
   type LeadCreatedPublisher,
   runLeadCreatedSubscribers,
 } from '@/notifications/events';
-import { Effect } from 'effect';
+import { Effect, Result } from 'effect';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 let fixture: NotificationFixture;
@@ -73,10 +73,10 @@ describe('lead.created publication', () => {
   test('validation failure publishes nothing', async () => {
     const events = recordingPublisher();
     const outcome = await Effect.runPromise(
-      Effect.either(createLeadCommand(fixture.env, {}, 'actor-user-1', events)),
+      Effect.result(createLeadCommand(fixture.env, {}, 'actor-user-1', events)),
     );
 
-    expect(outcome._tag).toBe('Left');
+    expect(Result.isFailure(outcome)).toBe(true);
     expect(events.events).toHaveLength(0);
     expect(await fixture.count('leads')).toBe(0);
   });

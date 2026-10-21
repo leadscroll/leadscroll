@@ -25,10 +25,10 @@ export type CredentialCipherService = {
   ) => Effect.Effect<EncryptedCredential, CredentialCryptoError>;
 };
 
-export class CredentialCipher extends Context.Tag('CredentialCipher')<
+export class CredentialCipher extends Context.Service<
   CredentialCipher,
   CredentialCipherService
->() {}
+>()('CredentialCipher') {}
 
 const asCryptoError = (
   cause: unknown,

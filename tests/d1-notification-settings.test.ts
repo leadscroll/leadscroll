@@ -17,7 +17,7 @@ import {
 import { sendTestEmailCommand } from '@/application/notification-test-send';
 import { appendAuditLog } from '@/db/repository';
 import { decodeAuditChanges, decodeInstallationConfig } from '@/domain/schemas';
-import { Deferred, Effect, Either } from 'effect';
+import { Deferred, Effect, Result } from 'effect';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 const ADMIN_ID = 'settings-admin';
@@ -94,9 +94,9 @@ describe('installation configuration persistence', () => {
         }),
       ),
     );
-    expect(Either.isRight(saved)).toBe(true);
-    if (Either.isRight(saved)) {
-      expect(saved.right).toMatchObject({
+    expect(Result.isSuccess(saved)).toBe(true);
+    if (Result.isSuccess(saved)) {
+      expect(saved.success).toMatchObject({
         hasApiKey: true,
         provider: 'resend',
         revision: 1,
@@ -141,9 +141,9 @@ describe('installation configuration persistence', () => {
       runtime,
       updateEmailSettingsCommand(saveInput(1)),
     );
-    expect(Either.isLeft(stale)).toBe(true);
-    if (Either.isLeft(stale)) {
-      expect(stale.left).toMatchObject({ code: 'revision_conflict' });
+    expect(Result.isFailure(stale)).toBe(true);
+    if (Result.isFailure(stale)) {
+      expect(stale.failure).toMatchObject({ code: 'revision_conflict' });
     }
 
     expect(await fixture.readAuditRows()).toHaveLength(0);
@@ -153,8 +153,8 @@ describe('installation configuration persistence', () => {
     const outcomes = await runtime.runPromise(
       Effect.all(
         [
-          Effect.either(updateEmailSettingsCommand(saveInput(2))),
-          Effect.either(
+          Effect.result(updateEmailSettingsCommand(saveInput(2))),
+          Effect.result(
             updateEmailSettingsCommand(
               saveInput(2, { actorUserId: OTHER_ID, fromName: 'Second' }),
             ),
@@ -163,8 +163,8 @@ describe('installation configuration persistence', () => {
         { concurrency: 2 },
       ),
     );
-    const rights = outcomes.filter((outcome) => Either.isRight(outcome));
-    const lefts = outcomes.filter((outcome) => Either.isLeft(outcome));
+    const rights = outcomes.filter((outcome) => Result.isSuccess(outcome));
+    const lefts = outcomes.filter((outcome) => Result.isFailure(outcome));
     expect(rights).toHaveLength(1);
     expect(lefts).toHaveLength(1);
 
@@ -231,9 +231,9 @@ describe('installation configuration persistence', () => {
         saveInput(0, { credential: { operation: 'replace', value: 're_key' } }),
       ),
     );
-    expect(Either.isLeft(missing)).toBe(true);
-    if (Either.isLeft(missing)) {
-      expect(missing.left).toMatchObject({ code: 'encryption_key_missing' });
+    expect(Result.isFailure(missing)).toBe(true);
+    if (Result.isFailure(missing)) {
+      expect(missing.failure).toMatchObject({ code: 'encryption_key_missing' });
     }
 
     fixture.setEncryptionKey('not-a-valid-key');
@@ -244,9 +244,9 @@ describe('installation configuration persistence', () => {
         saveInput(0, { credential: { operation: 'replace', value: 're_key' } }),
       ),
     );
-    expect(Either.isLeft(invalid)).toBe(true);
-    if (Either.isLeft(invalid)) {
-      expect(invalid.left).toMatchObject({ code: 'encryption_key_invalid' });
+    expect(Result.isFailure(invalid)).toBe(true);
+    if (Result.isFailure(invalid)) {
+      expect(invalid.failure).toMatchObject({ code: 'encryption_key_invalid' });
     }
 
     expect(await fixture.count('installation_config')).toBe(0);
@@ -262,18 +262,18 @@ describe('installation configuration persistence', () => {
       runtime,
       getEmailSettingsViewCommand(SETTINGS_ORIGIN),
     );
-    expect(Either.isLeft(view)).toBe(true);
-    if (Either.isLeft(view)) {
-      expect(view.left).toMatchObject({ code: 'config_unavailable' });
+    expect(Result.isFailure(view)).toBe(true);
+    if (Result.isFailure(view)) {
+      expect(view.failure).toMatchObject({ code: 'config_unavailable' });
     }
 
     const saved = await runEither(
       runtime,
       updateEmailSettingsCommand(saveInput(0)),
     );
-    expect(Either.isLeft(saved)).toBe(true);
-    if (Either.isLeft(saved)) {
-      expect(saved.left).toMatchObject({ code: 'config_unavailable' });
+    expect(Result.isFailure(saved)).toBe(true);
+    if (Result.isFailure(saved)) {
+      expect(saved.failure).toMatchObject({ code: 'config_unavailable' });
     }
 
     expect((await fixture.readConfigRow()).documentJson).toBe(
@@ -406,9 +406,9 @@ describe('administrator test email command', () => {
       runtime,
       sendTestEmailCommand(testInput('test-req-1')),
     );
-    expect(Either.isRight(first)).toBe(true);
-    if (Either.isRight(first)) {
-      expect(first.right).toMatchObject({ outcome: 'accepted', revision: 1 });
+    expect(Result.isSuccess(first)).toBe(true);
+    if (Result.isSuccess(first)) {
+      expect(first.success).toMatchObject({ outcome: 'accepted', revision: 1 });
     }
 
     const document = await readDocument();
@@ -433,7 +433,7 @@ describe('administrator test email command', () => {
       runtime,
       sendTestEmailCommand(testInput('test-req-1')),
     );
-    expect(Either.isRight(replay)).toBe(true);
+    expect(Result.isSuccess(replay)).toBe(true);
     expect(calls).toHaveLength(1);
   });
 
@@ -456,9 +456,9 @@ describe('administrator test email command', () => {
       runtime,
       sendTestEmailCommand(testInput('test-req-2')),
     );
-    expect(Either.isRight(first)).toBe(true);
-    if (Either.isRight(first)) {
-      expect(first.right.outcome).toBe('ambiguous');
+    expect(Result.isSuccess(first)).toBe(true);
+    if (Result.isSuccess(first)) {
+      expect(first.success.outcome).toBe('ambiguous');
     }
 
     clock.set(t0 + 30_000);
@@ -466,9 +466,9 @@ describe('administrator test email command', () => {
       runtime,
       sendTestEmailCommand(testInput('test-req-2')),
     );
-    expect(Either.isRight(sameId)).toBe(true);
-    if (Either.isRight(sameId)) {
-      expect(sameId.right.outcome).toBe('ambiguous');
+    expect(Result.isSuccess(sameId)).toBe(true);
+    if (Result.isSuccess(sameId)) {
+      expect(sameId.success.outcome).toBe('ambiguous');
     }
 
     expect(calls).toHaveLength(1);
@@ -488,9 +488,9 @@ describe('administrator test email command', () => {
       freshRuntime,
       sendTestEmailCommand(testInput('test-req-2b')),
     );
-    expect(Either.isRight(fresh)).toBe(true);
-    if (Either.isRight(fresh)) {
-      expect(fresh.right.outcome).toBe('accepted');
+    expect(Result.isSuccess(fresh)).toBe(true);
+    if (Result.isSuccess(fresh)) {
+      expect(fresh.success.outcome).toBe('accepted');
     }
   });
 
@@ -509,13 +509,13 @@ describe('administrator test email command', () => {
     const outcomes = await runtime.runPromise(
       Effect.all(
         [
-          Effect.either(sendTestEmailCommand(testInput('test-concurrent'))),
-          Effect.either(sendTestEmailCommand(testInput('test-concurrent'))),
+          Effect.result(sendTestEmailCommand(testInput('test-concurrent'))),
+          Effect.result(sendTestEmailCommand(testInput('test-concurrent'))),
         ],
         { concurrency: 2 },
       ),
     );
-    expect(outcomes.every(Either.isRight)).toBe(true);
+    expect(outcomes.every(Result.isSuccess)).toBe(true);
     expect(calls).toHaveLength(1);
     const document = await readDocument();
     expect(document.emailTest.recent).toHaveLength(1);
@@ -542,7 +542,7 @@ describe('administrator test email command', () => {
         runtime,
         sendTestEmailCommand(testInput(`test-limit-${index}`)),
       );
-      expect(Either.isRight(outcome)).toBe(true);
+      expect(Result.isSuccess(outcome)).toBe(true);
       clock.advance(61_000);
     }
 
@@ -551,9 +551,9 @@ describe('administrator test email command', () => {
       runtime,
       sendTestEmailCommand(testInput('test-fast')),
     );
-    expect(Either.isLeft(tooFast)).toBe(true);
-    if (Either.isLeft(tooFast)) {
-      expect(tooFast.left).toMatchObject({ code: 'test_rate_limited' });
+    expect(Result.isFailure(tooFast)).toBe(true);
+    if (Result.isFailure(tooFast)) {
+      expect(tooFast.failure).toMatchObject({ code: 'test_rate_limited' });
     }
 
     clock.set(t0 + 5 * 61_000);
@@ -561,9 +561,9 @@ describe('administrator test email command', () => {
       runtime,
       sendTestEmailCommand(testInput('test-daily')),
     );
-    expect(Either.isLeft(overDaily)).toBe(true);
-    if (Either.isLeft(overDaily)) {
-      expect(overDaily.left).toMatchObject({ code: 'test_daily_limited' });
+    expect(Result.isFailure(overDaily)).toBe(true);
+    if (Result.isFailure(overDaily)) {
+      expect(overDaily.failure).toMatchObject({ code: 'test_daily_limited' });
     }
 
     expect(calls).toHaveLength(5);
@@ -575,7 +575,7 @@ describe('administrator test email command', () => {
       runtime,
       sendTestEmailCommand(testInput('test-next-day')),
     );
-    expect(Either.isRight(nextDay)).toBe(true);
+    expect(Result.isSuccess(nextDay)).toBe(true);
     const document = await readDocument();
     expect(document.emailTest.recent).toHaveLength(1);
   });
@@ -593,9 +593,9 @@ describe('administrator test email command', () => {
       runtime,
       sendTestEmailCommand(testInput('test-req-bad-key')),
     );
-    expect(Either.isRight(outcome)).toBe(true);
-    if (Either.isRight(outcome)) {
-      expect(outcome.right.outcome).toBe('configuration_error');
+    expect(Result.isSuccess(outcome)).toBe(true);
+    if (Result.isSuccess(outcome)) {
+      expect(outcome.success.outcome).toBe('configuration_error');
     }
 
     const document = await readDocument();
@@ -614,9 +614,9 @@ describe('administrator test email command', () => {
       runtime,
       sendTestEmailCommand(testInput('test-req-stale', 99)),
     );
-    expect(Either.isLeft(outcome)).toBe(true);
-    if (Either.isLeft(outcome)) {
-      expect(outcome.left).toMatchObject({ code: 'revision_conflict' });
+    expect(Result.isFailure(outcome)).toBe(true);
+    if (Result.isFailure(outcome)) {
+      expect(outcome.failure).toMatchObject({ code: 'revision_conflict' });
     }
 
     expect((await readDocument()).emailTest.last).toBeNull();
@@ -641,16 +641,16 @@ describe('administrator test email command', () => {
         actorUserId: OTHER_ID,
       }),
     );
-    expect(Either.isRight(first)).toBe(true);
+    expect(Result.isSuccess(first)).toBe(true);
     const before = await readDocument();
 
     const outcome = await runEither(
       runtime,
       sendTestEmailCommand(testInput('foreign-request')),
     );
-    expect(Either.isLeft(outcome)).toBe(true);
-    if (Either.isLeft(outcome)) {
-      expect(outcome.left).toMatchObject({ code: 'test_request_conflict' });
+    expect(Result.isFailure(outcome)).toBe(true);
+    if (Result.isFailure(outcome)) {
+      expect(outcome.failure).toMatchObject({ code: 'test_request_conflict' });
     }
 
     expect((await readDocument()).emailTest.last).toEqual(
@@ -678,8 +678,8 @@ describe('administrator test email command', () => {
       const outcomes = await runtime.runPromise(
         Effect.all(
           [
-            Effect.either(sendTestEmailCommand(testInput(requestId))),
-            Effect.either(
+            Effect.result(sendTestEmailCommand(testInput(requestId))),
+            Effect.result(
               sendTestEmailCommand({
                 ...testInput(requestId),
                 actorEmail: 'other@example.test',
@@ -694,12 +694,15 @@ describe('administrator test email command', () => {
       const accepted: number[] = [];
       const conflicts: string[] = [];
       for (const outcome of outcomes) {
-        if (Either.isRight(outcome) && outcome.right.outcome === 'accepted') {
+        if (
+          Result.isSuccess(outcome) &&
+          outcome.success.outcome === 'accepted'
+        ) {
           accepted.push(1);
         }
 
-        if (Either.isLeft(outcome)) {
-          const left = outcome.left as { code?: string };
+        if (Result.isFailure(outcome)) {
+          const left = outcome.failure as { code?: string };
           if (left.code === 'test_request_conflict') {
             conflicts.push(left.code);
           }
@@ -772,18 +775,18 @@ describe('administrator test email command', () => {
         actorUserId: OTHER_ID,
       }),
     );
-    expect(Either.isRight(bOutcome)).toBe(true);
-    if (Either.isRight(bOutcome)) {
-      expect(bOutcome.right.outcome).toBe('accepted');
+    expect(Result.isSuccess(bOutcome)).toBe(true);
+    if (Result.isSuccess(bOutcome)) {
+      expect(bOutcome.success.outcome).toBe('accepted');
     }
 
     Effect.runSync(Deferred.succeed(gate, true));
     const aOutcome = await aOutcomePromise;
     // A's reservation was replaced by B. A gets a safe conflict, never B's
     // accepted result.
-    expect(Either.isLeft(aOutcome)).toBe(true);
-    if (Either.isLeft(aOutcome)) {
-      expect(aOutcome.left).toMatchObject({ code: 'test_request_conflict' });
+    expect(Result.isFailure(aOutcome)).toBe(true);
+    if (Result.isFailure(aOutcome)) {
+      expect(aOutcome.failure).toMatchObject({ code: 'test_request_conflict' });
     }
 
     expect(aOutcome).not.toMatchObject({ right: { outcome: 'accepted' } });
@@ -815,9 +818,9 @@ describe('administrator test email command', () => {
       runtime,
       sendTestEmailCommand(testInput('off-method')),
     );
-    expect(Either.isLeft(outcome)).toBe(true);
-    if (Either.isLeft(outcome)) {
-      expect(outcome.left).toMatchObject({ code: 'email_disabled' });
+    expect(Result.isFailure(outcome)).toBe(true);
+    if (Result.isFailure(outcome)) {
+      expect(outcome.failure).toMatchObject({ code: 'email_disabled' });
     }
 
     expect(calls).toHaveLength(0);
@@ -875,7 +878,7 @@ describe('administrator test email command', () => {
         }),
       ),
     );
-    expect(Either.isRight(saved)).toBe(true);
+    expect(Result.isSuccess(saved)).toBe(true);
 
     Effect.runSync(Deferred.succeed(gate, true));
     const outcome = await sending;

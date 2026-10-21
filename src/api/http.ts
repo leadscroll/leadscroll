@@ -5,7 +5,7 @@ import {
   type NotificationRuntime,
   type NotificationServices,
 } from '@/notifications/events';
-import { Effect, Either, Schema } from 'effect';
+import { Effect, Result, Schema } from 'effect';
 
 export const errorResponse = (
   status: number,
@@ -54,12 +54,12 @@ export const makeRunRequest =
   (runtime: NotificationRuntime): RunRequest =>
   async (request, effect) => {
     try {
-      const outcome = await runtime.runPromise(Effect.either(effect));
-      if (Either.isRight(outcome)) {
-        return { data: outcome.right } as const;
+      const outcome = await runtime.runPromise(Effect.result(effect));
+      if (Result.isSuccess(outcome)) {
+        return { data: outcome.success } as const;
       }
 
-      const error = outcome.left;
+      const error = outcome.failure;
       if (error._tag === 'DomainError') {
         return {
           error: errorResponse(
@@ -108,13 +108,11 @@ export const makeRunRequest =
     }
   };
 
-const decode = <A, I>(
-  schema: Schema.Schema<A, I, never>,
-  value: unknown,
-): Promise<A> => Schema.decodeUnknownPromise(schema)(value);
+const decode = <A, I>(schema: Schema.Codec<A, I>, value: unknown): Promise<A> =>
+  Schema.decodeUnknownPromise(schema)(value);
 
 export const parse = async <A, I>(
-  schema: Schema.Schema<A, I, never>,
+  schema: Schema.Codec<A, I>,
   value: unknown,
 ) => {
   try {
@@ -135,7 +133,7 @@ export const parse = async <A, I>(
  * failure is not cached.
  */
 export const redactedParse = async <A, I>(
-  schema: Schema.Schema<A, I, never>,
+  schema: Schema.Codec<A, I>,
   value: unknown,
 ) => {
   try {

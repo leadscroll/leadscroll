@@ -23,7 +23,7 @@ import {
   writeInstallationConfig,
 } from '@/db/repository';
 import { type AuditWrite, type InstallationConfig } from '@/domain/schemas';
-import { Clock, Context, Data, Effect, Layer, Schedule } from 'effect';
+import { Clock, Context, Data, Effect, Layer, Result } from 'effect';
 
 /**
  * One plan for a configuration mutation. Returning a result without a
@@ -80,9 +80,10 @@ export class InstallationConfigConflict extends Data.TaggedError(
   'InstallationConfigConflict',
 )<{}> {}
 
-export class InstallationConfigStore extends Context.Tag(
-  'InstallationConfigStore',
-)<InstallationConfigStore, InstallationConfigStoreService>() {}
+export class InstallationConfigStore extends Context.Service<
+  InstallationConfigStore,
+  InstallationConfigStoreService
+>()('InstallationConfigStore') {}
 
 /**
  * The persisted configuration is unreadable/corrupt (redacted).
@@ -139,12 +140,27 @@ export const makeInstallationConfigStore = (
         return { document: next.document, result: next.result };
       });
 
-      return yield* attempt.pipe(
-        Effect.retry({
-          schedule: Schedule.recurs(MAX_CAS_ATTEMPTS - 1),
-          while: (error) => error._tag === 'InstallationConfigConflict',
-        }),
-      );
+      // A lost compare-and-swap is retried immediately: the next attempt
+      // re-reads the document, and the bounded loop never depends on a clock
+      // sleep, so tests with a controlled clock and production behave alike.
+      return yield* Effect.gen(function* () {
+        for (let index = 0; index < MAX_CAS_ATTEMPTS; index += 1) {
+          const outcome = yield* Effect.result(attempt);
+          if (Result.isSuccess(outcome)) {
+            return outcome.success;
+          }
+
+          if (outcome.failure._tag !== 'InstallationConfigConflict') {
+            return yield* Effect.fail(outcome.failure);
+          }
+
+          if (index === MAX_CAS_ATTEMPTS - 1) {
+            return yield* Effect.fail(outcome.failure);
+          }
+        }
+
+        return yield* Effect.fail(new InstallationConfigConflict());
+      });
     }),
 });
 

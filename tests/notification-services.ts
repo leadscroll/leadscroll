@@ -22,7 +22,7 @@ import {
   type NotificationRuntime,
   type NotificationServices,
 } from '@/notifications/events';
-import { Clock, Effect, type Either, Layer, ManagedRuntime } from 'effect';
+import { Clock, Effect, Layer, ManagedRuntime, type Result } from 'effect';
 
 export type RecordingProvider = {
   readonly calls: SentMessage[];
@@ -106,7 +106,7 @@ export const makeNotificationRuntime = (
 export const runEither = <A, E, R extends NotificationServices>(
   runtime: NotificationRuntime,
   effect: Effect.Effect<A, E, R>,
-): Promise<Either.Either<A, E>> => runtime.runPromise(Effect.either(effect));
+): Promise<Result.Result<A, E>> => runtime.runPromise(Effect.result(effect));
 
 export const runEffect = <A, E, R extends NotificationServices>(
   runtime: NotificationRuntime,
@@ -128,18 +128,19 @@ export type ManualClock = {
 export const manualClock = (startMs: number): ManualClock => {
   const state = { time: startMs };
   const clock: Clock.Clock = {
-    [Clock.ClockTypeId]: Clock.ClockTypeId,
     currentTimeMillis: Effect.sync(() => state.time),
+    currentTimeMillisUnsafe: () => state.time,
     currentTimeNanos: Effect.sync(() => BigInt(state.time) * 1_000_000n),
+    currentTimeNanosUnsafe: () => BigInt(state.time) * 1_000_000n,
+    monotonicTimeNanos: Effect.sync(() => BigInt(state.time) * 1_000_000n),
+    monotonicTimeNanosUnsafe: () => BigInt(state.time) * 1_000_000n,
     sleep: () => Effect.never,
-    unsafeCurrentTimeMillis: () => state.time,
-    unsafeCurrentTimeNanos: () => BigInt(state.time) * 1_000_000n,
   };
   return {
     advance: (milliseconds) => {
       state.time += milliseconds;
     },
-    layer: Layer.scopedDiscard(Effect.withClockScoped(clock)),
+    layer: Layer.succeed(Clock.Clock, clock),
     now: () => state.time,
     set: (milliseconds) => {
       state.time = milliseconds;
