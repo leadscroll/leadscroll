@@ -1,5 +1,12 @@
-import { type ResolveStaff } from '../guards';
-import { errorResponse, type EventsFor, type RunRequest } from '../http';
+import { type StaffContext } from '../guards';
+import {
+  errorResponse,
+  type EventsFor,
+  parse,
+  readJsonBody,
+  type RouteContext,
+  type RunRequest,
+} from '../http';
 import {
   createLeadActivityCommand,
   createLeadCommand,
@@ -20,120 +27,161 @@ import {
   ListLeadsQuerySchema,
   UpdateLeadRequestSchema,
 } from '@/domain/schemas';
-import { Schema } from 'effect';
-import { Elysia } from 'elysia';
 
-type LeadsRoutesOptions = {
+export type IdParameters = { id: string };
+
+type LeadsHandlerOptions = {
   environment: Env;
   eventsFor: EventsFor;
-  resolveStaff: ResolveStaff;
   runRequest: RunRequest;
 };
 
-export const createLeadsRoutes = (options: LeadsRoutesOptions) => {
-  const { environment, eventsFor, resolveStaff, runRequest } = options;
+type StaffRoute<P = Record<string, never>> = RouteContext<P> & {
+  staff: StaffContext;
+};
 
-  return new Elysia({ name: 'leads-routes' })
-    .resolve(({ request }) => resolveStaff(request))
-    .get(
-      '/v1/leads',
-      async ({ query }) => {
-        let cursor = null;
-        if (query.cursor !== undefined) {
-          cursor = decodeKeysetCursor(query.cursor);
-          if (cursor === null) {
-            return errorResponse(
-              422,
-              'invalid_cursor',
-              'cursor is invalid. Use the nextCursor value from a previous response.',
-            );
-          }
-        }
+export const createLeadsHandlers = (options: LeadsHandlerOptions) => {
+  const { environment, eventsFor, runRequest } = options;
 
-        const page = await listLeads(environment, {
-          cursor,
-          limit: query.limit ?? LIST_LIMIT_DEFAULT,
-          query: query.query,
-          tagId: query.tag,
-          tagScopeId: query.tagScope,
-        });
-        return { data: page.leads, nextCursor: page.nextCursor };
-      },
-      { query: Schema.toStandardSchemaV1(ListLeadsQuerySchema) },
-    )
-    .post(
-      '/v1/leads',
-      async ({ adminUserId, body, request }) => {
-        const result = await runRequest(
-          request,
-          createLeadCommand(environment, body, adminUserId, eventsFor(request)),
-        );
-        return 'error' in result
-          ? result.error
-          : Response.json({ data: result.data }, { status: 201 });
-      },
-      { body: Schema.toStandardSchemaV1(CreateLeadRequestSchema) },
-    )
-    .post(
-      '/v1/leads/bulk-delete',
-      async ({ body, request }) => {
-        const result = await runRequest(
-          request,
-          softDeleteLeadsCommand(environment, body.ids),
-        );
-        return 'error' in result
-          ? result.error
-          : { data: { deleted: result.data } };
-      },
-      { body: Schema.toStandardSchemaV1(BulkDeleteLeadsRequestSchema) },
-    )
-    .patch(
-      '/v1/leads/:id',
-      async ({ body, params, request }) => {
-        const result = await runRequest(
-          request,
-          updateLeadCommand(environment, params.id, body),
-        );
-        if ('error' in result) {
-          return result.error;
-        }
+  return {
+    bulkDeleteLeads: async ({ request }: StaffRoute) => {
+      const body = await readJsonBody(request);
+      if ('error' in body) {
+        return body.error;
+      }
 
-        return result.data
-          ? { data: result.data }
-          : errorResponse(404, 'not_found', 'Lead not found.');
-      },
-      { body: Schema.toStandardSchemaV1(UpdateLeadRequestSchema) },
-    )
-    .get('/v1/leads/:id/activities', async ({ params }) => {
-      return { data: await listLeadActivities(environment, params.id) };
-    })
-    .post(
-      '/v1/leads/:id/activities',
-      async ({ adminEmail, body, params, request }) => {
-        const result = await runRequest(
-          request,
-          createLeadActivityCommand(
-            environment,
-            params.id,
-            adminEmail,
-            body.kind ?? 'note',
-            body.body,
-          ),
-        );
-        if ('error' in result) {
-          return result.error;
-        }
+      const parsed = await parse(BulkDeleteLeadsRequestSchema, body.data);
+      if ('error' in parsed) {
+        return parsed.error;
+      }
 
-        return result.data
-          ? Response.json({ data: result.data }, { status: 201 })
-          : errorResponse(404, 'not_found', 'Lead not found.');
-      },
-      { body: Schema.toStandardSchemaV1(CreateLeadActivityRequestSchema) },
-    )
-    .get('/v1/leads/:id', async ({ params }) => {
+      const result = await runRequest(
+        request,
+        softDeleteLeadsCommand(environment, parsed.data.ids),
+      );
+      return 'error' in result
+        ? result.error
+        : { data: { deleted: result.data } };
+    },
+    createLead: async ({ request, staff }: StaffRoute) => {
+      const body = await readJsonBody(request);
+      if ('error' in body) {
+        return body.error;
+      }
+
+      const parsed = await parse(CreateLeadRequestSchema, body.data);
+      if ('error' in parsed) {
+        return parsed.error;
+      }
+
+      const result = await runRequest(
+        request,
+        createLeadCommand(
+          environment,
+          parsed.data,
+          staff.adminUserId,
+          eventsFor(request),
+        ),
+      );
+      return 'error' in result
+        ? result.error
+        : Response.json({ data: result.data }, { status: 201 });
+    },
+    createLeadActivity: async ({
+      params,
+      request,
+      staff,
+    }: StaffRoute<IdParameters>) => {
+      const body = await readJsonBody(request);
+      if ('error' in body) {
+        return body.error;
+      }
+
+      const parsed = await parse(CreateLeadActivityRequestSchema, body.data);
+      if ('error' in parsed) {
+        return parsed.error;
+      }
+
+      const result = await runRequest(
+        request,
+        createLeadActivityCommand(
+          environment,
+          params.id,
+          staff.adminEmail,
+          parsed.data.kind ?? 'note',
+          parsed.data.body,
+        ),
+      );
+      if ('error' in result) {
+        return result.error;
+      }
+
+      return result.data
+        ? Response.json({ data: result.data }, { status: 201 })
+        : errorResponse(404, 'not_found', 'Lead not found.');
+    },
+    getLead: async ({ params }: StaffRoute<IdParameters>) => {
       const lead = await getLead(environment, params.id);
       return lead
         ? { data: lead }
         : errorResponse(404, 'not_found', 'Lead not found.');
-    });
+    },
+    listLeadActivities: async ({ params }: StaffRoute<IdParameters>) => {
+      return { data: await listLeadActivities(environment, params.id) };
+    },
+    listLeads: async ({ request }: StaffRoute) => {
+      const parsed = await parse(
+        ListLeadsQuerySchema,
+        Object.fromEntries(new URL(request.url).searchParams),
+      );
+      if ('error' in parsed) {
+        return parsed.error;
+      }
+
+      const query = parsed.data;
+      let cursor = null;
+      if (query.cursor !== undefined) {
+        cursor = decodeKeysetCursor(query.cursor);
+        if (cursor === null) {
+          return errorResponse(
+            422,
+            'invalid_cursor',
+            'cursor is invalid. Use the nextCursor value from a previous response.',
+          );
+        }
+      }
+
+      const page = await listLeads(environment, {
+        cursor,
+        limit: query.limit ?? LIST_LIMIT_DEFAULT,
+        query: query.query,
+        tagId: query.tag,
+        tagScopeId: query.tagScope,
+      });
+      return { data: page.leads, nextCursor: page.nextCursor };
+    },
+    updateLead: async ({ params, request }: StaffRoute<IdParameters>) => {
+      const body = await readJsonBody(request);
+      if ('error' in body) {
+        return body.error;
+      }
+
+      const parsed = await parse(UpdateLeadRequestSchema, body.data);
+      if ('error' in parsed) {
+        return parsed.error;
+      }
+
+      const result = await runRequest(
+        request,
+        updateLeadCommand(environment, params.id, parsed.data),
+      );
+      if ('error' in result) {
+        return result.error;
+      }
+
+      return result.data
+        ? { data: result.data }
+        : errorResponse(404, 'not_found', 'Lead not found.');
+    },
+  };
 };

@@ -1,7 +1,8 @@
-import { type ResolveStaff } from '../guards';
+import { type StaffContext } from '../guards';
 import {
   redactedParse,
   requireRealStaffSession,
+  type RouteContext,
   type RunRequest,
   withNoStore,
 } from '../http';
@@ -16,112 +17,133 @@ import {
   SendEmailTestRequestSchema,
   UpdateEmailSettingsRequestSchema,
 } from '@/domain/schemas';
-import { Elysia } from 'elysia';
 
-type EmailSettingsRoutesOptions = {
+type EmailSettingsHandlerOptions = {
   environment: Env;
-  resolveStaff: ResolveStaff;
   runRequest: RunRequest;
 };
 
-export const createEmailSettingsRoutes = (
-  options: EmailSettingsRoutesOptions,
+type StaffRoute = RouteContext & { staff: StaffContext };
+
+const readSensitiveBody = async (
+  request: Request,
+): Promise<{ data: unknown } | { error: Response }> => {
+  const text = await request.text();
+  if (text.length === 0) {
+    return { data: undefined } as const;
+  }
+
+  try {
+    return { data: JSON.parse(text) } as const;
+  } catch {
+    return {
+      error: Response.json(
+        { code: 'validation_error', message: 'The request is invalid.' },
+        { headers: { 'Cache-Control': 'no-store' }, status: 422 },
+      ),
+    } as const;
+  }
+};
+
+export const createEmailSettingsHandlers = (
+  options: EmailSettingsHandlerOptions,
 ) => {
-  const { environment, resolveStaff, runRequest } = options;
+  const { environment, runRequest } = options;
 
-  return (
-    new Elysia({ name: 'email-settings-routes' })
-      .resolve(({ request }) => resolveStaff(request))
-      // Installation email settings. The shared staff session guard above
-      // already enforces authentication, disabled accounts, trusted writes,
-      // and JSON bodies; every enabled staff account may manage the
-      // installation's email configuration.
-      .get('/v1/settings/email', async ({ adminUserId, request }) => {
-        const admin = requireRealStaffSession(adminUserId);
-        if ('error' in admin) {
-          return withNoStore(admin.error);
-        }
+  return {
+    getEmailSettings: async ({ request, staff }: StaffRoute) => {
+      const admin = requireRealStaffSession(staff.adminUserId);
+      if ('error' in admin) {
+        return withNoStore(admin.error);
+      }
 
-        const result = await runRequest(
-          request,
-          getEmailSettingsViewCommand(resolveAuthOrigin(environment, request)),
-        );
-        if ('error' in result) {
-          return withNoStore(result.error);
-        }
+      const result = await runRequest(
+        request,
+        getEmailSettingsViewCommand(resolveAuthOrigin(environment, request)),
+      );
+      if ('error' in result) {
+        return withNoStore(result.error);
+      }
 
-        return Response.json(
-          { data: result.data },
-          { headers: { 'Cache-Control': 'no-store' } },
-        );
-      })
-      .put('/v1/settings/email', async ({ adminUserId, body, request }) => {
-        const admin = requireRealStaffSession(adminUserId);
-        if ('error' in admin) {
-          return withNoStore(admin.error);
-        }
+      return Response.json(
+        { data: result.data },
+        { headers: { 'Cache-Control': 'no-store' } },
+      );
+    },
+    sendTestEmail: async ({ request, staff }: StaffRoute) => {
+      const admin = requireRealStaffSession(staff.adminUserId);
+      if ('error' in admin) {
+        return withNoStore(admin.error);
+      }
 
-        const parsed = await redactedParse(
-          UpdateEmailSettingsRequestSchema,
-          body,
-        );
-        if ('error' in parsed) {
-          return parsed.error;
-        }
+      const body = await readSensitiveBody(request);
+      if ('error' in body) {
+        return body.error;
+      }
 
-        const result = await runRequest(
-          request,
-          updateEmailSettingsCommand({
-            actorUserId: admin.userId,
-            canonicalOrigin: resolveAuthOrigin(environment, request),
-            credential: parsed.data.credential,
-            expectedRevision: parsed.data.expectedRevision,
-            fromEmail: parsed.data.fromEmail ?? null,
-            fromName: parsed.data.fromName ?? null,
-            provider: parsed.data.provider,
-          }),
-        );
-        if ('error' in result) {
-          return withNoStore(result.error);
-        }
+      const parsed = await redactedParse(SendEmailTestRequestSchema, body.data);
+      if ('error' in parsed) {
+        return parsed.error;
+      }
 
-        return Response.json(
-          { data: result.data },
-          { headers: { 'Cache-Control': 'no-store' } },
-        );
-      })
-      .post(
-        '/v1/settings/email/test',
-        async ({ adminEmail, adminUserId, body, request }) => {
-          const admin = requireRealStaffSession(adminUserId);
-          if ('error' in admin) {
-            return withNoStore(admin.error);
-          }
+      const result = await runRequest(
+        request,
+        sendTestEmailCommand({
+          actorEmail: staff.adminEmail.toLowerCase(),
+          actorUserId: admin.userId,
+          canonicalOrigin: resolveAuthOrigin(environment, request),
+          expectedRevision: parsed.data.expectedRevision,
+          requestId: parsed.data.requestId,
+        }),
+      );
+      if ('error' in result) {
+        return withNoStore(result.error);
+      }
 
-          const parsed = await redactedParse(SendEmailTestRequestSchema, body);
-          if ('error' in parsed) {
-            return parsed.error;
-          }
+      return Response.json(
+        { data: result.data },
+        { headers: { 'Cache-Control': 'no-store' } },
+      );
+    },
+    updateEmailSettings: async ({ request, staff }: StaffRoute) => {
+      const admin = requireRealStaffSession(staff.adminUserId);
+      if ('error' in admin) {
+        return withNoStore(admin.error);
+      }
 
-          const result = await runRequest(
-            request,
-            sendTestEmailCommand({
-              actorEmail: adminEmail.toLowerCase(),
-              actorUserId: admin.userId,
-              canonicalOrigin: resolveAuthOrigin(environment, request),
-              expectedRevision: parsed.data.expectedRevision,
-              requestId: parsed.data.requestId,
-            }),
-          );
-          if ('error' in result) {
-            return withNoStore(result.error);
-          }
+      const body = await readSensitiveBody(request);
+      if ('error' in body) {
+        return body.error;
+      }
 
-          return Response.json(
-            { data: result.data },
-            { headers: { 'Cache-Control': 'no-store' } },
-          );
-        },
-      )
-  );
+      const parsed = await redactedParse(
+        UpdateEmailSettingsRequestSchema,
+        body.data,
+      );
+      if ('error' in parsed) {
+        return parsed.error;
+      }
+
+      const result = await runRequest(
+        request,
+        updateEmailSettingsCommand({
+          actorUserId: admin.userId,
+          canonicalOrigin: resolveAuthOrigin(environment, request),
+          credential: parsed.data.credential,
+          expectedRevision: parsed.data.expectedRevision,
+          fromEmail: parsed.data.fromEmail ?? null,
+          fromName: parsed.data.fromName ?? null,
+          provider: parsed.data.provider,
+        }),
+      );
+      if ('error' in result) {
+        return withNoStore(result.error);
+      }
+
+      return Response.json(
+        { data: result.data },
+        { headers: { 'Cache-Control': 'no-store' } },
+      );
+    },
+  };
 };

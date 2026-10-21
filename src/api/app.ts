@@ -1,37 +1,26 @@
+import { createAuthHandler } from './auth-handler';
+import { api } from './contracts';
 import {
   rejectUntrustedStaffWrite,
   requireAdmin,
   type ResolveStaff,
+  type StaffContext,
 } from './guards';
-import { errorResponse, makeRunRequest, withNoStore } from './http';
 import {
-  createAccessRoutes,
-  createInviteValidationRoutes,
+  createAccessHandlers,
+  createInviteValidationHandlers,
 } from './routes/access';
-import { createAccountRoutes } from './routes/account';
-import { createEmailSettingsRoutes } from './routes/email-settings';
-import { createIntakeRoutes } from './routes/intake';
-import { createLeadsRoutes } from './routes/leads';
-import { createTagsRoutes } from './routes/tags';
+import { createAccountHandlers } from './routes/account';
+import { createEmailSettingsHandlers } from './routes/email-settings';
+import { createIntakeHandlers } from './routes/intake';
+import { createLeadsHandlers } from './routes/leads';
+import { createTagsHandlers } from './routes/tags';
 import { requestWaitUntil } from '@/api/execution-context';
+import { makeRunRequest, type RouteContext } from '@/api/http';
 import { deploymentLayer } from '@/application/deployment';
 import { installationConfigStoreLayer } from '@/application/installation-config-store';
-import {
-  type Auth,
-  AuthConfigurationError,
-  authenticationNotConfiguredResponse,
-  createAuth,
-} from '@/auth';
-import { createAccountAuthEndpoints } from '@/auth/account-management';
-import { handleInvitationSignUp } from '@/auth/invitation-sign-up';
-import {
-  blockedRetryAfter,
-  rateLimitedResponse,
-  rememberBlocked,
-} from '@/auth/rate-limit-cache';
-import { handleDisabledAccountSignIn } from '@/auth/sign-in-guard';
+import { type Auth, createAuth } from '@/auth';
 import { type Env } from '@/db/repository';
-import { HealthSchema } from '@/domain/schemas';
 import { credentialCipherLayer } from '@/notifications/credential-cipher';
 import { emailProviderResolverLayer } from '@/notifications/email-provider';
 import {
@@ -42,9 +31,15 @@ import {
 } from '@/notifications/events';
 import { createLeadCreatedEmailSubscriber } from '@/notifications/lead-created-subscriber';
 import { requestTrace } from '@/telemetry/request';
-import { Layer, ManagedRuntime, Schema } from 'effect';
-import { Elysia } from 'elysia';
-import { CloudflareAdapter } from 'elysia/adapter/cloudflare-worker';
+import { Effect, FileSystem, Layer, ManagedRuntime, Path } from 'effect';
+import {
+  Etag,
+  HttpPlatform,
+  HttpRouter,
+  HttpServerRequest,
+  HttpServerResponse,
+} from 'effect/http';
+import { HttpApiBuilder } from 'effect/http-api';
 
 export type CreateAppOptions = {
   /**
@@ -59,6 +54,52 @@ export type CreateAppOptions = {
    */
   notificationSubscribers?: readonly LeadCreatedSubscriber[];
 };
+
+type HandlerResult = JsonObject | Response | undefined;
+type JsonObject = Record<string, unknown>;
+
+const respond = (
+  value: HandlerResult,
+): HttpServerResponse.HttpServerResponse =>
+  value instanceof Response
+    ? HttpServerResponse.fromWeb(value)
+    : value === undefined
+      ? HttpServerResponse.empty()
+      : HttpServerResponse.jsonUnsafe(value);
+
+const toHandler =
+  <P>(function_: (context: RouteContext<P>) => Promise<HandlerResult>) =>
+  (raw: {
+    readonly params?: P;
+    readonly request: HttpServerRequest.HttpServerRequest;
+  }): Effect.Effect<HttpServerResponse.HttpServerResponse> =>
+    Effect.gen(function* () {
+      const request = yield* HttpServerRequest.toWeb(raw.request).pipe(
+        Effect.orDie,
+      );
+      const value = yield* Effect.promise(() =>
+        function_({ params: (raw.params ?? {}) as P, request }),
+      );
+      return respond(value);
+    });
+
+type StaffHandler<P> = (
+  context: RouteContext<P> & { staff: StaffContext },
+) => Promise<HandlerResult>;
+
+const withStaff =
+  <P>(
+    resolveStaff: ResolveStaff,
+    function_: StaffHandler<P>,
+  ): ((context: RouteContext<P>) => Promise<HandlerResult>) =>
+  async (context) => {
+    const staff = await resolveStaff(context.request);
+    if ('error' in staff) {
+      return staff.error;
+    }
+
+    return function_({ ...context, staff });
+  };
 
 const createAppWithAuth = (
   environment: Env,
@@ -104,18 +145,18 @@ const createAppWithAuth = (
       },
     });
   const runRequest = makeRunRequest(runtime);
-  // Staff routes share this one guard. Each staff plugin applies it directly
-  // before registering its own routes, so the resolved context stays scoped
-  // to that plugin and never reaches public routes.
+  // Staff routes share this one guard. A resolved context is passed directly
+  // to each handler, so it stays scoped to that handler and never reaches
+  // public routes.
   const resolveStaff: ResolveStaff = async (request) => {
     const admin = await requireAdmin(request, getAuth, environment);
-    if ('error' in admin) {
-      throw admin.error;
+    if (admin.error !== undefined) {
+      return { error: admin.error };
     }
 
     const rejectedWrite = rejectUntrustedStaffWrite(environment, request);
     if (rejectedWrite !== null) {
-      throw rejectedWrite;
+      return { error: rejectedWrite };
     }
 
     return {
@@ -130,129 +171,166 @@ const createAppWithAuth = (
     };
   };
 
-  const accountEndpoints = createAccountAuthEndpoints(getAuth, environment);
+  const inviteHandlers = createInviteValidationHandlers({ environment });
+  const intakeHandlers = createIntakeHandlers({
+    environment,
+    eventsFor,
+    runRequest,
+  });
+  const leadHandlers = createLeadsHandlers({
+    environment,
+    eventsFor,
+    runRequest,
+  });
+  const tagHandlers = createTagsHandlers({ environment, runRequest });
+  const accessHandlers = createAccessHandlers({ environment });
+  const accountHandlers = createAccountHandlers({ environment, runRequest });
+  const emailHandlers = createEmailSettingsHandlers({
+    environment,
+    runRequest,
+  });
 
-  return (
-    new Elysia({
-      adapter: CloudflareAdapter,
-      name: 'leadscroll-api',
-    })
-      // Elysia's mount() strips the mount prefix before forwarding. Better Auth
-      // expects its full basePath, so re-add the prefix to the cloned request.
-      // POST /sign-up/email is the invitation boundary: it resolves the grant
-      // before any account write and re-issues the session through Better
-      // Auth's sign-in endpoint.
-      .mount('/api/auth', async (mountedRequest: Request) => {
-        try {
-          const url = new URL(mountedRequest.url);
-          const accountPath = url.pathname.replace(/\/+$/u, '');
-          // Normalize only account endpoints so their field/revocation boundary
-          // covers trailing slashes. Preserve existing sign-up alias rejection.
-          const path =
-            accountPath === '/update-user' || accountPath === '/change-password'
-              ? accountPath
-              : url.pathname;
-          url.pathname = path;
-          const request = new Request(url, mountedRequest);
-
-          // A client already over a limit skips Better Auth (and the database
-          // limiter's read/update) until its retry window passes. The database
-          // counter stays authoritative; this only short-circuits known blocks.
-          const retryAfter = await blockedRetryAfter(request, path);
-          if (retryAfter !== null) {
-            return rateLimitedResponse(retryAfter);
-          }
-
-          const dispatch = async (): Promise<Response> => {
-            if (request.method === 'POST' && path === '/sign-up/email') {
-              return handleInvitationSignUp(environment, request, getAuth);
-            }
-
-            if (request.method === 'POST' && path === '/sign-in/email') {
-              return handleDisabledAccountSignIn(environment, request, getAuth);
-            }
-
-            // Self-service account management: the interceptors validate and
-            // re-attach the body before Better Auth runs.
-            if (request.method === 'POST' && path === '/change-password') {
-              const raw = await request.text();
-              return accountEndpoints.changePassword(request, raw);
-            }
-
-            if (request.method === 'POST' && path === '/update-user') {
-              const raw = await request.text();
-              return accountEndpoints.updateUser(request, raw);
-            }
-
-            url.pathname = `/api/auth${path}`;
-            return getAuth(request).handler(new Request(url, request));
-          };
-
-          const response = await dispatch();
-          if (response.status === 429) {
-            await rememberBlocked(
-              request,
-              path,
-              Number(response.headers.get('x-retry-after') ?? ''),
-            );
-          }
-
-          return response;
-        } catch (error) {
-          if (error instanceof AuthConfigurationError) {
-            return authenticationNotConfiguredResponse();
-          }
-
-          throw error;
-        }
-      })
-      .get('/health', () => ({ ok: true }), {
-        response: { '200': Schema.toStandardSchemaV1(HealthSchema) },
-      })
-      // Contract spike: Elysia's Standard Schema path yields `code: 'VALIDATION'`
-      // errors. Normalize them to the same `{ code, details, message }` envelope
-      // the manual `parse()` helper returns, so clients see one error shape.
-      // Decoder messages are never returned: some schemas accept free-form
-      // values (custom fields, notes) that a message could echo. Malformed
-      // JSON is redacted only on the sensitive settings route; intake has its
-      // own route-level parser mapping (413/415).
-      .onError(({ code, error, request }) => {
-        if (error instanceof Response) {
-          return error;
-        }
-
-        if (code === 'VALIDATION') {
-          return withNoStore(
-            errorResponse(422, 'validation_error', 'The request is invalid.'),
-          );
-        }
-
-        if (
-          code === 'PARSE' &&
-          new URL(request.url).pathname.startsWith('/v1/settings/email')
-        ) {
-          return withNoStore(
-            errorResponse(422, 'validation_error', 'The request is invalid.'),
-          );
-        }
-
-        return undefined;
-      })
-      .use(createIntakeRoutes({ environment, eventsFor, runRequest }))
-      .use(createInviteValidationRoutes({ environment }))
-      .use(
-        createLeadsRoutes({
-          environment,
-          eventsFor,
-          resolveStaff,
-          runRequest,
-        }),
-      )
-      .use(createTagsRoutes({ environment, resolveStaff, runRequest }))
-      .use(createAccessRoutes({ environment, resolveStaff }))
-      .use(createAccountRoutes({ environment, resolveStaff, runRequest }))
-      .use(createEmailSettingsRoutes({ environment, resolveStaff, runRequest }))
+  const healthLayer = HttpApiBuilder.group(api, 'health', (handlers) =>
+    handlers.handleAll({
+      health: toHandler(async () => ({ ok: true })),
+    }),
   );
+  const invitesLayer = HttpApiBuilder.group(api, 'invites', (handlers) =>
+    handlers.handleAll({
+      validateInvite: toHandler(inviteHandlers.validateInvite),
+    }),
+  );
+  const intakeLayer = HttpApiBuilder.group(api, 'intake', (handlers) =>
+    handlers.handleAll({
+      createIntake: toHandler(intakeHandlers.createIntake),
+      createPublicIntake: toHandler(intakeHandlers.createPublicIntake),
+      publicIntakeOptions: toHandler(intakeHandlers.publicIntakeOptions),
+    }),
+  );
+  const leadsLayer = HttpApiBuilder.group(api, 'leads', (handlers) =>
+    handlers.handleAll({
+      bulkDeleteLeads: toHandler(
+        withStaff(resolveStaff, leadHandlers.bulkDeleteLeads),
+      ),
+      bulkTag: toHandler(withStaff(resolveStaff, tagHandlers.bulkTag)),
+      createLead: toHandler(withStaff(resolveStaff, leadHandlers.createLead)),
+      createLeadActivity: toHandler(
+        withStaff(resolveStaff, leadHandlers.createLeadActivity),
+      ),
+      getLead: toHandler(withStaff(resolveStaff, leadHandlers.getLead)),
+      listLeadActivities: toHandler(
+        withStaff(resolveStaff, leadHandlers.listLeadActivities),
+      ),
+      listLeads: toHandler(withStaff(resolveStaff, leadHandlers.listLeads)),
+      setLeadTags: toHandler(withStaff(resolveStaff, tagHandlers.setLeadTags)),
+      updateLead: toHandler(withStaff(resolveStaff, leadHandlers.updateLead)),
+    }),
+  );
+  const tagsLayer = HttpApiBuilder.group(api, 'tags', (handlers) =>
+    handlers.handleAll({
+      createTag: toHandler(withStaff(resolveStaff, tagHandlers.createTag)),
+      deleteTag: toHandler(withStaff(resolveStaff, tagHandlers.deleteTag)),
+      listTags: toHandler(withStaff(resolveStaff, tagHandlers.listTags)),
+      updateTag: toHandler(withStaff(resolveStaff, tagHandlers.updateTag)),
+      updateTagScope: toHandler(
+        withStaff(resolveStaff, tagHandlers.updateTagScope),
+      ),
+    }),
+  );
+  const accessLayer = HttpApiBuilder.group(api, 'access', (handlers) =>
+    handlers.handleAll({
+      createInvite: toHandler(
+        withStaff(resolveStaff, accessHandlers.createInvite),
+      ),
+      createToken: toHandler(
+        withStaff(resolveStaff, accessHandlers.createToken),
+      ),
+      listInvites: toHandler(
+        withStaff(resolveStaff, accessHandlers.listInvites),
+      ),
+      listStaff: toHandler(withStaff(resolveStaff, accessHandlers.listStaff)),
+      listTokens: toHandler(withStaff(resolveStaff, accessHandlers.listTokens)),
+      revokeInvite: toHandler(
+        withStaff(resolveStaff, accessHandlers.revokeInvite),
+      ),
+      revokeToken: toHandler(
+        withStaff(resolveStaff, accessHandlers.revokeToken),
+      ),
+      setStaffDisabled: toHandler(
+        withStaff(resolveStaff, accessHandlers.setStaffDisabled),
+      ),
+    }),
+  );
+  const accountLayer = HttpApiBuilder.group(api, 'account', (handlers) =>
+    handlers.handleAll({
+      getNotificationPreference: toHandler(
+        withStaff(resolveStaff, accountHandlers.getNotificationPreference),
+      ),
+      listSessions: toHandler(
+        withStaff(resolveStaff, accountHandlers.listSessions),
+      ),
+      revokeOtherSessions: toHandler(
+        withStaff(resolveStaff, accountHandlers.revokeOtherSessions),
+      ),
+      revokeSession: toHandler(
+        withStaff(resolveStaff, accountHandlers.revokeSession),
+      ),
+      updateNotificationPreference: toHandler(
+        withStaff(resolveStaff, accountHandlers.updateNotificationPreference),
+      ),
+    }),
+  );
+  const emailLayer = HttpApiBuilder.group(api, 'email', (handlers) =>
+    handlers.handleAll({
+      getEmailSettings: toHandler(
+        withStaff(resolveStaff, emailHandlers.getEmailSettings),
+      ),
+      sendTestEmail: toHandler(
+        withStaff(resolveStaff, emailHandlers.sendTestEmail),
+      ),
+      updateEmailSettings: toHandler(
+        withStaff(resolveStaff, emailHandlers.updateEmailSettings),
+      ),
+    }),
+  );
+
+  const platformLayer = Layer.mergeAll(
+    Etag.layer,
+    FileSystem.layerNoop({}),
+    Path.layer,
+    HttpPlatform.layer.pipe(Layer.provide(FileSystem.layerNoop({}))),
+  );
+  const apiLayer = HttpApiBuilder.layer(api);
+  const appLayer = apiLayer.pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        platformLayer,
+        healthLayer,
+        invitesLayer,
+        intakeLayer,
+        leadsLayer,
+        tagsLayer,
+        accessLayer,
+        accountLayer,
+        emailLayer,
+      ),
+    ),
+  );
+  const { handler } = HttpRouter.toWebHandler(appLayer, {
+    disableLogger: true,
+  });
+  const handleAuth = createAuthHandler(environment, getAuth);
+
+  return {
+    handle: async (request: Request): Promise<Response> => {
+      const pathname = new URL(request.url).pathname;
+      if (pathname === '/api/auth' || pathname.startsWith('/api/auth/')) {
+        return handleAuth(request);
+      }
+
+      return handler(request);
+    },
+  };
 };
 
 export const createApp = (environment: Env, options: CreateAppOptions = {}) =>

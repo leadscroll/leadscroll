@@ -4,4 +4,6 @@ Elysia owns the REST transport. Effect Schema is the sole runtime validation and
 
 The React SPA uses Wouter for navigation and React Query for server state. Better Auth (D1-backed sessions) verifies staff identity at the Worker boundary; registration is invitation-only (a bootstrap `SETUP_TOKEN` for the first account and single-use staff invites thereafter), and a disabled account's sessions are revoked durably. Alpha has no separate in-app role system.
 
-> Update (2026-09-30): the hand-maintained OpenAPI document was removed until it can be generated from these route contracts; Elysia continues to own the REST transport and remains the source of that generation.
+> Update (2026-09-30): the hand-maintained OpenAPI document was removed until it can be generated from these route contracts; Elysia continued to own the REST transport and remained the source of that generation.
+
+> Update (2026-10-19): Elysia was removed. Effect `HttpApi` groups and `HttpRouter` now own the REST transport; the same Effect Schema request contracts and command/error boundaries are preserved. Better Auth keeps a dedicated `/api/auth` wildcard handler.

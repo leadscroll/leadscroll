@@ -92,12 +92,12 @@ The exporter is deliberately a small OTLP/HTTP JSON encoder instead of the
 OpenTelemetry SDK. The default build stays dependency-free for Workers Free CPU
 limits, and the exporter has no runtime setup when tracing is off.
 
-`evlog` (including `evlog/workers` and `evlog/elysia`) was evaluated and not
-adopted. Its Elysia integration would be removed by the HTTP-boundary migration,
-the existing request/notification logger already enforces the redaction
-contract, and evlog would add a second logging/telemetry model without replacing
-custom logging with a clear benefit. Effect's own tracing and metrics cover the
-span/metric work here.
+`evlog` (including `evlog/workers` and the former `evlog/elysia` adapter) was
+evaluated and not adopted. The HTTP boundary now uses Effect's own router, so an
+Elysia adapter no longer applies; the existing request/notification logger
+already enforces the redaction contract; and evlog would add a second
+logging/telemetry model without replacing custom logging with a clear benefit.
+Effect's own tracing and metrics cover the span/metric work here.
 
 ## Disable tracing
 

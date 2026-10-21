@@ -1,5 +1,5 @@
-import { rejectUntrustedOrigin, type ResolveStaff } from '../guards';
-import { errorResponse, parse } from '../http';
+import { rejectUntrustedOrigin, type StaffContext } from '../guards';
+import { errorResponse, parse, readJsonBody, type RouteContext } from '../http';
 import { matchesBootstrapToken } from '@/auth';
 import {
   checkStaffInviteAvailability,
@@ -20,26 +20,35 @@ import {
   SetStaffDisabledRequestSchema,
   ValidateInviteRequestSchema,
 } from '@/domain/schemas';
-import { Elysia } from 'elysia';
 
-type InviteValidationRoutesOptions = {
+export type IdParameters = { id: string };
+
+type InviteValidationOptions = {
   environment: Env;
 };
 
-export const createInviteValidationRoutes = (
-  options: InviteValidationRoutesOptions,
+type StaffRoute<P = Record<string, never>> = RouteContext<P> & {
+  staff: StaffContext;
+};
+
+export const createInviteValidationHandlers = (
+  options: InviteValidationOptions,
 ) => {
   const { environment } = options;
 
-  return new Elysia({ name: 'invite-validation-routes' }).post(
-    '/api/invites/validate',
-    async ({ body, request }) => {
+  return {
+    validateInvite: async ({ request }: RouteContext) => {
       const rejectedOrigin = rejectUntrustedOrigin(environment, request);
       if (rejectedOrigin !== null) {
         return rejectedOrigin;
       }
 
-      const parsed = await parse(ValidateInviteRequestSchema, body);
+      const body = await readJsonBody(request);
+      if ('error' in body) {
+        return body.error;
+      }
+
+      const parsed = await parse(ValidateInviteRequestSchema, body.data);
       if ('error' in parsed) {
         return parsed.error;
       }
@@ -57,49 +66,24 @@ export const createInviteValidationRoutes = (
             'Invitation is unavailable.',
           );
     },
-  );
+  };
 };
 
-type AccessRoutesOptions = {
+type AccessHandlerOptions = {
   environment: Env;
-  resolveStaff: ResolveStaff;
 };
 
-export const createAccessRoutes = (options: AccessRoutesOptions) => {
-  const { environment, resolveStaff } = options;
+export const createAccessHandlers = (options: AccessHandlerOptions) => {
+  const { environment } = options;
 
-  return new Elysia({ name: 'access-routes' })
-    .resolve(({ request }) => resolveStaff(request))
-    .get('/v1/tokens', async () => {
-      return { data: await listApiTokens(environment) };
-    })
-    .post('/v1/tokens', async ({ body }) => {
-      const parsed = await parse(CreateTokenRequestSchema, body);
-      if ('error' in parsed) {
-        return parsed.error;
+  return {
+    createInvite: async ({ request }: StaffRoute) => {
+      const body = await readJsonBody(request);
+      if ('error' in body) {
+        return body.error;
       }
 
-      return Response.json(
-        {
-          data: await createApiToken(environment, {
-            expiresAt: parsed.data.expiresAt,
-            name: parsed.data.name,
-            type: parsed.data.type ?? 'api',
-          }),
-        },
-        { status: 201 },
-      );
-    })
-    .delete('/v1/tokens/:id', async ({ params }) => {
-      return (await revokeApiToken(environment, params.id))
-        ? new Response(null, { status: 204 })
-        : errorResponse(404, 'not_found', 'Token not found.');
-    })
-    .get('/v1/invites', async () => {
-      return { data: await listStaffInvites(environment) };
-    })
-    .post('/v1/invites', async ({ body }) => {
-      const parsed = await parse(CreateInviteRequestSchema, body);
+      const parsed = await parse(CreateInviteRequestSchema, body.data);
       if ('error' in parsed) {
         return parsed.error;
       }
@@ -123,17 +107,59 @@ export const createAccessRoutes = (options: AccessRoutesOptions) => {
         },
         { status: 201 },
       );
-    })
-    .delete('/v1/invites/:id', async ({ params }) => {
+    },
+    createToken: async ({ request }: StaffRoute) => {
+      const body = await readJsonBody(request);
+      if ('error' in body) {
+        return body.error;
+      }
+
+      const parsed = await parse(CreateTokenRequestSchema, body.data);
+      if ('error' in parsed) {
+        return parsed.error;
+      }
+
+      return Response.json(
+        {
+          data: await createApiToken(environment, {
+            expiresAt: parsed.data.expiresAt,
+            name: parsed.data.name,
+            type: parsed.data.type ?? 'api',
+          }),
+        },
+        { status: 201 },
+      );
+    },
+    listInvites: async () => {
+      return { data: await listStaffInvites(environment) };
+    },
+    listStaff: async () => {
+      return { data: await listStaffAccounts(environment) };
+    },
+    listTokens: async () => {
+      return { data: await listApiTokens(environment) };
+    },
+    revokeInvite: async ({ params }: StaffRoute<IdParameters>) => {
       return (await revokeStaffInvite(environment, params.id))
         ? new Response(null, { status: 204 })
         : errorResponse(404, 'not_found', 'Invitation not found.');
-    })
-    .get('/v1/staff', async () => {
-      return { data: await listStaffAccounts(environment) };
-    })
-    .patch('/v1/staff/:id', async ({ adminEmail, body, params }) => {
-      const parsed = await parse(SetStaffDisabledRequestSchema, body);
+    },
+    revokeToken: async ({ params }: StaffRoute<IdParameters>) => {
+      return (await revokeApiToken(environment, params.id))
+        ? new Response(null, { status: 204 })
+        : errorResponse(404, 'not_found', 'Token not found.');
+    },
+    setStaffDisabled: async ({
+      params,
+      request,
+      staff,
+    }: StaffRoute<IdParameters>) => {
+      const body = await readJsonBody(request);
+      if ('error' in body) {
+        return body.error;
+      }
+
+      const parsed = await parse(SetStaffDisabledRequestSchema, body.data);
       if ('error' in parsed) {
         return parsed.error;
       }
@@ -142,7 +168,7 @@ export const createAccessRoutes = (options: AccessRoutesOptions) => {
         environment,
         params.id,
         parsed.data.disabled,
-        adminEmail,
+        staff.adminEmail,
       );
       if (outcome.kind === 'not-found') {
         return errorResponse(404, 'not_found', 'Staff account not found.');
@@ -165,5 +191,6 @@ export const createAccessRoutes = (options: AccessRoutesOptions) => {
       }
 
       return { data: outcome.record };
-    });
+    },
+  };
 };

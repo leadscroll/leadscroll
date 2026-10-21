@@ -257,3 +257,52 @@ test('the intake 413 path is logged with its final status and no body or token',
   expect(raw).not.toContain('logging-413');
   expect(raw).not.toContain('"notes"');
 });
+
+test('request logs carry the incoming trace id when tracing is enabled', async () => {
+  const traceLogs: StructuredLog[] = [];
+  const traced = new Miniflare(
+    convertV4MiniflareOptions({
+      bindings: {
+        DEV_ADMIN_EMAIL: 'logging@example.test',
+        ENVIRONMENT: 'test',
+        OTEL_EXPORTER_OTLP_ENDPOINT: 'https://collector.invalid',
+        OTEL_TRACES_SAMPLER: 'always_on',
+      },
+      compatibilityDate: '2026-08-22',
+      compatibilityFlags: ['nodejs_compat'],
+      d1Databases: ['DB'],
+      handleStructuredLogs: (entry) => {
+        traceLogs.push({ level: entry.level, message: entry.message });
+      },
+      modules: true,
+      script: workerScript,
+    }),
+  );
+
+  try {
+    const traceparent =
+      '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01';
+    const response = await traced.dispatchFetch(
+      'https://leadscroll.test/health',
+      { headers: { traceparent } },
+    );
+    expect(response.status).toBe(200);
+
+    const line = traceLogs
+      .map((entry) => {
+        try {
+          return JSON.parse(entry.message) as Record<string, unknown>;
+        } catch {
+          return {};
+        }
+      })
+      .find((entry) => entry.event === 'request' && entry.path === '/health');
+    expect(line).toMatchObject({
+      path: '/health',
+      traceId: '4bf92f3577b34da6a3ce929d0e0e4736',
+    });
+    expect(typeof line?.spanId).toBe('string');
+  } finally {
+    await traced.dispose();
+  }
+});

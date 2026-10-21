@@ -52,7 +52,7 @@ const UNSAFE_METHODS = new Set(['DELETE', 'PATCH', 'POST', 'PUT']);
  * cannot read their responses; but a same-site sibling origin can still post an
  * ordinary HTML form and have the browser attach the session cookie under
  * SameSite=Lax. Unsafe methods therefore require a trusted Origin when one is
- * present, and any supplied body must be JSON — Elysia would otherwise parse
+ * present, and any supplied body must be JSON; the boundary never parses
  * form-encoded posts on these routes.
  */
 export const rejectUntrustedStaffWrite = (
@@ -131,7 +131,9 @@ export const requireAdmin = async (
   }
 };
 
-export type ResolveStaff = (request: Request) => Promise<StaffContext>;
+export type ResolveStaff = (
+  request: Request,
+) => Promise<StaffContext | { error: Response }>;
 
 export type StaffContext = {
   adminEmail: string;

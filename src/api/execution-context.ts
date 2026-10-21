@@ -1,9 +1,9 @@
 /**
  * Per-request Worker execution context plumbing.
  *
- * Elysia's `handle(request)` does not expose the Worker `ExecutionContext`, so
- * the fetch entry registers the bound `ctx.waitUntil` against the exact
- * request instance before dispatching. Route composition looks it up when it
+ * The HTTP boundary does not expose the Worker `ExecutionContext`, so the fetch
+ * entry registers the bound `ctx.waitUntil` against the exact request instance
+ * before dispatching. Route composition looks it up when it
  * builds a request-scoped event publisher. A WeakMap keeps each request's
  * lifecycle separate; there is no global "current request" state.
  *
