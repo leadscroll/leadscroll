@@ -25,6 +25,14 @@ export type NotificationDispatcherShape = {
   readonly subscribers: readonly LeadCreatedSubscriber[];
 };
 
+export type StaffWithSession = StaffContext & {
+  adminSession: NonNullable<StaffContext['adminSession']>;
+};
+
+export type StaffWithUser = StaffContext & {
+  adminUserId: string;
+};
+
 export class ApiEnvironment extends Context.Service<ApiEnvironment, Env>()(
   'leadscroll/api/ApiEnvironment',
 ) {}
@@ -33,16 +41,21 @@ export class CurrentStaff extends Context.Service<CurrentStaff, StaffContext>()(
   'leadscroll/api/CurrentStaff',
 ) {}
 
+export class CurrentStaffSession extends Context.Service<
+  CurrentStaffSession,
+  StaffWithSession
+>()('leadscroll/api/CurrentStaffSession') {}
+
+export class CurrentStaffUser extends Context.Service<
+  CurrentStaffUser,
+  StaffWithUser
+>()('leadscroll/api/CurrentStaffUser') {}
+
 export class NotificationDispatcher extends Context.Service<
   NotificationDispatcher,
   NotificationDispatcherShape
 >()('leadscroll/api/NotificationDispatcher') {}
 
-/**
- * Builds the request-scoped publisher after the handler has converted the
- * framework request to a Web Request. The trace ids are read from the same
- * request instance the Worker entry registered.
- */
 /**
  * Runs an application command with the notification composition's services
  * (Deployment, InstallationConfigStore, CredentialCipher, provider resolver).

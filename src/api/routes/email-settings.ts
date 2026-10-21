@@ -1,11 +1,7 @@
-import {
-  ApiServiceUnavailableError,
-  ApiUnauthorizedError,
-  ApiValidationError,
-} from '../errors';
+import { ApiServiceUnavailableError, ApiValidationError } from '../errors';
 import { runBoundary, webRequest } from '../handler-utilities';
 import {
-  CurrentStaff,
+  CurrentStaffUser,
   type NotificationDispatcherShape,
   withNotificationServices,
 } from '../services';
@@ -68,24 +64,13 @@ const readSensitiveBody = <A, I>(
     return { data, web };
   });
 
-const requireSession = (adminUserId: null | string) =>
-  adminUserId === null
-    ? Effect.fail(
-        new ApiUnauthorizedError({
-          code: 'unauthorized',
-          message: 'A real session is required.',
-        }),
-      )
-    : Effect.succeed(adminUserId);
-
 export const createEmailSettingsHandlers = (options: HandlerOptions) => {
   const { dispatcher, environment } = options;
 
   return {
     getEmailSettings: ({ request }: RequestArguments) =>
       Effect.gen(function* () {
-        const staff = yield* CurrentStaff;
-        yield* requireSession(staff.adminUserId);
+        yield* CurrentStaffUser;
         const web = yield* webRequest(request);
         const origin = yield* canonicalOrigin(environment, web);
         const view = yield* runBoundary(
@@ -100,8 +85,7 @@ export const createEmailSettingsHandlers = (options: HandlerOptions) => {
 
     sendTestEmail: ({ request }: RequestArguments) =>
       Effect.gen(function* () {
-        const staff = yield* CurrentStaff;
-        const adminUserId = yield* requireSession(staff.adminUserId);
+        const staff = yield* CurrentStaffUser;
         const body = yield* readSensitiveBody(
           request,
           SendEmailTestRequestSchema,
@@ -113,7 +97,7 @@ export const createEmailSettingsHandlers = (options: HandlerOptions) => {
             dispatcher,
             sendTestEmailCommand({
               actorEmail: staff.adminEmail.toLowerCase(),
-              actorUserId: adminUserId,
+              actorUserId: staff.adminUserId,
               canonicalOrigin: origin,
               expectedRevision: body.data.expectedRevision,
               requestId: body.data.requestId,
@@ -125,8 +109,7 @@ export const createEmailSettingsHandlers = (options: HandlerOptions) => {
 
     updateEmailSettings: ({ request }: RequestArguments) =>
       Effect.gen(function* () {
-        const staff = yield* CurrentStaff;
-        const adminUserId = yield* requireSession(staff.adminUserId);
+        const staff = yield* CurrentStaffUser;
         const body = yield* readSensitiveBody(
           request,
           UpdateEmailSettingsRequestSchema,
@@ -137,7 +120,7 @@ export const createEmailSettingsHandlers = (options: HandlerOptions) => {
           withNotificationServices(
             dispatcher,
             updateEmailSettingsCommand({
-              actorUserId: adminUserId,
+              actorUserId: staff.adminUserId,
               canonicalOrigin: origin,
               credential: body.data.credential,
               expectedRevision: body.data.expectedRevision,

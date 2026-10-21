@@ -15,8 +15,14 @@ import {
   StaffAuthErrors,
 } from './errors';
 import { rejectUntrustedStaffWrite, requireAdmin } from './guards';
-import { ApiEnvironment, CurrentStaff } from './services';
+import {
+  ApiEnvironment,
+  CurrentStaff,
+  CurrentStaffSession,
+  CurrentStaffUser,
+} from './services';
 import { createAuth } from '@/auth';
+import { type Env } from '@/db/env';
 import { Effect, Layer } from 'effect';
 import { HttpServerRequest } from 'effect/http';
 import { HttpApiMiddleware } from 'effect/http-api';
@@ -60,6 +66,104 @@ const authFailure = (status: number) => {
   }
 };
 
+const authenticate = (environment: Env) =>
+  Effect.gen(function* () {
+    const serverRequest = yield* HttpServerRequest.HttpServerRequest;
+    const request = yield* HttpServerRequest.toWeb(serverRequest).pipe(
+      Effect.orDie,
+    );
+
+    const admin = yield* Effect.promise(() =>
+      requireAdmin(
+        request,
+        (current) => createAuth(environment, current),
+        environment,
+      ),
+    );
+    if (admin.error !== undefined) {
+      return yield* Effect.fail(authFailure(admin.error.status));
+    }
+
+    const rejectedWrite = rejectUntrustedStaffWrite(environment, request);
+    if (rejectedWrite !== null) {
+      return yield* Effect.fail(authFailure(rejectedWrite.status));
+    }
+
+    return {
+      adminEmail: admin.identity.email,
+      adminSession: admin.identity.session,
+      adminUserId: admin.identity.userId,
+    };
+  });
+
+export class StaffSession extends HttpApiMiddleware.Service<
+  StaffSession,
+  {
+    error: typeof StaffAuthErrors;
+    provides: CurrentStaffSession;
+    requires: ApiEnvironment;
+  }
+>()('leadscroll/api/StaffSession', { error: StaffAuthErrors }) {}
+
+export const StaffSessionLayer = Layer.effect(
+  StaffSession,
+  Effect.gen(function* () {
+    const environment = yield* ApiEnvironment;
+    return StaffSession.of((httpEffect) =>
+      Effect.gen(function* () {
+        const staff = yield* authenticate(environment);
+        if (!staff.adminSession) {
+          return yield* Effect.fail(
+            new ApiUnauthorizedError({
+              code: 'unauthorized',
+              message: 'A real session is required.',
+            }),
+          );
+        }
+
+        return yield* Effect.provideService(httpEffect, CurrentStaffSession, {
+          ...staff,
+          adminSession: staff.adminSession,
+        });
+      }),
+    );
+  }),
+);
+
+export class StaffUser extends HttpApiMiddleware.Service<
+  StaffUser,
+  {
+    error: typeof StaffAuthErrors;
+    provides: CurrentStaffUser;
+    requires: ApiEnvironment;
+  }
+>()('leadscroll/api/StaffUser', { error: StaffAuthErrors }) {}
+
+export const StaffUserLayer = Layer.effect(
+  StaffUser,
+  Effect.gen(function* () {
+    const environment = yield* ApiEnvironment;
+    return StaffUser.of((httpEffect) =>
+      Effect.gen(function* () {
+        const staff = yield* authenticate(environment);
+        if (staff.adminUserId === null) {
+          return yield* Effect.fail(
+            new ApiUnauthorizedError({
+              code: 'unauthorized',
+              message: 'A real session is required.',
+            }),
+          );
+        }
+
+        return yield* Effect.provideService(httpEffect, CurrentStaffUser, {
+          ...staff,
+          adminUserId: staff.adminUserId,
+        });
+      }),
+    );
+  }),
+);
+
 export const StaffAuthLayer = Layer.effect(
   StaffAuth,
   Effect.gen(function* () {
@@ -67,32 +171,8 @@ export const StaffAuthLayer = Layer.effect(
 
     return StaffAuth.of((httpEffect) =>
       Effect.gen(function* () {
-        const serverRequest = yield* HttpServerRequest.HttpServerRequest;
-        const request = yield* HttpServerRequest.toWeb(serverRequest).pipe(
-          Effect.orDie,
-        );
-
-        const admin = yield* Effect.promise(() =>
-          requireAdmin(
-            request,
-            (current) => createAuth(environment, current),
-            environment,
-          ),
-        );
-        if (admin.error !== undefined) {
-          return yield* Effect.fail(authFailure(admin.error.status));
-        }
-
-        const rejectedWrite = rejectUntrustedStaffWrite(environment, request);
-        if (rejectedWrite !== null) {
-          return yield* Effect.fail(authFailure(rejectedWrite.status));
-        }
-
-        return yield* Effect.provideService(httpEffect, CurrentStaff, {
-          adminEmail: admin.identity.email,
-          adminSession: admin.identity.session,
-          adminUserId: admin.identity.userId,
-        });
+        const staff = yield* authenticate(environment);
+        return yield* Effect.provideService(httpEffect, CurrentStaff, staff);
       }),
     );
   }),

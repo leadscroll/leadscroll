@@ -1,11 +1,8 @@
-import {
-  ApiConflictError,
-  ApiNotFoundError,
-  ApiUnauthorizedError,
-} from '../errors';
+import { ApiConflictError, ApiNotFoundError } from '../errors';
 import { runBoundary } from '../handler-utilities';
 import {
-  CurrentStaff,
+  CurrentStaffSession,
+  CurrentStaffUser,
   type NotificationDispatcherShape,
   withNotificationServices,
 } from '../services';
@@ -41,15 +38,7 @@ export const createAccountHandlers = (options: HandlerOptions) => {
   return {
     getNotificationPreference: ({ request }: RequestArguments) =>
       Effect.gen(function* () {
-        const staff = yield* CurrentStaff;
-        if (staff.adminUserId === null) {
-          return yield* Effect.fail(
-            new ApiUnauthorizedError({
-              code: 'unauthorized',
-              message: 'A real session is required.',
-            }),
-          );
-        }
+        const staff = yield* CurrentStaffUser;
 
         const preference = yield* runBoundary(
           request,
@@ -63,15 +52,7 @@ export const createAccountHandlers = (options: HandlerOptions) => {
 
     listSessions: ({ request }: RequestArguments) =>
       Effect.gen(function* () {
-        const staff = yield* CurrentStaff;
-        if (!staff.adminSession) {
-          return yield* Effect.fail(
-            new ApiUnauthorizedError({
-              code: 'unauthorized',
-              message: 'A real session is required.',
-            }),
-          );
-        }
+        const staff = yield* CurrentStaffSession;
 
         const sessions = yield* runBoundary(
           request,
@@ -82,15 +63,7 @@ export const createAccountHandlers = (options: HandlerOptions) => {
 
     revokeOtherSessions: ({ request }: RequestArguments) =>
       Effect.gen(function* () {
-        const staff = yield* CurrentStaff;
-        if (!staff.adminSession) {
-          return yield* Effect.fail(
-            new ApiUnauthorizedError({
-              code: 'unauthorized',
-              message: 'A real session is required.',
-            }),
-          );
-        }
+        const staff = yield* CurrentStaffSession;
 
         const revoked = yield* runBoundary(
           request,
@@ -101,15 +74,7 @@ export const createAccountHandlers = (options: HandlerOptions) => {
 
     revokeSession: ({ params, request }: ParametersArguments) =>
       Effect.gen(function* () {
-        const staff = yield* CurrentStaff;
-        if (!staff.adminSession) {
-          return yield* Effect.fail(
-            new ApiUnauthorizedError({
-              code: 'unauthorized',
-              message: 'A real session is required.',
-            }),
-          );
-        }
+        const staff = yield* CurrentStaffSession;
 
         const outcome = yield* runBoundary(
           request,
@@ -146,15 +111,7 @@ export const createAccountHandlers = (options: HandlerOptions) => {
       request,
     }: PayloadArguments<{ newLeadEmail: boolean }>) =>
       Effect.gen(function* () {
-        const staff = yield* CurrentStaff;
-        if (staff.adminUserId === null) {
-          return yield* Effect.fail(
-            new ApiUnauthorizedError({
-              code: 'unauthorized',
-              message: 'A real session is required.',
-            }),
-          );
-        }
+        const staff = yield* CurrentStaffUser;
 
         const preference = yield* runBoundary(
           request,

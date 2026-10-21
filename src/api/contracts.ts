@@ -1,6 +1,6 @@
 import { IntakeApiErrors, StaffApiErrors } from './errors';
 import { ApiSchemaErrors } from './schema-errors';
-import { StaffAuth } from './staff-auth';
+import { StaffAuth, StaffSession, StaffUser } from './staff-auth';
 import {
   AccountSessionViewSchema,
   BulkDeleteLeadsRequestSchema,
@@ -294,12 +294,12 @@ const accountEndpoints = [
   HttpApiEndpoint.get('listSessions', '/v1/account/sessions', {
     error: StaffApiErrors,
     success: AccountSessionListResponse,
-  }),
+  }).middleware(StaffSession),
   HttpApiEndpoint.delete('revokeSession', '/v1/account/sessions/:id', {
     error: StaffApiErrors,
     params: idParameters,
     success: HttpApiSchema.NoContent,
-  }),
+  }).middleware(StaffSession),
   HttpApiEndpoint.post(
     'revokeOtherSessions',
     '/v1/account/sessions/revoke-others',
@@ -307,7 +307,7 @@ const accountEndpoints = [
       error: StaffApiErrors,
       success: RevokedSessionsResponse,
     },
-  ),
+  ).middleware(StaffSession),
   HttpApiEndpoint.get(
     'getNotificationPreference',
     '/v1/account/notifications',
@@ -315,7 +315,7 @@ const accountEndpoints = [
       error: StaffApiErrors,
       success: NotificationPreferenceResponse,
     },
-  ),
+  ).middleware(StaffUser),
   HttpApiEndpoint.put(
     'updateNotificationPreference',
     '/v1/account/notifications',
@@ -324,7 +324,7 @@ const accountEndpoints = [
       payload: UpdateNotificationPreferenceRequestSchema,
       success: NotificationPreferenceResponse,
     },
-  ),
+  ).middleware(StaffUser),
 ] as const;
 
 const emailEndpoints = [
@@ -362,10 +362,9 @@ export const api = HttpApi.make('leadscroll').add(
     .middleware(ApiSchemaErrors),
   HttpApiGroup.make('account')
     .add(...accountEndpoints)
-    .middleware(StaffAuth)
     .middleware(ApiSchemaErrors),
   HttpApiGroup.make('email')
     .add(...emailEndpoints)
-    .middleware(StaffAuth)
+    .middleware(StaffUser)
     .middleware(ApiSchemaErrors),
 );

@@ -12,7 +12,11 @@ import { createLeadsHandlers } from './routes/leads';
 import { createTagsHandlers } from './routes/tags';
 import { ApiSchemaErrorsLayer } from './schema-errors';
 import { ApiEnvironment, NotificationDispatcher } from './services';
-import { StaffAuthLayer } from './staff-auth';
+import {
+  StaffAuthLayer,
+  StaffSessionLayer,
+  StaffUserLayer,
+} from './staff-auth';
 import { deploymentLayer } from '@/application/deployment';
 import { installationConfigStoreLayer } from '@/application/installation-config-store';
 import { type Auth, createAuth } from '@/auth';
@@ -151,7 +155,8 @@ const createAppWithAuth = (
     }),
   ).pipe(
     Layer.provide(ApiSchemaErrorsLayer),
-    Layer.provide(StaffAuthLayer),
+    Layer.provide(StaffSessionLayer),
+    Layer.provide(StaffUserLayer),
     Layer.provide(serviceLayer),
   );
   const emailLayer = HttpApiBuilder.group(api, 'email', (handlers) =>
@@ -169,7 +174,7 @@ const createAppWithAuth = (
     }),
   ).pipe(
     Layer.provide(ApiSchemaErrorsLayer),
-    Layer.provide(StaffAuthLayer),
+    Layer.provide(StaffUserLayer),
     Layer.provide(serviceLayer),
   );
 
