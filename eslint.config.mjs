@@ -99,7 +99,6 @@ export default defineConfig(
   // Delete an entry once the file is at or below 400. Tracked in #141.
   ...Object.entries({
     'src/account/AccountPage/index.tsx': 500,
-    'src/App.tsx': 1_144,
     'src/application/notification-settings.ts': 427,
     'src/application/notification-test-send.ts': 407,
     'src/notifications/ManageEmailPage/EmailSettingsPanel.tsx': 461,
