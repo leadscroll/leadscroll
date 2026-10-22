@@ -15,11 +15,8 @@ Report security issues privately as described in [SECURITY.md](SECURITY.md).
 ## Source file size
 
 ESLint enforces `max-lines` on `src/**/*.{ts,tsx}`: 400 effective lines,
-ignoring blank lines and comments. A new module above the limit must be split
-rather than exempted. `eslint.config.mjs` ratchets the modules that predate the
-limit: their per-file ceilings equal their current effective-line count. Lower a
-ceiling when a split reduces the file, and delete the entry once it is at or
-below 400; never raise one. The splitting work is tracked in #141.
+ignoring blank lines and comments. A module above the limit must be split, not
+exempted. There are no per-file ratchets or overrides in `eslint.config.mjs`.
 
 When a source file must be split, replace it with a folder of the same name and
 make `index.ts` (or `index.tsx` for a component) the public entry point. Keep
