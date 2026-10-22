@@ -1,11 +1,10 @@
-import { type StaffContext } from '../guards';
+import { ApiServiceUnavailableError, ApiValidationError } from '../errors';
+import { runBoundary, webRequest } from '../handler-utilities';
 import {
-  redactedParse,
-  requireRealStaffSession,
-  type RouteContext,
-  type RunRequest,
-  withNoStore,
-} from '../http';
+  CurrentStaffUser,
+  type NotificationDispatcherShape,
+  withNotificationServices,
+} from '../services';
 import {
   getEmailSettingsViewCommand,
   updateEmailSettingsCommand,
@@ -17,133 +16,121 @@ import {
   SendEmailTestRequestSchema,
   UpdateEmailSettingsRequestSchema,
 } from '@/domain/schemas';
+import { Effect, Schema } from 'effect';
+import { type HttpServerRequest } from 'effect/http';
 
-type EmailSettingsHandlerOptions = {
+type HandlerOptions = {
+  dispatcher: NotificationDispatcherShape;
   environment: Env;
-  runRequest: RunRequest;
 };
 
-type StaffRoute = RouteContext & { staff: StaffContext };
-
-const readSensitiveBody = async (
-  request: Request,
-): Promise<{ data: unknown } | { error: Response }> => {
-  const text = await request.text();
-  if (text.length === 0) {
-    return { data: undefined } as const;
-  }
-
-  try {
-    return { data: JSON.parse(text) } as const;
-  } catch {
-    return {
-      error: Response.json(
-        { code: 'validation_error', message: 'The request is invalid.' },
-        { headers: { 'Cache-Control': 'no-store' }, status: 422 },
-      ),
-    } as const;
-  }
+type RequestArguments = {
+  request: HttpServerRequest.HttpServerRequest;
 };
 
-export const createEmailSettingsHandlers = (
-  options: EmailSettingsHandlerOptions,
-) => {
-  const { environment, runRequest } = options;
+const validationError = () =>
+  new ApiValidationError({
+    code: 'validation_error',
+    message: 'The request is invalid.',
+  });
+
+const canonicalOrigin = (environment: Env, request: Request) =>
+  Effect.try({
+    catch: () =>
+      new ApiServiceUnavailableError({
+        code: 'authentication_not_configured',
+        message: 'Authentication is not configured on this deployment.',
+      }),
+    try: () => resolveAuthOrigin(environment, request),
+  });
+
+const readSensitiveBody = <A, I>(
+  request: HttpServerRequest.HttpServerRequest,
+  schema: Schema.Codec<A, I>,
+): Effect.Effect<
+  { data: A; web: Request },
+  ReturnType<typeof validationError>
+> =>
+  Effect.gen(function* () {
+    const web = yield* webRequest(request);
+    const text = yield* Effect.promise(() => web.text());
+    const json = yield* Effect.try({
+      catch: validationError,
+      try: () => JSON.parse(text) as unknown,
+    });
+    const data = yield* Schema.decodeUnknownEffect(schema)(json).pipe(
+      Effect.mapError(validationError),
+    );
+    return { data, web };
+  });
+
+export const createEmailSettingsHandlers = (options: HandlerOptions) => {
+  const { dispatcher, environment } = options;
 
   return {
-    getEmailSettings: async ({ request, staff }: StaffRoute) => {
-      const admin = requireRealStaffSession(staff.adminUserId);
-      if ('error' in admin) {
-        return withNoStore(admin.error);
-      }
+    getEmailSettings: ({ request }: RequestArguments) =>
+      Effect.gen(function* () {
+        yield* CurrentStaffUser;
+        const web = yield* webRequest(request);
+        const origin = yield* canonicalOrigin(environment, web);
+        const view = yield* runBoundary(
+          request,
+          withNotificationServices(
+            dispatcher,
+            getEmailSettingsViewCommand(origin),
+          ),
+        );
+        return { data: view };
+      }),
 
-      const result = await runRequest(
-        request,
-        getEmailSettingsViewCommand(resolveAuthOrigin(environment, request)),
-      );
-      if ('error' in result) {
-        return withNoStore(result.error);
-      }
+    sendTestEmail: ({ request }: RequestArguments) =>
+      Effect.gen(function* () {
+        const staff = yield* CurrentStaffUser;
+        const body = yield* readSensitiveBody(
+          request,
+          SendEmailTestRequestSchema,
+        );
+        const origin = yield* canonicalOrigin(environment, body.web);
+        const view = yield* runBoundary(
+          request,
+          withNotificationServices(
+            dispatcher,
+            sendTestEmailCommand({
+              actorEmail: staff.adminEmail.toLowerCase(),
+              actorUserId: staff.adminUserId,
+              canonicalOrigin: origin,
+              expectedRevision: body.data.expectedRevision,
+              requestId: body.data.requestId,
+            }),
+          ),
+        );
+        return { data: view };
+      }),
 
-      return Response.json(
-        { data: result.data },
-        { headers: { 'Cache-Control': 'no-store' } },
-      );
-    },
-    sendTestEmail: async ({ request, staff }: StaffRoute) => {
-      const admin = requireRealStaffSession(staff.adminUserId);
-      if ('error' in admin) {
-        return withNoStore(admin.error);
-      }
-
-      const body = await readSensitiveBody(request);
-      if ('error' in body) {
-        return body.error;
-      }
-
-      const parsed = await redactedParse(SendEmailTestRequestSchema, body.data);
-      if ('error' in parsed) {
-        return parsed.error;
-      }
-
-      const result = await runRequest(
-        request,
-        sendTestEmailCommand({
-          actorEmail: staff.adminEmail.toLowerCase(),
-          actorUserId: admin.userId,
-          canonicalOrigin: resolveAuthOrigin(environment, request),
-          expectedRevision: parsed.data.expectedRevision,
-          requestId: parsed.data.requestId,
-        }),
-      );
-      if ('error' in result) {
-        return withNoStore(result.error);
-      }
-
-      return Response.json(
-        { data: result.data },
-        { headers: { 'Cache-Control': 'no-store' } },
-      );
-    },
-    updateEmailSettings: async ({ request, staff }: StaffRoute) => {
-      const admin = requireRealStaffSession(staff.adminUserId);
-      if ('error' in admin) {
-        return withNoStore(admin.error);
-      }
-
-      const body = await readSensitiveBody(request);
-      if ('error' in body) {
-        return body.error;
-      }
-
-      const parsed = await redactedParse(
-        UpdateEmailSettingsRequestSchema,
-        body.data,
-      );
-      if ('error' in parsed) {
-        return parsed.error;
-      }
-
-      const result = await runRequest(
-        request,
-        updateEmailSettingsCommand({
-          actorUserId: admin.userId,
-          canonicalOrigin: resolveAuthOrigin(environment, request),
-          credential: parsed.data.credential,
-          expectedRevision: parsed.data.expectedRevision,
-          fromEmail: parsed.data.fromEmail ?? null,
-          fromName: parsed.data.fromName ?? null,
-          provider: parsed.data.provider,
-        }),
-      );
-      if ('error' in result) {
-        return withNoStore(result.error);
-      }
-
-      return Response.json(
-        { data: result.data },
-        { headers: { 'Cache-Control': 'no-store' } },
-      );
-    },
+    updateEmailSettings: ({ request }: RequestArguments) =>
+      Effect.gen(function* () {
+        const staff = yield* CurrentStaffUser;
+        const body = yield* readSensitiveBody(
+          request,
+          UpdateEmailSettingsRequestSchema,
+        );
+        const origin = yield* canonicalOrigin(environment, body.web);
+        const view = yield* runBoundary(
+          request,
+          withNotificationServices(
+            dispatcher,
+            updateEmailSettingsCommand({
+              actorUserId: staff.adminUserId,
+              canonicalOrigin: origin,
+              credential: body.data.credential,
+              expectedRevision: body.data.expectedRevision,
+              fromEmail: body.data.fromEmail ?? null,
+              fromName: body.data.fromName ?? null,
+              provider: body.data.provider,
+            }),
+          ),
+        );
+        return { data: view };
+      }),
   };
 };

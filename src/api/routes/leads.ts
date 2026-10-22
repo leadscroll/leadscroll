@@ -1,18 +1,19 @@
-import { type StaffContext } from '../guards';
+import { mapApiError } from '../error-logging';
+import { ApiNotFoundError, ApiValidationError } from '../errors';
 import {
-  errorResponse,
-  type EventsFor,
-  parse,
-  readJsonBody,
-  type RouteContext,
-  type RunRequest,
-} from '../http';
+  CurrentStaff,
+  type NotificationDispatcherShape,
+  publisherFor,
+} from '../services';
+import { toLeadActivity, toLeadView, toTagView } from '../views';
 import {
   createLeadActivityCommand,
   createLeadCommand,
   softDeleteLeadsCommand,
   updateLeadCommand,
 } from '@/application/commands';
+import { persist } from '@/application/errors';
+import { bulkTagCommand, setLeadTagsCommand } from '@/application/tag-commands';
 import {
   type Env,
   getLead,
@@ -21,167 +22,249 @@ import {
 } from '@/db/repository';
 import { decodeKeysetCursor, LIST_LIMIT_DEFAULT } from '@/domain/pagination';
 import {
-  BulkDeleteLeadsRequestSchema,
-  CreateLeadActivityRequestSchema,
-  CreateLeadRequestSchema,
-  ListLeadsQuerySchema,
-  UpdateLeadRequestSchema,
+  type CreateLeadActivityRequest,
+  type CreateLeadRequest,
+  type ListLeadsQuery,
+  type UpdateLeadRequest,
 } from '@/domain/schemas';
+import { requestTelemetry } from '@/telemetry/request';
+import { Effect } from 'effect';
+import { HttpServerRequest } from 'effect/http';
 
-export type IdParameters = { id: string };
-
-type LeadsHandlerOptions = {
+type HandlerOptions = {
+  dispatcher: NotificationDispatcherShape;
   environment: Env;
-  eventsFor: EventsFor;
-  runRequest: RunRequest;
 };
 
-type StaffRoute<P = Record<string, never>> = RouteContext<P> & {
-  staff: StaffContext;
+type ParametersArguments = {
+  params: { id: string };
+  request: HttpServerRequest.HttpServerRequest;
 };
 
-export const createLeadsHandlers = (options: LeadsHandlerOptions) => {
-  const { environment, eventsFor, runRequest } = options;
+type PayloadArguments<A> = RequestArguments & { payload: A };
+
+type QueryArguments<A> = RequestArguments & { query: A };
+type RequestArguments = {
+  request: HttpServerRequest.HttpServerRequest;
+};
+
+const webRequest = (request: HttpServerRequest.HttpServerRequest) =>
+  HttpServerRequest.toWeb(request).pipe(Effect.orDie);
+
+const traced = <A, E, R>(
+  request: Request,
+  effect: Effect.Effect<A, E, R>,
+): Effect.Effect<A, E, R> => {
+  const telemetry = requestTelemetry(request);
+  return telemetry === null
+    ? effect
+    : (telemetry.provide(effect) as Effect.Effect<A, E, R>);
+};
+
+/**
+ * Effect handlers for the schema-first leads group. Dependencies are
+ * composition services; the authenticated staff context is provided by the
+ * StaffAuth middleware.
+ */
+export const createLeadsHandlers = (options: HandlerOptions) => {
+  const { dispatcher, environment } = options;
 
   return {
-    bulkDeleteLeads: async ({ request }: StaffRoute) => {
-      const body = await readJsonBody(request);
-      if ('error' in body) {
-        return body.error;
-      }
-
-      const parsed = await parse(BulkDeleteLeadsRequestSchema, body.data);
-      if ('error' in parsed) {
-        return parsed.error;
-      }
-
-      const result = await runRequest(
-        request,
-        softDeleteLeadsCommand(environment, parsed.data.ids),
-      );
-      return 'error' in result
-        ? result.error
-        : { data: { deleted: result.data } };
-    },
-    createLead: async ({ request, staff }: StaffRoute) => {
-      const body = await readJsonBody(request);
-      if ('error' in body) {
-        return body.error;
-      }
-
-      const parsed = await parse(CreateLeadRequestSchema, body.data);
-      if ('error' in parsed) {
-        return parsed.error;
-      }
-
-      const result = await runRequest(
-        request,
-        createLeadCommand(
-          environment,
-          parsed.data,
-          staff.adminUserId,
-          eventsFor(request),
-        ),
-      );
-      return 'error' in result
-        ? result.error
-        : Response.json({ data: result.data }, { status: 201 });
-    },
-    createLeadActivity: async ({
-      params,
+    bulkDeleteLeads: ({
+      payload,
       request,
-      staff,
-    }: StaffRoute<IdParameters>) => {
-      const body = await readJsonBody(request);
-      if ('error' in body) {
-        return body.error;
-      }
+    }: PayloadArguments<{ ids: readonly string[] }>) =>
+      Effect.gen(function* () {
+        const web = yield* webRequest(request);
+        const result = yield* traced(
+          web,
+          mapApiError(web, softDeleteLeadsCommand(environment, payload.ids)),
+        );
+        return { data: { deleted: result } };
+      }),
 
-      const parsed = await parse(CreateLeadActivityRequestSchema, body.data);
-      if ('error' in parsed) {
-        return parsed.error;
-      }
+    bulkTag: ({
+      payload,
+      request,
+    }: PayloadArguments<{
+      ids: readonly string[];
+      mode: 'add' | 'remove';
+      tagIds: readonly string[];
+    }>) =>
+      Effect.gen(function* () {
+        const web = yield* webRequest(request);
+        const result = yield* traced(
+          web,
+          mapApiError(
+            web,
+            bulkTagCommand(
+              environment,
+              payload.ids,
+              payload.tagIds,
+              payload.mode,
+            ),
+          ),
+        );
+        return { data: { affected: result.affected } };
+      }),
 
-      const result = await runRequest(
-        request,
-        createLeadActivityCommand(
-          environment,
-          params.id,
-          staff.adminEmail,
-          parsed.data.kind ?? 'note',
-          parsed.data.body,
-        ),
-      );
-      if ('error' in result) {
-        return result.error;
-      }
+    createLead: ({ payload, request }: PayloadArguments<CreateLeadRequest>) =>
+      Effect.gen(function* () {
+        const staff = yield* CurrentStaff;
+        const web = yield* webRequest(request);
+        const lead = yield* traced(
+          web,
+          mapApiError(
+            web,
+            createLeadCommand(
+              environment,
+              payload,
+              staff.adminUserId,
+              publisherFor(dispatcher, web),
+            ),
+          ),
+        );
+        return { data: toLeadView(lead) };
+      }),
 
-      return result.data
-        ? Response.json({ data: result.data }, { status: 201 })
-        : errorResponse(404, 'not_found', 'Lead not found.');
-    },
-    getLead: async ({ params }: StaffRoute<IdParameters>) => {
-      const lead = await getLead(environment, params.id);
-      return lead
-        ? { data: lead }
-        : errorResponse(404, 'not_found', 'Lead not found.');
-    },
-    listLeadActivities: async ({ params }: StaffRoute<IdParameters>) => {
-      return { data: await listLeadActivities(environment, params.id) };
-    },
-    listLeads: async ({ request }: StaffRoute) => {
-      const parsed = await parse(
-        ListLeadsQuerySchema,
-        Object.fromEntries(new URL(request.url).searchParams),
-      );
-      if ('error' in parsed) {
-        return parsed.error;
-      }
+    createLeadActivity: ({
+      params,
+      payload,
+      request,
+    }: ParametersArguments & { payload: CreateLeadActivityRequest }) =>
+      Effect.gen(function* () {
+        const staff = yield* CurrentStaff;
+        const web = yield* webRequest(request);
+        const activity = yield* traced(
+          web,
+          mapApiError(
+            web,
+            createLeadActivityCommand(
+              environment,
+              params.id,
+              staff.adminEmail,
+              payload.kind ?? 'note',
+              payload.body,
+            ),
+          ),
+        );
+        return activity === null
+          ? yield* Effect.fail(
+              new ApiNotFoundError({
+                code: 'not_found',
+                message: 'Lead not found.',
+              }),
+            )
+          : { data: toLeadActivity(activity) };
+      }),
 
-      const query = parsed.data;
-      let cursor = null;
-      if (query.cursor !== undefined) {
-        cursor = decodeKeysetCursor(query.cursor);
-        if (cursor === null) {
-          return errorResponse(
-            422,
-            'invalid_cursor',
-            'cursor is invalid. Use the nextCursor value from a previous response.',
-          );
+    getLead: ({ params, request }: ParametersArguments) =>
+      Effect.gen(function* () {
+        const web = yield* webRequest(request);
+        const lead = yield* traced(
+          web,
+          mapApiError(
+            web,
+            persist(() => getLead(environment, params.id)),
+          ),
+        );
+        return lead === null
+          ? yield* Effect.fail(
+              new ApiNotFoundError({
+                code: 'not_found',
+                message: 'Lead not found.',
+              }),
+            )
+          : { data: toLeadView(lead) };
+      }),
+
+    listLeadActivities: ({ params, request }: ParametersArguments) =>
+      Effect.gen(function* () {
+        const web = yield* webRequest(request);
+        const activities = yield* traced(
+          web,
+          mapApiError(
+            web,
+            persist(() => listLeadActivities(environment, params.id)),
+          ),
+        );
+        return { data: activities.map(toLeadActivity) };
+      }),
+
+    listLeads: ({ query, request }: QueryArguments<ListLeadsQuery>) =>
+      Effect.gen(function* () {
+        const web = yield* webRequest(request);
+        let cursor = null;
+        if (query.cursor !== undefined) {
+          cursor = decodeKeysetCursor(query.cursor);
+          if (cursor === null) {
+            return yield* Effect.fail(
+              new ApiValidationError({
+                code: 'invalid_cursor',
+                message:
+                  'cursor is invalid. Use the nextCursor value from a previous response.',
+              }),
+            );
+          }
         }
-      }
 
-      const page = await listLeads(environment, {
-        cursor,
-        limit: query.limit ?? LIST_LIMIT_DEFAULT,
-        query: query.query,
-        tagId: query.tag,
-        tagScopeId: query.tagScope,
-      });
-      return { data: page.leads, nextCursor: page.nextCursor };
-    },
-    updateLead: async ({ params, request }: StaffRoute<IdParameters>) => {
-      const body = await readJsonBody(request);
-      if ('error' in body) {
-        return body.error;
-      }
+        const page = yield* traced(
+          web,
+          mapApiError(
+            web,
+            persist(() =>
+              listLeads(environment, {
+                cursor,
+                limit: query.limit ?? LIST_LIMIT_DEFAULT,
+                query: query.query,
+                tagId: query.tag,
+                tagScopeId: query.tagScope,
+              }),
+            ),
+          ),
+        );
+        return {
+          data: page.leads.map(toLeadView),
+          nextCursor: page.nextCursor,
+        };
+      }),
 
-      const parsed = await parse(UpdateLeadRequestSchema, body.data);
-      if ('error' in parsed) {
-        return parsed.error;
-      }
+    setLeadTags: ({
+      params,
+      payload,
+      request,
+    }: ParametersArguments & PayloadArguments<{ tagIds: readonly string[] }>) =>
+      Effect.gen(function* () {
+        const web = yield* webRequest(request);
+        const result = yield* traced(
+          web,
+          mapApiError(
+            web,
+            setLeadTagsCommand(environment, params.id, payload.tagIds),
+          ),
+        );
+        return { data: result.tags.map(toTagView) };
+      }),
 
-      const result = await runRequest(
-        request,
-        updateLeadCommand(environment, params.id, parsed.data),
-      );
-      if ('error' in result) {
-        return result.error;
-      }
-
-      return result.data
-        ? { data: result.data }
-        : errorResponse(404, 'not_found', 'Lead not found.');
-    },
+    updateLead: ({
+      params,
+      payload,
+      request,
+    }: ParametersArguments & { payload: UpdateLeadRequest }) =>
+      Effect.gen(function* () {
+        const web = yield* webRequest(request);
+        const lead = yield* traced(
+          web,
+          mapApiError(web, updateLeadCommand(environment, params.id, payload)),
+        );
+        return lead === null
+          ? yield* Effect.fail(
+              new ApiNotFoundError({
+                code: 'not_found',
+                message: 'Lead not found.',
+              }),
+            )
+          : { data: toLeadView(lead) };
+      }),
   };
 };
