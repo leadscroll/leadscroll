@@ -3,6 +3,7 @@ import {
   ApiForbiddenError,
   ApiInternalError,
   ApiNotFoundError,
+  ApiServiceUnavailableError,
 } from '../errors';
 import { rejectUntrustedOrigin } from '../guards';
 import { runBoundary } from '../handler-utilities';
@@ -62,10 +63,16 @@ export const createInviteValidationHandlers = (
                   code: 'forbidden',
                   message: 'The request origin is not trusted.',
                 })
-              : new ApiInternalError({
-                  code: 'internal_error',
-                  message: 'The invitation could not be checked.',
-                }),
+              : rejected.status === 503
+                ? new ApiServiceUnavailableError({
+                    code: 'authentication_not_configured',
+                    message:
+                      'Authentication is not configured on this deployment.',
+                  })
+                : new ApiInternalError({
+                    code: 'internal_error',
+                    message: 'The invitation could not be checked.',
+                  }),
           );
         }
 
@@ -236,7 +243,7 @@ export const createAccessHandlers = (options: AccessHandlerOptions) => {
 
         if (outcome.kind === 'last-enabled') {
           return yield* Effect.fail(
-            new ApiForbiddenError({
+            new ApiConflictError({
               code: 'conflict',
               message: 'The last enabled staff account cannot be disabled.',
             }),

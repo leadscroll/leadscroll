@@ -346,7 +346,9 @@ const emailEndpoints = [
 
 export const api = HttpApi.make('leadscroll').add(
   HttpApiGroup.make('health').add(healthEndpoint),
-  HttpApiGroup.make('invites').add(inviteValidationEndpoint),
+  HttpApiGroup.make('invites')
+    .add(inviteValidationEndpoint)
+    .middleware(ApiSchemaErrors),
   HttpApiGroup.make('intake').add(...intakeEndpoints),
   HttpApiGroup.make('leads')
     .add(...leadEndpoints)

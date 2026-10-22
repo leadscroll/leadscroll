@@ -302,6 +302,21 @@ test('invite lifecycle: create, list, validate, revoke', async () => {
   }
 });
 
+test('validate rejects invalid payloads with the documented 422 envelope', async () => {
+  const fx = await startFixture();
+  try {
+    const invalid = await fx.raw('/api/invites/validate', 'POST', {});
+    expect(invalid.status).toBe(422);
+    expect(invalid.json).toMatchObject({
+      _tag: 'ApiValidationError',
+      code: 'validation_error',
+      message: 'The request is invalid.',
+    });
+  } finally {
+    await fx.dispose();
+  }
+});
+
 test('validate rejects hostile browser origins, allows non-browser clients', async () => {
   const fx = await startFixture();
   try {
