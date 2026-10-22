@@ -12,6 +12,25 @@ Thanks for improving Cloudflare LeadScroll.
 
 Report security issues privately as described in [SECURITY.md](SECURITY.md).
 
+## Source file size
+
+ESLint enforces `max-lines` on `src/**/*.{ts,tsx}`: 400 effective lines,
+ignoring blank lines and comments. A new module above the limit must be split
+rather than exempted. `eslint.config.mjs` ratchets the modules that predate the
+limit: their per-file ceilings equal their current effective-line count. Lower a
+ceiling when a split reduces the file, and delete the entry once it is at or
+below 400; never raise one. The splitting work is tracked in #141.
+
+When a source file must be split, replace it with a folder of the same name and
+make `index.ts` (or `index.tsx` for a component) the public entry point. Keep
+the split modules inside that folder instead of creating prefixed sibling files
+such as `thing-shared.ts`. Importers continue to use the original module path.
+
+`max-lines-per-function` is not enabled. The largest functions are composition
+factories and page components rather than single long procedures, so the rule
+would flag structure instead of review risk. Revisit it if one long procedure
+becomes the review problem.
+
 ## Backlog
 
 GitHub Issues is the project backlog. Deferred work recorded in a gig's

@@ -83,6 +83,39 @@ export default defineConfig(
     },
   },
   {
+    // Keep source modules reviewable as a unit. Blank and comment lines are
+    // free, so this is an effective-code limit, not a formatting limit. See
+    // "Source file size" in CONTRIBUTING.md.
+    files: ['src/**/*.{ts,tsx}'],
+    rules: {
+      'max-lines': [
+        'error',
+        { max: 400, skipBlankLines: true, skipComments: true },
+      ],
+    },
+  },
+  // Modules that predate the limit are pinned at their current effective-line
+  // count: the ceiling may decrease as they are split, but never increase.
+  // Delete an entry once the file is at or below 400. Tracked in #141.
+  ...Object.entries({
+    'src/account/AccountPage/index.tsx': 500,
+    'src/App.tsx': 1_144,
+    'src/application/notification-settings.ts': 427,
+    'src/application/notification-test-send.ts': 407,
+    'src/db/repositories/leads.ts': 486,
+    'src/db/repositories/tags.ts': 953,
+    'src/domain/schemas.ts': 647,
+    'src/notifications/ManageEmailPage/EmailSettingsPanel.tsx': 461,
+  }).map(([file, max]) => ({
+    files: [file],
+    rules: {
+      'max-lines': ['error', { max, skipBlankLines: true, skipComments: true }],
+    },
+  })),
+  // max-lines-per-function is intentionally not enabled: the largest functions
+  // are composition factories and page components, not one long procedure.
+  // The evaluation is recorded in #141.
+  {
     files: ['tests/auth.test.ts'],
     rules: {
       // expectUnauthorized is a local assertion helper that wraps expect()
