@@ -102,8 +102,6 @@ export default defineConfig(
     'src/App.tsx': 1_144,
     'src/application/notification-settings.ts': 427,
     'src/application/notification-test-send.ts': 407,
-    'src/db/repositories/leads.ts': 486,
-    'src/db/repositories/tags.ts': 953,
     'src/notifications/ManageEmailPage/EmailSettingsPanel.tsx': 461,
   }).map(([file, max]) => ({
     files: [file],
