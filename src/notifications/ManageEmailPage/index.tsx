@@ -1,8 +1,6 @@
 import { emailSettingsQueryKey, notificationsApi } from '../api';
-import {
-  EmailAvailabilityChip,
-  EmailSettingsPanel,
-} from './EmailSettingsPanel';
+import { EmailAvailabilityChip } from './EmailAvailabilityChip';
+import { EmailSettingsPanel } from './EmailSettingsPanel';
 import { PageHeader } from '@/components/PageHeader';
 import { useSession } from '@/lib/auth-client';
 import { useQuery } from '@tanstack/react-query';

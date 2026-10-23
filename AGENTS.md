@@ -6,12 +6,22 @@ coding agents; the machine-wide `/mnt/data/AGENTS.md` still applies on top.
 ## Stack
 
 - Cloudflare Worker serving Elysia (HTTP) + React/Vite workbench, D1 database.
-- Validation and public contracts live in Effect Schema (`src/domain/schemas.ts`).
+- Validation and public contracts live in Effect Schema (`src/domain/schemas/`).
   Do not add a second validator for a schema that already has one.
 - Drizzle stays inside `src/db/repository.ts`; business rules go in Effect
   commands (`src/application/`). Keep that boundary.
 - Node 24.20.0 (see `.node-version`), pnpm 10.34.5 (see `packageManager`).
   Use `pnpm run <script>` and `pnpm exec <tool>`; do not introduce Bun.
+
+## Source layout
+
+- When a source file must be split, replace it with a folder of the same name.
+  `index.ts` (or `index.tsx` for a component) is the public entry point, and the
+  split modules live inside that folder. Do not leave prefixed sibling files
+  such as `thing-shared.ts`.
+- Importers keep using the original module path. This keeps imports stable and
+  avoids a flat namespace of filename prefixes. The convention applies when a
+  file is exploded into multiple modules, not to ordinary single-file modules.
 
 ## Before opening a PR
 
