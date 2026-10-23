@@ -83,6 +83,20 @@ export default defineConfig(
     },
   },
   {
+    // Keep source modules reviewable as a unit. Blank and comment lines are
+    // free, so this is an effective-code limit, not a formatting limit. There
+    // are no per-file exemptions. See "Source file size" in CONTRIBUTING.md.
+    files: ['src/**/*.{ts,tsx}'],
+    rules: {
+      'max-lines': [
+        'error',
+        { max: 400, skipBlankLines: true, skipComments: true },
+      ],
+    },
+  },
+  // max-lines-per-function is intentionally not enabled: the largest functions
+  // are composition factories and page components, not one long procedure.
+  {
     files: ['tests/auth.test.ts'],
     rules: {
       // expectUnauthorized is a local assertion helper that wraps expect()
