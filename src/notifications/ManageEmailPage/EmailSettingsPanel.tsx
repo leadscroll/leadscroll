@@ -5,8 +5,9 @@ import {
   notificationsApi,
 } from '../api';
 import { EnvironmentDetails } from './EnvironmentDetails';
-import { PROVIDER_LABELS, readinessReasonLabel } from './labels';
 import { MethodPicker } from './MethodPicker';
+import { ReadValues } from './ReadValues';
+import { ResendKeyFields } from './ResendKeyFields';
 import {
   apiKeyValidationError,
   type ManageEmailFormValues,
@@ -20,144 +21,11 @@ import { Button } from '@/components/ui/Button';
 import { Field } from '@/components/ui/Field';
 import { Form } from '@/components/ui/Form';
 import { inputClass } from '@/components/ui/form';
-import { type NotificationAvailability } from '@/domain/schemas';
 import { ApiClientError } from '@/lib/http';
-import { cn } from '@/lib/styles';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
-import { useForm, type UseFormRegister } from 'react-hook-form';
+import { useForm } from 'react-hook-form';
 import { toast } from 'sonner';
-
-const ValueRow = ({
-  children,
-  label,
-}: {
-  readonly children: React.ReactNode;
-  readonly label: string;
-}) => (
-  <div className="grid grid-cols-[130px_minmax(0,1fr)] gap-4 border-b border-slate-800 py-3 last:border-b-0">
-    <dt className="pt-0.5 text-xs text-slate-500">{label}</dt>
-    <dd className="min-w-0 text-sm text-slate-200">{children}</dd>
-  </div>
-);
-
-export const EmailAvailabilityChip = ({
-  availability,
-}: {
-  readonly availability: NotificationAvailability;
-}) => {
-  const state =
-    availability === 'configured'
-      ? { dot: 'bg-emerald-400', label: 'Configured', tone: 'text-emerald-200' }
-      : availability === 'misconfigured'
-        ? { dot: 'bg-amber-400', label: 'Incomplete', tone: 'text-amber-200' }
-        : { dot: 'bg-slate-500', label: 'Off', tone: 'text-slate-400' };
-
-  return (
-    <span className={cn('inline-flex items-center gap-2 text-xs', state.tone)}>
-      <span className={cn('h-1.5 w-1.5 rounded-full', state.dot)} />
-      {state.label}
-    </span>
-  );
-};
-
-const ReadValues = ({ settings }: { readonly settings: EmailSettingsView }) => (
-  <dl className="px-5 pb-1">
-    <ValueRow label="Method">
-      {PROVIDER_LABELS[settings.provider]}
-      {settings.provider === 'disabled' && (
-        <span className="mt-1 block text-xs text-slate-500">
-          No lead email is sent. Staff preferences are kept.
-        </span>
-      )}
-      {settings.provider !== 'disabled' &&
-        settings.readiness.availability === 'misconfigured' && (
-          <span className="mt-1 block text-xs text-amber-200">
-            {readinessReasonLabel(settings.readiness.reasonCode) ??
-              'Complete the saved method.'}
-          </span>
-        )}
-    </ValueRow>
-    {settings.provider !== 'disabled' && (
-      <>
-        <ValueRow label="From name">{settings.fromName ?? 'Not set'}</ValueRow>
-        <ValueRow label="From address">
-          {settings.fromEmail ?? 'Not set'}
-        </ValueRow>
-        {settings.provider === 'resend' && (
-          <ValueRow label="API key">
-            {settings.hasApiKey ? 'Stored' : 'Not stored'}
-          </ValueRow>
-        )}
-      </>
-    )}
-  </dl>
-);
-
-const selectStoredKey = (
-  event:
-    React.FocusEvent<HTMLInputElement> | React.MouseEvent<HTMLInputElement>,
-) => {
-  if (event.currentTarget.value === STORED_API_KEY_SENTINEL) {
-    event.currentTarget.select();
-  }
-};
-
-const ResendKeyFields = ({
-  apiKeyError,
-  hasStoredKey,
-  pending,
-  register,
-  removeKey,
-}: {
-  readonly apiKeyError?: string;
-  readonly hasStoredKey: boolean;
-  readonly pending: boolean;
-  readonly register: UseFormRegister<ManageEmailFormValues>;
-  readonly removeKey: boolean;
-}) => (
-  <div className="grid max-w-md gap-3">
-    <Field
-      error={apiKeyError}
-      hint={
-        hasStoredKey
-          ? 'A key is stored. Leave the masked value unchanged to keep it, or type a new key to replace it.'
-          : 'Write-only: it is never redisplayed, cached, or stored in the browser.'
-      }
-      label="Resend API key"
-    >
-      <input
-        autoComplete="new-password"
-        className={inputClass}
-        disabled={pending || removeKey}
-        onClick={selectStoredKey}
-        onFocus={selectStoredKey}
-        placeholder={hasStoredKey ? undefined : 're_…'}
-        type="password"
-        {...register('apiKey')}
-      />
-    </Field>
-    {hasStoredKey && (
-      <label className="flex items-start gap-2 text-xs text-slate-400">
-        <input
-          className="mt-0.5"
-          disabled={pending}
-          type="checkbox"
-          {...register('removeKey')}
-        />
-        <span>
-          Remove the stored key. Saving switches sending to Off and keeps the
-          sender details.
-        </span>
-      </label>
-    )}
-    {removeKey && (
-      <p className="text-xs text-rose-200">
-        The key will be removed and sending will switch to Off when you save.
-      </p>
-    )}
-  </div>
-);
 
 export const EmailSettingsPanel = ({
   accountEmail,
