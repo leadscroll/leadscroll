@@ -34,7 +34,7 @@
   "description": "A Cloudflare-native, self-hosted CRM for inbound lead teams.",
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.22.0",
-    "@cloudflare/workers-types": "^5.20261014.1",
+    "@cloudflare/workers-types": "^5.20261019.1",
     "@tailwindcss/vite": "^4.1.18",
     "@types/node": "^24.10.0",
     "@types/react": "^19.3.0",
