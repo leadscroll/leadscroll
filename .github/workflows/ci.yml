@@ -39,6 +39,9 @@ jobs:
       - name: Typecheck
         run: pnpm run typecheck
 
+      - name: Effect diagnostics
+        run: pnpm exec effect-language-service diagnostics --project tsconfig.json --severity error --format github-actions
+
       - name: Test
         run: pnpm exec vitest run
 

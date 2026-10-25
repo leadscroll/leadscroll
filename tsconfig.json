@@ -1,4 +1,5 @@
 {
+  "$schema": "./node_modules/@effect/language-service/schema.json",
   "compilerOptions": {
     "allowImportingTsExtensions": false,
     "baseUrl": ".",
@@ -17,6 +18,11 @@
         "./src/*"
       ]
     },
+    "plugins": [
+      {
+        "name": "@effect/language-service"
+      }
+    ],
     "resolveJsonModule": true,
     "skipLibCheck": true,
     "strict": true,

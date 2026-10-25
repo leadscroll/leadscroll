@@ -29,6 +29,11 @@ Run `pnpm run check` (lint + typecheck + test). It must be green. The CI job
 `.github/workflows/ci.yml` runs the same thing plus a build and a
 `wrangler deploy --dry-run`, so a local pass means CI will pass.
 
+Also run `pnpm run check:effect` (Effect language-service diagnostics).
+Error-severity diagnostics block CI; warnings and messages are advisory. Do not
+patch TypeScript or add the language service to a `prepare` script; see
+`CONTRIBUTING.md`.
+
 Do not copy code, product copy, UI assets, or screenshots from Attio, HubSpot,
 Twenty, or other reference products. See `CONTRIBUTING.md` and `SECURITY.md`.
 

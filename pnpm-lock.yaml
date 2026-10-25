@@ -66,6 +66,9 @@ importers:
       '@cloudflare/workers-types':
         specifier: ^5.20261014.1
         version: 5.20261014.1
+      '@effect/language-service':
+        specifier: 0.87.5
+        version: 0.87.5
       '@tailwindcss/vite':
         specifier: ^4.1.18
         version: 4.3.3(vite@7.3.7(@types/node@24.13.3)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.23.12)(yaml@2.9.1))
@@ -421,6 +424,10 @@ packages:
 
   '@drizzle-team/brocli@0.10.2':
     resolution: {integrity: sha512-z33Il7l5dKjUgGULTqBsQBQwckHh5AbIuxhdsIxDDiZAzBOrZO6q9ogcWC65kU382AfynTfgNumVcNIjuIua6w==}
+
+  '@effect/language-service@0.87.5':
+    resolution: {integrity: sha512-np/zJgk71/PyHxtoqyUKLYcpQhoRBI+L6+1Z0ILk35JSQ/lvXzwlwOwddYZLDkeC4bdF2ukKekqKlla/F88R5w==}
+    hasBin: true
 
   '@emnapi/core@1.10.0':
     resolution: {integrity: sha512-yq6OkJ4p82CAfPl0u9mQebQHKPJkY7WrIuk205cTYnYe+k2Z8YBh11FrbRG/H6ihirqcacOgl2BIO8oyMQLeXw==}
@@ -5656,6 +5663,8 @@ snapshots:
       '@jridgewell/trace-mapping': 0.3.9
 
   '@drizzle-team/brocli@0.10.2': {}
+
+  '@effect/language-service@0.87.5': {}
 
   '@emnapi/core@1.10.0':
     dependencies:
