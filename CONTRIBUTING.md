@@ -28,6 +28,29 @@ factories and page components rather than single long procedures, so the rule
 would flag structure instead of review risk. Revisit it if one long procedure
 becomes the review problem.
 
+## Effect diagnostics
+
+`@effect/language-service` is installed as a TypeScript language-service plugin
+and is also available as a CLI:
+
+```sh
+pnpm run check:effect
+```
+
+CI runs it with `--severity error`, so an error-severity Effect diagnostic blocks
+a pull request; warnings and messages are advisory. The plugin's defaults are
+the project baseline. Do not enable the Effect-native or platform rules that
+flag React, Worker, logging, or test code without discussing it first.
+
+Use the workspace TypeScript version in your editor so the plugin loads. In VS
+Code, run "TypeScript: Select TypeScript Version" and choose "Use Workspace
+Version".
+
+Do not run `effect-language-service patch` or add it to a `prepare` script.
+Patching makes `tsc --noEmit` fail on message-severity diagnostics and can skip
+files when `tsconfig.tsbuildinfo` is warm. The standalone diagnostics command is
+the supported check.
+
 ## Backlog
 
 GitHub Issues is the project backlog. Deferred work recorded in a gig's
