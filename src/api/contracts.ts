@@ -12,6 +12,7 @@ import {
   CreateTokenRequestSchema,
   EmailSettingsViewSchema,
   EmailTestViewSchema,
+  ExportLeadsQuerySchema,
   HealthSchema,
   IntakeRequestSchema,
   LeadActivitiesSchema,
@@ -54,6 +55,18 @@ const LeadDeletedResponse = Schema.Struct({
     deleted: Schema.Number.check(Schema.isInt()),
   }),
 });
+// Streamed so a large export never has to be assembled into one Worker
+// string. The filename and cache policy are response headers, not body data.
+const LeadCsvExportResponse = HttpApiSchema.WithHeaders(
+  HttpApiSchema.StreamUint8Array({
+    contentType: 'text/csv; charset=utf-8',
+  }),
+  {
+    'cache-control': Schema.String,
+    'content-disposition': Schema.String,
+    'x-content-type-options': Schema.String,
+  },
+);
 const LeadActivityCreatedResponse = Schema.Struct({
   data: LeadActivitySchema,
 }).pipe(HttpApiSchema.status(201));
@@ -170,6 +183,11 @@ const intakeEndpoints = [
 ] as const;
 
 const leadEndpoints = [
+  HttpApiEndpoint.get('exportLeads', '/v1/leads/export', {
+    error: StaffApiErrors,
+    query: ExportLeadsQuerySchema,
+    success: LeadCsvExportResponse,
+  }),
   HttpApiEndpoint.get('listLeads', '/v1/leads', {
     error: StaffApiErrors,
     query: ListLeadsQuerySchema,

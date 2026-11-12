@@ -5,5 +5,19 @@ export {
   softDeleteLeads,
   updateLead,
 } from './mutations';
-export { getLead, listLeadActivities, listLeads } from './queries';
-export { type LeadPage, type LeadPageOptions, type LeadRecord } from './shared';
+export {
+  getLead,
+  listLeadActivities,
+  listLeadCustomFieldKeys,
+  listLeadExportPage,
+  listLeads,
+} from './queries';
+export {
+  type LeadExportPage,
+  type LeadExportPageOptions,
+  type LeadExportRow,
+  type LeadFilterOptions,
+  type LeadPage,
+  type LeadPageOptions,
+  type LeadRecord,
+} from './shared';

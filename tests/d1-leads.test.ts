@@ -138,6 +138,7 @@ const insertLead = async (
   database: D1Database,
   lead: {
     createdAt: number;
+    customFields?: Record<string, unknown>;
     deletedAt?: null | number;
     email?: null | string;
     firstName?: null | string;
@@ -153,7 +154,7 @@ const insertLead = async (
         id, email, first_name, last_name,
         source, estimated_value, custom_fields,
         created_at, updated_at, deleted_at
-      ) VALUES (?, ?, ?, ?, ?, NULL, '{}', ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)`,
     )
     .bind(
       lead.id,
@@ -161,11 +162,23 @@ const insertLead = async (
       lead.firstName ?? 'Test',
       lead.lastName ?? 'Lead',
       lead.source ?? 'website',
+      JSON.stringify(lead.customFields ?? {}),
       lead.createdAt,
       lead.createdAt,
       lead.deletedAt ?? null,
     )
     .run();
+};
+
+const exportCsv = async (
+  fx: LeadsFixture,
+  path = '',
+): Promise<{ bytes: Uint8Array; response: Response; text: string }> => {
+  const response = await fx.fetch(
+    `https://leads-test.example/v1/leads/export${path}`,
+  );
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  return { bytes, response, text: new TextDecoder().decode(bytes) };
 };
 
 test('lead list searches, excludes deleted rows, pages, and hints duplicates', async () => {
@@ -297,6 +310,12 @@ test('staff routes require a session', async () => {
     const response = await fx.api('/v1/leads');
     expect(response.status).toBe(401);
     expect(response.json).toMatchObject({ code: 'unauthorized' });
+
+    const exportResponse = await exportCsv(fx);
+    expect(exportResponse.response.status).toBe(401);
+    expect(JSON.parse(exportResponse.text)).toMatchObject({
+      code: 'unauthorized',
+    });
   } finally {
     await fx.dispose();
   }
@@ -392,6 +411,117 @@ test('equal createdAt ties order by id DESC and page without gaps', async () => 
       ),
     ).toEqual(['01ARZ3NDEKTSV4RRFFQ69G5FB0']);
     expect(page3.json.nextCursor).toBeNull();
+  } finally {
+    await fx.dispose();
+  }
+});
+
+test('lead export streams the filtered live set with dynamic custom columns', async () => {
+  const fx = await startFixture();
+  try {
+    const now = Date.now();
+    const tagId = '01ARZ3NDEKTSV4RRFFQ69G5FC0';
+    const tagJoinId = '01ARZ3NDEKTSV4RRFFQ69G5FC1';
+    const tagScopeId = '01ARZ3NDEKTSV4RRFFQ69G5FC2';
+    await insertLead(fx.db, {
+      createdAt: now - 1_000,
+      customFields: {
+        company: 'Acme, Inc.',
+        note: '=2+2',
+        projectType: 'Website',
+      },
+      email: 'ada@example.test',
+      firstName: 'Ada',
+      id: '01ARZ3NDEKTSV4RRFFQ69G5FB0',
+      lastName: 'Lovelace',
+    });
+    await insertLead(fx.db, {
+      createdAt: now - 2_000,
+      customFields: { budget: 5_000, company: 'Navy' },
+      email: 'grace@example.test',
+      firstName: 'Grace',
+      id: '01ARZ3NDEKTSV4RRFFQ69G5FB1',
+      lastName: 'Hopper',
+      source: 'api',
+    });
+    await insertLead(fx.db, {
+      createdAt: now - 500,
+      customFields: { company: 'Deleted Co' },
+      deletedAt: now - 250,
+      email: 'deleted@example.test',
+      firstName: 'Deleted',
+      id: '01ARZ3NDEKTSV4RRFFQ69G5FB2',
+    });
+    await fx.db
+      .prepare(
+        'INSERT INTO tag_scopes (id, prefix, color, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
+      )
+      .bind(tagScopeId, 'stage', '#334155', now, now)
+      .run();
+    await fx.db
+      .prepare(
+        'INSERT INTO tags (id, name, color, scope_id, created_at, updated_at) VALUES (?, ?, NULL, ?, ?, ?)',
+      )
+      .bind(tagId, 'qualified', tagScopeId, now, now)
+      .run();
+    await fx.db
+      .prepare(
+        'INSERT INTO lead_tags (id, lead_id, scope_id, tag_id, created_at) VALUES (?, ?, ?, ?, ?)',
+      )
+      .bind(tagJoinId, '01ARZ3NDEKTSV4RRFFQ69G5FB1', tagScopeId, tagId, now)
+      .run();
+
+    const all = await exportCsv(fx);
+    expect(all.response.status).toBe(200);
+    expect(all.bytes.slice(0, 3)).toEqual(Uint8Array.from([239, 187, 191]));
+    expect(all.response.headers.get('content-type')).toContain('text/csv');
+    expect(all.response.headers.get('cache-control')).toBe('no-store');
+    expect(all.response.headers.get('x-content-type-options')).toBe('nosniff');
+    expect(all.response.headers.get('content-disposition')).toMatch(
+      /^attachment; filename="leadscroll-leads-\d{4}-\d{2}-\d{2}\.csv"$/u,
+    );
+    const allLines = all.text.split('\r\n').filter((line) => line !== '');
+    expect(allLines).toHaveLength(3);
+    expect(allLines[0]).toBe(
+      'id,First name,Last name,Email,Source,Estimated value,Origin,Created at,Updated at,Budget,Company,Note,Project Type',
+    );
+    expect(allLines[1]).toContain('ada@example.test');
+    expect(allLines[1]).toContain('"Acme, Inc."');
+    expect(allLines[1]).toContain("'=2+2");
+    expect(allLines[2]).toContain('grace@example.test');
+    expect(allLines[2]).toContain(',5000,Navy,');
+    expect(all.text).not.toContain('Deleted');
+    expect(all.text).not.toContain('Tags');
+
+    const filtered = await exportCsv(fx, '?query=Ada');
+    expect(filtered.response.status).toBe(200);
+    const filteredLines = filtered.text
+      .split('\r\n')
+      .filter((line) => line !== '');
+    expect(filteredLines).toHaveLength(2);
+    expect(filteredLines[0]).toContain('Updated at,Company,Note,Project Type');
+    expect(filteredLines[0]).not.toContain('Budget');
+    expect(filteredLines[1]).toContain('ada@example.test');
+
+    const byTag = await exportCsv(fx, `?tag=${tagId}`);
+    expect(byTag.response.status).toBe(200);
+    const tagLines = byTag.text.split('\r\n').filter((line) => line !== '');
+    expect(tagLines).toHaveLength(2);
+    expect(tagLines[0]).toContain('Updated at,Budget,Company');
+    expect(tagLines[0]).not.toContain('Note');
+    expect(tagLines[1]).toContain('grace@example.test');
+
+    const byScope = await exportCsv(fx, `?tagScope=${tagScopeId}`);
+    expect(byScope.response.status).toBe(200);
+    expect(byScope.text).toBe(byTag.text);
+
+    const empty = await exportCsv(fx, '?query=NoSuchLead');
+    expect(empty.response.status).toBe(200);
+    const emptyLines = empty.text.split('\r\n').filter((line) => line !== '');
+    expect(emptyLines).toHaveLength(1);
+    expect(emptyLines[0]).toBe(
+      'id,First name,Last name,Email,Source,Estimated value,Origin,Created at,Updated at',
+    );
   } finally {
     await fx.dispose();
   }

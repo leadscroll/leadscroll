@@ -438,6 +438,18 @@ Unknown or soft-deleted ids return `404 not_found`.
 `deletedAt` set, disappear from `GET /v1/leads`, and keep their activity
 history. That is the spam workflow: select rows in the table and delete them.
 
+`GET /v1/leads/export` downloads the same filtered, live lead set as CSV
+(`text/csv; charset=utf-8`, attachment, `no-store`). It accepts the same
+`query`, `tag`, and `tagScope` filters as `GET /v1/leads`, but no cursor or
+page size: the export reads every matching lead, not just the loaded page.
+The fixed columns are `id`, first name, last name, email, source, estimated
+value, origin, and created/updated timestamps. Custom-field keys are appended
+as extra columns from the union across the exported rows, so forms with
+different fields keep their values in the right columns. Tags are not part of
+the export yet. The file uses a UTF-8 BOM, CRLF line endings, RFC 4180 quoting,
+and neutralizes leading `=`, `+`, `-`, `@`, tab, or CR characters in string
+cells so spreadsheet formulas cannot execute.
+
 ### Tags
 
 `prefix:value` tags share a scope and are globally exclusive per lead; plain
