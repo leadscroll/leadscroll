@@ -62,6 +62,18 @@ status.
   the HTTP boundary.
 - Email settings responses are marked `cache-control: no-store`.
 
+## CSV export
+
+`GET /v1/leads/export` reuses the lead-list `query`, `tag`, and `tagScope`
+filters but ignores pagination: it streams every matching live lead as
+`text/csv; charset=utf-8`. The response is an attachment with `no-store` and
+`x-content-type-options: nosniff`.
+
+The header is written first, so the dynamic custom-field columns (the union of
+keys across the filtered set) are resolved before the row stream starts. The
+success schema is `HttpApiSchema.StreamUint8Array`, not JSON. Tags and intake
+diagnostics are not exported.
+
 ## Raw exceptions
 
 Two route families intentionally keep raw request handling:

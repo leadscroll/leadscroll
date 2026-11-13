@@ -12,7 +12,8 @@ import {
   softDeleteLeadsCommand,
   updateLeadCommand,
 } from '@/application/commands';
-import { persist } from '@/application/errors';
+import { persist, PersistenceError } from '@/application/errors';
+import { prepareLeadCsvExport } from '@/application/lead-export';
 import { bulkTagCommand, setLeadTagsCommand } from '@/application/tag-commands';
 import {
   type Env,
@@ -24,12 +25,14 @@ import { decodeKeysetCursor, LIST_LIMIT_DEFAULT } from '@/domain/pagination';
 import {
   type CreateLeadActivityRequest,
   type CreateLeadRequest,
+  type ExportLeadsQuery,
   type ListLeadsQuery,
   type UpdateLeadRequest,
 } from '@/domain/schemas';
 import { requestTelemetry } from '@/telemetry/request';
-import { Effect } from 'effect';
+import { Effect, Stream } from 'effect';
 import { HttpServerRequest } from 'effect/http';
+import { HttpApiSchema } from 'effect/http-api';
 
 type HandlerOptions = {
   dispatcher: NotificationDispatcherShape;
@@ -50,6 +53,8 @@ type RequestArguments = {
 
 const webRequest = (request: HttpServerRequest.HttpServerRequest) =>
   HttpServerRequest.toWeb(request).pipe(Effect.orDie);
+
+const csvEncoder = new TextEncoder();
 
 const traced = <A, E, R>(
   request: Request,
@@ -156,6 +161,34 @@ export const createLeadsHandlers = (options: HandlerOptions) => {
               }),
             )
           : { data: toLeadActivity(activity) };
+      }),
+
+    exportLeads: ({ query, request }: QueryArguments<ExportLeadsQuery>) =>
+      Effect.gen(function* () {
+        const web = yield* webRequest(request);
+        const prepared = yield* traced(
+          web,
+          mapApiError(
+            web,
+            prepareLeadCsvExport(environment, {
+              query: query.query,
+              tagId: query.tag,
+              tagScopeId: query.tagScope,
+            }),
+          ),
+        );
+        const body = Stream.fromAsyncIterable(
+          prepared.chunks,
+          (cause) => new PersistenceError({ cause }),
+        ).pipe(Stream.map((chunk) => csvEncoder.encode(chunk)));
+        return HttpApiSchema.withHeaders({
+          body,
+          headers: {
+            'cache-control': 'no-store',
+            'content-disposition': `attachment; filename="${prepared.filename}"`,
+            'x-content-type-options': 'nosniff',
+          },
+        });
       }),
 
     getLead: ({ params, request }: ParametersArguments) =>
