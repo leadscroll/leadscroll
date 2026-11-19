@@ -1,4 +1,5 @@
 import { CreateLeadDialog } from './CreateLeadDialog';
+import { ExportLeadsButton } from './ExportLeadsButton';
 import { ConfirmDialog } from '@/components/ConfirmDialog';
 import { Notice } from '@/components/Notice';
 import { PageHeader } from '@/components/PageHeader';
@@ -103,9 +104,15 @@ export const LeadsPage = () => {
     <>
       <PageHeader
         action={
-          <Button onClick={() => setShowCreate(true)}>
-            <Plus size={15} /> Add lead
-          </Button>
+          <div className="flex items-center gap-2">
+            <ExportLeadsButton
+              search={search}
+              tagFilter={tagFilter}
+            />
+            <Button onClick={() => setShowCreate(true)}>
+              <Plus size={15} /> Add lead
+            </Button>
+          </div>
         }
         title="Leads"
       />

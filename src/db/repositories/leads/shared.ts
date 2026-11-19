@@ -2,19 +2,50 @@ import { leads } from '../../schema';
 import { type TagViewRecord } from '../tags';
 import { type Keyset } from '@/domain/pagination';
 import { type SkippedField } from '@/domain/schemas';
-import { sql } from 'drizzle-orm';
+import { isNull, sql } from 'drizzle-orm';
+
+export type LeadExportPage = {
+  nextCursor: null | string;
+  rows: LeadExportRow[];
+};
+
+export type LeadExportPageOptions = LeadFilterOptions & {
+  cursor?: Keyset | null;
+  limit: number;
+};
+
+/**
+ * The minimal lead projection used by the CSV export. Tags, duplicate hints,
+ * and diagnostics are deliberately absent: an export row is the lead's own
+ * data, not a list-view decoration.
+ */
+export type LeadExportRow = {
+  createdAt: Date;
+  customFields: Record<string, unknown>;
+  email: null | string;
+  estimatedValue: null | number;
+  firstName: null | string;
+  id: string;
+  lastName: null | string;
+  origin: null | string;
+  source: string;
+  updatedAt: Date;
+};
+
+export type LeadFilterOptions = {
+  query?: string;
+  tagId?: string;
+  tagScopeId?: string;
+};
 
 export type LeadPage = {
   leads: LeadRecord[];
   nextCursor: null | string;
 };
 
-export type LeadPageOptions = {
+export type LeadPageOptions = LeadFilterOptions & {
   cursor?: Keyset | null;
   limit: number;
-  query?: string;
-  tagId?: string;
-  tagScopeId?: string;
 };
 
 export type LeadRecord = {
@@ -48,6 +79,45 @@ export type LeadRecord = {
 export const leadSearchPredicate = (query: string) => {
   const needle = sql`lower(${query})`;
   return sql`(instr(lower(${leads.email}), ${needle}) > 0 OR instr(lower(${leads.firstName}), ${needle}) > 0 OR instr(lower(${leads.lastName}), ${needle}) > 0)`;
+};
+
+/**
+ * The shared live-lead filter for the list and the CSV export. Keeping one
+ * builder means `query`, `tag`, and `tagScope` can never mean different things
+ * in the two read paths.
+ */
+export const leadFilterPredicates = ({
+  query,
+  tagId,
+  tagScopeId,
+}: LeadFilterOptions) => {
+  const predicates = [isNull(leads.deletedAt)];
+  if (query) {
+    predicates.push(leadSearchPredicate(query));
+  }
+
+  if (tagId) {
+    predicates.push(
+      sql`EXISTS (SELECT 1 FROM lead_tags AS tag_filter WHERE tag_filter.lead_id = ${leads.id} AND tag_filter.tag_id = ${tagId})`,
+    );
+  }
+
+  if (tagScopeId) {
+    predicates.push(
+      sql`EXISTS (SELECT 1 FROM lead_tags AS tag_filter WHERE tag_filter.lead_id = ${leads.id} AND tag_filter.scope_id = ${tagScopeId})`,
+    );
+  }
+
+  return predicates;
+};
+
+/**
+ * Keyset position over (created_at DESC, id DESC). The cursor instant is
+ * validated by `decodeKeysetCursor` before it reaches this builder.
+ */
+export const leadKeysetPredicate = (cursor: Keyset) => {
+  const cursorTime = Date.parse(cursor.createdAt);
+  return sql`(${leads.createdAt} < ${cursorTime} OR (${leads.createdAt} = ${cursorTime} AND ${leads.id} < ${cursor.id}))`;
 };
 
 /**

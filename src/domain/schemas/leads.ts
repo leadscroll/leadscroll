@@ -93,6 +93,17 @@ export const ListLeadsQuerySchema = Schema.Struct({
 });
 export type ListLeadsQuery = Schema.Schema.Type<typeof ListLeadsQuerySchema>;
 
+// CSV export accepts the same filters as the list, but not a cursor or page
+// size: the export reads the whole filtered set.
+export const ExportLeadsQuerySchema = Schema.Struct({
+  query: Schema.optional(NonEmptyStringSchema),
+  tag: Schema.optional(RecordIdSchema),
+  tagScope: Schema.optional(RecordIdSchema),
+});
+export type ExportLeadsQuery = Schema.Schema.Type<
+  typeof ExportLeadsQuerySchema
+>;
+
 // Lead writes. `CreateLeadRequestSchema` covers manual/operator entry; intake
 // has its own flat `IntakeRequestSchema` because it is the
 // unauthenticated-token contract.
