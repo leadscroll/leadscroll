@@ -71,8 +71,12 @@ filters but ignores pagination: it streams every matching live lead as
 
 The header is written first, so the dynamic custom-field columns (the union of
 keys across the filtered set) are resolved before the row stream starts. The
-success schema is `HttpApiSchema.StreamUint8Array`, not JSON. Tags and intake
-diagnostics are not exported.
+row stream uses 5,000-row keyset pages, sized to stay within D1's
+per-invocation query budget (50 on Free, 1,000 on Paid) and its 50 MB
+per-query result cap. If a matching lead gains an unplanned custom field
+between key discovery and its page read, the stream fails instead of silently
+dropping the value. The success schema is `HttpApiSchema.StreamUint8Array`, not
+JSON. Tags and intake diagnostics are not exported.
 
 ## Raw exceptions
 

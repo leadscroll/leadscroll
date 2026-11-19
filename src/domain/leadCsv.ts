@@ -99,6 +99,15 @@ export const planLeadCsvColumns = (
   return columns;
 };
 
+// A row may contain a custom key that was not present when the headers were
+// planned if a matching lead is edited between the key query and its page read.
+// The caller uses this to fail the export instead of silently dropping a value.
+export const hasUnplannedCustomFields = (
+  row: LeadCsvRow,
+  plannedKeys: ReadonlySet<string>,
+): boolean =>
+  Object.keys(row.customFields).some((key) => !plannedKeys.has(key));
+
 // Spreadsheet applications treat a leading =, +, -, @, tab, or carriage return
 // as a formula. Intake data is caller-controlled, so string cells are prefixed
 // with an apostrophe, which spreadsheets render as plain text.

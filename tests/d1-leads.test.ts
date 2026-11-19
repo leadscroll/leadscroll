@@ -1,4 +1,6 @@
 import { api as contractsApi } from '@/api/contracts';
+import { prepareLeadCsvExport } from '@/application/lead-export';
+import { type Env } from '@/db/repository';
 import { Effect } from 'effect';
 import { FetchHttpClient } from 'effect/http';
 import { HttpApiClient } from 'effect/http-api';
@@ -51,6 +53,7 @@ type LeadsFixture = {
   ) => Promise<{ json: Record<string, unknown>; status: number }>;
   db: D1Database;
   dispose: () => Promise<void>;
+  env: Env;
   fetch: typeof fetch;
 };
 
@@ -126,6 +129,7 @@ const startFixture = async (
       api,
       db: database,
       dispose,
+      env: { DB: database } as unknown as Env,
       fetch: mf.dispatchFetch.bind(mf) as unknown as typeof fetch,
     };
   } catch (error) {
@@ -521,6 +525,29 @@ test('lead export streams the filtered live set with dynamic custom columns', as
     expect(emptyLines).toHaveLength(1);
     expect(emptyLines[0]).toBe(
       'id,First name,Last name,Email,Source,Estimated value,Origin,Created at,Updated at',
+    );
+  } finally {
+    await fx.dispose();
+  }
+});
+
+test('export fails instead of dropping a custom field added after header planning', async () => {
+  const fx = await startFixture();
+  try {
+    const prepared = await Effect.runPromise(prepareLeadCsvExport(fx.env, {}));
+    const iterator = prepared.chunks[Symbol.asyncIterator]();
+    const header = await iterator.next();
+    expect(header.done).toBe(false);
+    expect(header.value).toContain('Updated at');
+
+    await insertLead(fx.db, {
+      createdAt: Date.now(),
+      customFields: { addedLater: 'value' },
+      id: '01ARZ3NDEKTSV4RRFFQ69G5FD0',
+    });
+
+    await expect(iterator.next()).rejects.toThrow(
+      'Lead data changed while the CSV export was being generated.',
     );
   } finally {
     await fx.dispose();

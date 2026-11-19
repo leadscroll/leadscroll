@@ -3,6 +3,7 @@ import {
   encodeCsvCell,
   encodeLeadCsvHeader,
   encodeLeadCsvRow,
+  hasUnplannedCustomFields,
   type LeadCsvRow,
   planLeadCsvColumns,
 } from '@/domain/leadCsv';
@@ -94,6 +95,22 @@ describe('lead CSV encoding', () => {
     expect(encodeCsvCell('-5')).toBe("'-5");
     expect(encodeCsvCell('@SUM(A1)')).toBe("'@SUM(A1)");
     expect(encodeCsvCell(-5)).toBe('-5');
+  });
+
+  test('detects a custom key added after the header was planned', () => {
+    const planned = new Set(['company']);
+    expect(
+      hasUnplannedCustomFields(
+        row({ customFields: { company: 'Acme' } }),
+        planned,
+      ),
+    ).toBe(false);
+    expect(
+      hasUnplannedCustomFields(
+        row({ customFields: { company: 'Acme', newKey: 'value' } }),
+        planned,
+      ),
+    ).toBe(true);
   });
 
   test('serializes nulls, booleans, and nested custom values losslessly', () => {
