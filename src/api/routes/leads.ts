@@ -259,6 +259,7 @@ export const createLeadsHandlers = (options: HandlerOptions) => {
         return {
           data: page.leads.map(toLeadView),
           nextCursor: page.nextCursor,
+          total: page.total,
         };
       }),
 

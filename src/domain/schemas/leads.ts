@@ -60,6 +60,11 @@ export type LeadView = Schema.Schema.Type<typeof LeadViewSchema>;
 export const LeadsSchema = Schema.Struct({
   data: Schema.Array(LeadViewSchema),
   nextCursor: Schema.NullOr(Schema.String),
+  // Present on the first page (no cursor): the size of the filtered live-lead
+  // set. Cursor pages set it to null so scrolling never repeats the count.
+  total: Schema.NullOr(
+    Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+  ),
 });
 export type LeadsPage = Schema.Schema.Type<typeof LeadsSchema>;
 

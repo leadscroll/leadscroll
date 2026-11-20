@@ -362,16 +362,20 @@ test('list filters by exact tag and scope server-side', async () => {
     expect(
       (exact.json.data as Array<{ id: string }>).map((lead) => lead.id),
     ).toEqual([first.id]);
+    expect(exact.json.total).toBe(1);
 
     const prefix = await fx.api(`/v1/leads?tagScope=${String(fall.scopeId)}`);
     expect(
       (prefix.json.data as Array<{ id: string }>).map((lead) => lead.id),
     ).toEqual([first.id]);
+    expect(prefix.json.total).toBe(1);
 
     const none = await fx.api(`/v1/leads?tag=${vip.id}&limit=1`);
     expect(
       (none.json.data as Array<{ id: string }>).map((lead) => lead.id),
     ).toEqual([first.id]);
+    // The filtered total is independent of the page limit.
+    expect(none.json.total).toBe(1);
     void second;
     void third;
   } finally {

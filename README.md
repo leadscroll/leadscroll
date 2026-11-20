@@ -417,6 +417,10 @@ by `id DESC`:
   ordering above. Omit it for the first page; the final page returns
   `nextCursor: null`. A missing, malformed, or tampered cursor returns
   `422 invalid_cursor`.
+- The first page (no cursor) also reports `total`: the number of live leads
+  matching the active filters, not just the rows on that page. Cursor pages
+  set `total: null` so scrolling does not repeat the filtered count query;
+  clients keep the first page's value.
 - `query` is a literal substring match on first name, last name, or email
   (`%` and `_` match literally) and composes with pagination.
 - `tag` (a tag id) or `tagScope` (a scope id) filters to leads carrying that

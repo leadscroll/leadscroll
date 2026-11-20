@@ -31,7 +31,11 @@ import { useForm } from 'react-hook-form';
 import { toast } from 'sonner';
 import { Link } from 'wouter';
 
-type LeadPage = { data: LeadView[]; nextCursor: null | string };
+type LeadPage = {
+  data: LeadView[];
+  nextCursor: null | string;
+  total: null | number;
+};
 
 export const LeadsPage = () => {
   const queryClient = useQueryClient();
@@ -72,6 +76,9 @@ export const LeadsPage = () => {
     queryKey: ['leads', search, tagFilter],
   });
   const rows = leads.data?.pages.flatMap((page) => page.data) ?? [];
+  // The count is reported by the first page only, so scrolling keeps the same
+  // filtered total. Never show fewer available leads than are already loaded.
+  const total = Math.max(leads.data?.pages[0]?.total ?? 0, rows.length);
 
   const invalidate = () => {
     void queryClient.invalidateQueries({ queryKey: ['leads'] });
@@ -122,8 +129,9 @@ export const LeadsPage = () => {
           <span>All leads</span>
           {!leads.isPending && (
             <span className="count-badge">
-              {rows.length}
-              {leads.hasNextPage ? '+' : ''}
+              {total > rows.length
+                ? `${String(rows.length)} of ${String(total)}`
+                : total}
             </span>
           )}
         </div>
