@@ -49,6 +49,9 @@ const LeadCreatedResponse = LeadDataResponse.pipe(HttpApiSchema.status(201));
 const LeadsPageResponse = Schema.Struct({
   data: Schema.Array(LeadViewSchema),
   nextCursor: Schema.NullOr(Schema.String),
+  total: Schema.NullOr(
+    Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+  ),
 });
 const LeadDeletedResponse = Schema.Struct({
   data: Schema.Struct({

@@ -41,6 +41,8 @@ export type LeadFilterOptions = {
 export type LeadPage = {
   leads: LeadRecord[];
   nextCursor: null | string;
+  // Only the first page (no cursor) reports the filtered total.
+  total: null | number;
 };
 
 export type LeadPageOptions = LeadFilterOptions & {

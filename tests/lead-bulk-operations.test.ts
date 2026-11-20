@@ -266,9 +266,13 @@ test('duplicate hints come from the page query without list bindings', async () 
     }
 
     expect(singlePage.leads).toHaveLength(1);
+    expect(singlePage.total).toBe(101);
+    expect(fullPage.total).toBe(101);
 
-    expect(singleStatements).toBe(1);
-    expect(fullStatements).toBe(1);
+    // One page query plus one first-page count; the duplicate hint still adds
+    // no extra statement, and the count binds no page-sized list.
+    expect(singleStatements).toBe(2);
+    expect(fullStatements).toBe(2);
     expect(fullBindings).toBe(singleBindings);
   } finally {
     await fx.dispose();

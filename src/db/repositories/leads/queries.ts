@@ -24,9 +24,11 @@ export const listLeads = async (
 ): Promise<LeadPage> => {
   const { cursor, limit } = options;
   // Exact-tag and any-tag-in-scope filters are expressions in the same WHERE
-  // clause as the keyset cursor, so the page and its count are cut after
-  // filtering rather than against only the loaded rows.
-  const predicates = leadFilterPredicates(options);
+  // clause as the keyset cursor, so the page is cut after filtering rather
+  // than against only the loaded rows. The count keeps the filters but not the
+  // cursor, so it always describes the whole filtered set.
+  const filters = leadFilterPredicates(options);
+  const predicates = [...filters];
   if (cursor) {
     predicates.push(leadKeysetPredicate(cursor));
   }
@@ -56,6 +58,18 @@ export const listLeads = async (
   const hasNextPage = rows.length > limit;
   const pageRows = hasNextPage ? rows.slice(0, limit) : rows;
   const last = pageRows.at(-1);
+  // The toolbar needs the size of the filtered set, not of the loaded page.
+  // Count only on the first page: the SPA keeps this value from `pages[0]`, so
+  // scrolling never repeats the filtered count scan on every cursor request.
+  const total = cursor
+    ? null
+    : ((
+        await getDatabase(environment)
+          .select({ total: sql<number>`count(*)` })
+          .from(leads)
+          .where(and(...filters))
+          .get()
+      )?.total ?? 0);
   return {
     leads: pageRows.map((row) =>
       toLead(row, { tags: parseTagsJson(row.tagsJson) }),
@@ -67,6 +81,7 @@ export const listLeads = async (
             id: last.id,
           })
         : null,
+    total,
   };
 };
 

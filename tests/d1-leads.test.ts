@@ -226,6 +226,7 @@ test('lead list searches, excludes deleted rows, pages, and hints duplicates', a
     expect(firstPage[0]).not.toHaveProperty('rawPayload');
     expect(firstPage.map((lead) => lead['duplicateCount'])).toEqual([1, 1]);
     expect(typeof first.json.nextCursor).toBe('string');
+    expect(first.json.total).toBe(3);
 
     const cursor = encodeURIComponent(String(first.json.nextCursor));
     const second = await fx.api(`/v1/leads?limit=2&cursor=${cursor}`);
@@ -236,6 +237,8 @@ test('lead list searches, excludes deleted rows, pages, and hints duplicates', a
       ),
     ).toEqual(['01ARZ3NDEKTSV4RRFFQ69G5FB2']);
     expect(second.json.nextCursor).toBeNull();
+    // The count is a first-page concern; cursor pages do not repeat it.
+    expect(second.json.total).toBeNull();
 
     const search = await fx.api('/v1/leads?query=Acme');
     expect(search.status, JSON.stringify(search)).toBe(200);
@@ -244,6 +247,7 @@ test('lead list searches, excludes deleted rows, pages, and hints duplicates', a
         (lead) => lead['id'],
       ),
     ).toEqual(['01ARZ3NDEKTSV4RRFFQ69G5FB1']);
+    expect(search.json.total).toBe(1);
 
     const detail = await fx.api('/v1/leads/01ARZ3NDEKTSV4RRFFQ69G5FB2');
     expect(detail.status, JSON.stringify(detail)).toBe(200);
@@ -275,6 +279,7 @@ test('the generated client decodes leads and typed errors end-to-end', async () 
     );
     expect(page.data).toEqual([]);
     expect(page.nextCursor).toBeNull();
+    expect(page.total).toBe(0);
 
     const error = await Effect.runPromise(
       client.leads
@@ -368,6 +373,7 @@ test('leads can be created, updated, deleted, and annotated', async () => {
     expect(deleted.status, JSON.stringify(deleted)).toBe(200);
     const list = await fx.api('/v1/leads');
     expect(list.json.data).toHaveLength(0);
+    expect(list.json.total).toBe(0);
   } finally {
     await fx.dispose();
   }
@@ -396,6 +402,7 @@ test('equal createdAt ties order by id DESC and page without gaps', async () => 
       ),
     ).toEqual(['01ARZ3NDEKTSV4RRFFQ69G5FB4', '01ARZ3NDEKTSV4RRFFQ69G5FB3']);
     expect(typeof page1.json.nextCursor).toBe('string');
+    expect(page1.json.total).toBe(5);
 
     const page2 = await fx.api(
       `/v1/leads?limit=2&cursor=${encodeURIComponent(String(page1.json.nextCursor))}`,
@@ -415,6 +422,7 @@ test('equal createdAt ties order by id DESC and page without gaps', async () => 
       ),
     ).toEqual(['01ARZ3NDEKTSV4RRFFQ69G5FB0']);
     expect(page3.json.nextCursor).toBeNull();
+    expect(page3.json.total).toBeNull();
   } finally {
     await fx.dispose();
   }
